@@ -1,0 +1,52 @@
+{
+  "blimp": {
+    "file": "prop-blimp.png",
+    "width": 38,
+    "height": 14
+  },
+  "bolt": {
+    "file": "prop-bolt.png",
+    "width": 14,
+    "height": 17
+  },
+  "pigeon": {
+    "file": "prop-pigeon.png",
+    "width": 9,
+    "height": 8
+  },
+  "pigeon-fly": {
+    "file": "prop-pigeon-fly.png",
+    "width": 12,
+    "height": 7
+  },
+  "sparkle": {
+    "file": "prop-sparkle.png",
+    "width": 5,
+    "height": 5
+  },
+  "cloud": {
+    "file": "prop-cloud.png",
+    "width": 44,
+    "height": 16
+  },
+  "crt": {
+    "file": "prop-crt.png",
+    "width": 122,
+    "height": 88
+  },
+  "boombox": {
+    "file": "prop-boombox.png",
+    "width": 60,
+    "height": 33
+  },
+  "graffiti": {
+    "file": "prop-graffiti.png",
+    "width": 124,
+    "height": 31
+  },
+  "jumbotron": {
+    "file": "prop-jumbotron.png",
+    "width": 118,
+    "height": 45
+  }
+}

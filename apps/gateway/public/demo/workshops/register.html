@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Register for Pottery Basics</title>
+    <link rel="stylesheet" href="/demo/demo.css" />
+  </head>
+  <body>
+    <header>
+      <a href="/demo/"><b>HypeMan</b><span> / playground</span></a><span class="badge">DEMO · Fictional listings</span>
+    </header>
+    <main>
+      <h1>Register for Pottery Basics.</h1>
+      <p>
+        $60 total · Saturday 10 am–12 pm. Submitting reserves a fictional place. No payment is
+        collected.
+      </p>
+      <p class="badge">Sample attendee: Alex Morgan · alex@example.com</p>
+      <form id="registration">
+        <label>Full name<input name="fullName" autocomplete="name" required /></label
+        ><label>Email<input name="email" type="email" autocomplete="email" required /></label
+        ><button type="submit">Submit registration</button>
+      </form>
+      <section id="registration-success" class="success" role="status" hidden>
+        <h2>Registration confirmed</h2>
+        <p>Your fictional place is reserved. No real charge was made.</p>
+      </section>
+      <footer>
+        All people, prices, and registrations are fictional fixtures.
+        <a href="/demo/learning/">Learning</a> · <a href="/demo/video/">Video</a> ·
+        <a href="/notebook.html">Notebook</a>
+      </footer>
+    </main>
+    <script src="/demo/register.js"></script>
+  </body>
+</html>
