@@ -1,3 +1,4 @@
+import { installBrowserFixtures } from "./fixtures/browser-pages.mjs";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -18,18 +19,18 @@ const gateway = createGateway(loadConfig({ PORT: "0", DEMO_MODE: "1" }), {
   agent: async (input, signal) => {
     if (input.goal === "Browser verification: open another tab")
       return {
-        action: input.page.url.endsWith("/demo/learning/")
-          ? { type: "finish", summary: "Destination page observed." }
-          : { type: "navigate", url: base + "/demo/learning/", newTab: true },
-        done: input.page.url.endsWith("/demo/learning/"),
+        action: input.page.url.endsWith("/__test/learning/")
+          ? { type: "say", text: "Destination page observed." }
+          : { type: "navigate", url: base + "/__test/learning/", newTab: true },
+        done: input.page.url.endsWith("/__test/learning/"),
         provider: "demo",
       };
     if (input.goal === "Browser verification: switch existing tab")
       return {
-        action: input.page.url.endsWith("/demo/learning/")
-          ? { type: "finish", summary: "Existing tab observed." }
+        action: input.page.url.endsWith("/__test/learning/")
+          ? { type: "say", text: "Existing tab observed." }
           : { type: "switchTab", tabId: targetTabId },
-        done: input.page.url.endsWith("/demo/learning/"),
+        done: input.page.url.endsWith("/__test/learning/"),
         provider: "demo",
       };
     if (input.goal === "Browser verification: cancel delayed decision") {
@@ -59,7 +60,7 @@ const gateway = createGateway(loadConfig({ PORT: "0", DEMO_MODE: "1" }), {
       });
     }
     if (input.goal === "Browser verification: reject stale target") {
-      if (input.history.length)
+      if (input.history.some((entry) => entry.action.type === "click" && !entry.result.ok))
         return {
           action: { type: "say", text: "Target was replaced; action rejected." },
           done: true,
@@ -114,6 +115,7 @@ async function launch() {
       "--enable-unsafe-extension-debugging",
     ],
   });
+  await installBrowserFixtures(ctx);
   const sw = ctx.serviceWorkers()[0] || (await ctx.waitForEvent("serviceworker"));
   sw.on("console", (m) => console.log("Worker:", m.text()));
   ctx.on(
@@ -170,9 +172,9 @@ try {
   context = ctx;
   // A slow destination must retain the handoff instead of repeating the link
   // while its original document still reports the source URL.
-  await ctx.route("**/demo/workshops/compare.html", async (route) => {
+  await ctx.route("**/__test/workshops/compare.html", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await route.continue();
+    await route.fallback();
   });
 
   const home = await ctx.newPage();
@@ -201,11 +203,11 @@ try {
   await home
     .locator("#task-goal")
     .fill(
-      `Find a beginner workshop under $75, compare two options, prepare registration, and request confirmation before submission. Wait for me between milestones. Start at ${base}/demo/workshops/`,
+      `Find a beginner workshop under $75, compare two options, prepare registration, and request confirmation before submission. Wait for me between milestones. Start at ${base}/__test/workshops/`,
     );
   await home.getByRole("button", { name: "Send message", exact: true }).click();
   const taskPage = await waitFor(
-    () => Promise.resolve(ctx.pages().find((p) => p.url().includes("/demo/workshops/"))),
+    () => Promise.resolve(ctx.pages().find((p) => p.url().includes("/__test/workshops/"))),
     "workshop tab",
   );
   await taskPage.bringToFront();
@@ -229,7 +231,7 @@ try {
     const state = await rpc(home, { type: "workspace.get" });
     return state.notes.some(
       (note) =>
-        note.url.endsWith("/demo/workshops/compare.html") &&
+        note.url.endsWith("/__test/workshops/compare.html") &&
         note.text.includes("Pottery Basics") &&
         note.text.includes("Printmaking for Everyone"),
     );
@@ -245,7 +247,7 @@ try {
     return state.events.some(
       (event) =>
         event.ok &&
-        event.url.endsWith("/demo/workshops/pottery.html") &&
+        event.url.endsWith("/__test/workshops/pottery.html") &&
         /destination document observed and verified/i.test(event.summary),
     );
   }, "chosen workshop observed after navigation", 30000);
@@ -258,7 +260,7 @@ try {
   assert.equal(
     demoTrace.filter(
       ({ url, decision }) =>
-        url && new URL(url).pathname === "/demo/workshops/" && decision.action.type === "click",
+        url && new URL(url).pathname === "/__test/workshops/" && decision.action.type === "click",
     ).length,
     1,
     "The comparison link must be clicked once while its destination is loading.",
@@ -287,7 +289,7 @@ try {
     .fill("Prepare registration and request confirmation before submitting");
   await taskPage.getByRole("button", { name: "Send message", exact: true }).click();
   await taskPage.getByRole("alertdialog", { name: "Confirm browser action" }).waitFor();
-  await taskPage.getByRole("alertdialog", { name: "Confirm browser action" }).getByRole("button", { name: "Allow", exact: true }).click();
+  await taskPage.getByRole("alertdialog", { name: "Confirm browser action" }).getByRole("button", { name: "Register", exact: true }).click();
   await taskPage.locator("#registration-success").waitFor();
   const finished = await waitFor(async () => {
     const s = await rpc(home, { type: "workspace.get" });
@@ -382,7 +384,7 @@ try {
     patch: { reducedMotion: "on", learningEnabled: true },
   });
   const learn = await ctx.newPage();
-  await learn.goto(`${base}/demo/learning/`);
+  await learn.goto(`${base}/__test/learning/`);
   await learn.getByRole("button", { name: /Open HypeMan\. Drag/ }).click();
   assert.equal(await learn.locator(".companion-tools").count(), 0);
   assert.equal(await learn.locator(".companion-task").count(), 0);
@@ -465,14 +467,14 @@ try {
     type: "task.start",
     goal: "Browser verification: open another tab",
     steps: ["Open the lesson in another tab", "Review the observed lesson"],
-    url: base + "/demo/workshops/",
+    url: base + "/__test/workshops/",
   });
   const arrived = await waitFor(async () => {
     const s = await rpc(home, { type: "workspace.get" });
-    return s.events.some((event) => event.taskId === cross.id && event.action === "finish" && event.ok && event.url.endsWith("/demo/learning/")) ? s : null;
+    return s.events.some((event) => event.taskId === cross.id && event.action === "say" && event.ok && event.summary === "Destination page observed." && event.url.endsWith("/__test/learning/")) ? s : null;
   }, "new-tab continuation");
   assert.ok(
-    arrived.tasks.find((t) => t.id === cross.id).lastPage.url.endsWith("/demo/learning/"),
+    arrived.tasks.find((t) => t.id === cross.id).lastPage.url.endsWith("/__test/learning/"),
   );
   assert.equal(arrived.tasks.find((t) => t.id === cross.id).status, "running", "A verified browser action does not complete project milestones");
   const crossState = await acknowledgeProject(home, cross.id);
@@ -480,35 +482,37 @@ try {
   await rpc(home, { type: "settings.patch", patch: { tabContextEnabled: true } });
   targetTabId = await home.evaluate(
     async (url) => (await chrome.tabs.query({})).find((t) => t.url === url)?.id,
-    base + "/demo/learning/",
+    base + "/__test/learning/",
   );
   assert.ok(Number.isInteger(targetTabId));
   const switched = await rpc(home, {
     type: "task.start",
     goal: "Browser verification: switch existing tab",
     steps: ["Continue in the selected website tab", "Review the observed destination"],
-    url: base + "/demo/workshops/",
+    url: base + "/__test/workshops/",
   });
-  await waitFor(async () => {
+  const switchState = await waitFor(async () => {
     const s = await rpc(home, { type: "workspace.get" });
-    return s.events.some((event) => event.taskId === switched.id && event.action === "finish" && event.ok && event.url.endsWith("/demo/learning/"));
+    return s.events.some((event) => event.taskId === switched.id && event.action === "say" && event.ok && event.summary === "Existing tab observed." && event.url.endsWith("/__test/learning/")) ? s : null;
   }, "existing-tab handoff");
   assert.equal(
-    (await rpc(home, { type: "workspace.get" })).tasks.find((t) => t.id === switched.id).tabId,
+    switchState.tasks.find((t) => t.id === switched.id).tabId,
     targetTabId,
   );
-  await acknowledgeProject(home, switched.id);
+  assert.equal(switchState.tasks.find((t) => t.id === switched.id).status, "running", "Observing the selected tab does not complete project milestones");
+  const acknowledgedSwitch = await acknowledgeProject(home, switched.id);
+  assert.ok(acknowledgedSwitch.tasks.find((t) => t.id === switched.id).steps.every((step) => step.completion?.source === "user"));
   check("New-tab and existing-tab handoffs preserve task ownership and verified continuation");
   const slow = await rpc(home, {
     type: "task.start",
     goal: "Browser verification: cancel delayed decision",
     steps: ["Fill the requested practice field", "Review the practice result"],
-    url: base + "/demo/learning/",
+    url: base + "/__test/learning/",
   });
   await waitFor(() => slowStarted > 0, "delayed decision started");
   const slowPage = ctx
     .pages()
-    .filter((p) => p.url() === base + "/demo/learning/")
+    .filter((p) => p.url() === base + "/__test/learning/")
     .at(-1);
   await slowPage.keyboard.press("Escape");
   await waitFor(() => slowCancelled > 0, "gateway request cancellation");
@@ -522,12 +526,12 @@ try {
     type: "task.start",
     goal: "Browser verification: reject stale target",
     steps: ["Check the practice answer", "Review the practice feedback"],
-    url: base + "/demo/learning/",
+    url: base + "/__test/learning/",
   });
   await waitFor(() => staleStarted > 0, "stale decision started");
   const stalePage = ctx
     .pages()
-    .filter((p) => p.url() === base + "/demo/learning/")
+    .filter((p) => p.url() === base + "/__test/learning/")
     .at(-1);
   await stalePage.evaluate(() => {
     const node = document.querySelector("#check");

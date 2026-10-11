@@ -61,8 +61,8 @@ describe("local gateway boundary", () => {
     const html = await root.text();
     expect(html).toContain("little HypeMan avatar");
     expect(html).not.toMatch(/<(?:button|input|textarea|script|a)\b/i);
-    const menu = await (await fetch(url + "/demo/")).text();
-    expect(menu).not.toMatch(/<(?:button|input|textarea|script|a)\b/i);
+    for (const path of ["/demo/", "/demo/workshops/", "/demo/media/lesson.webm", "/__test/learning/"])
+      expect((await fetch(url + path)).status).toBe(404);
   });
   it("pins the gateway connection origin to the manifest's stable public identity", () => {
     expect(manifest.key).toBe(HYPEMAN_EXTENSION_KEY);
@@ -265,6 +265,16 @@ describe("local gateway boundary", () => {
     }
     expect(fetcher).not.toHaveBeenCalled();
   });
+  it("accepts supplied local-video captions without inventing a webpage URL", async () => {
+    const fetcher = vi.fn(async () => { throw new Error("Unexpected external network"); });
+    const { url } = await start({ fetcher });
+    const response = await post(url, "/api/video", {
+      url: "", title: "Local clip", segments: [{ start: 0, end: 3, text: "Apply the same operation to both sides." }],
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ available: true, source: "page", provider: "demo" });
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it.each([false, true])("keeps unavailable captions honest in demo=%s", async (demo) => {
     const fetcher = vi.fn(async () => {
       throw new Error("Unexpected external network");
@@ -286,9 +296,9 @@ describe("local gateway boundary", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: "Unknown API route." });
   });
-  it("supports byte ranges for native media seeking", async () => {
+  it("supports byte ranges for the allowlisted OAuth fonts", async () => {
     const { url } = await start();
-    const response = await fetch(url + "/demo/media/lesson.webm", { headers: { range: "bytes=0-20" } });
+    const response = await fetch(url + "/fonts/PressStart2P.ttf", { headers: { range: "bytes=0-20" } });
     expect(response.status).toBe(206);
     expect((await response.arrayBuffer()).byteLength).toBe(21);
     const font = await fetch(url + "/fonts/PressStart2P.ttf");

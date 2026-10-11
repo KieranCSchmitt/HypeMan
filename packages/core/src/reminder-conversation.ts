@@ -79,6 +79,8 @@ export function reminderConversation(message: string, previous: ReminderDraft | 
   // A reminder is only one part of these requests; preserve the entire request for the planner.
   if (!pending && /(?:[,;]\s*|\s+(?:and|then|also)\s+)(?:(?:then|also)\s+)?(?:save|text|send|open|find|search|compare|draw|create|summarize|explain|make|export|download)\b/i.test(text)) return { kind: "unrelated" };
   if (pending && /^(?:cancel(?: (?:it|that|the reminder))?|never ?mind|forget (?:it|that))[.!]?$/i.test(text)) return { kind: "cancel" };
+  if (pending && /^(?:what(?: is|'s)|what should) (?:the |this |my )?reminder (?:for|about|say)\b/i.test(text))
+    return { kind: "reminder", draft: { ...pending, updatedAt: clock.now }, question: pending.text ? `The reminder is to ${pending.text}. What would you like to change?` : "What should I remind you to do?" };
   if (!fresh && /^(?:am|pm)\s+(?:I|you|we|they)\b/i.test(text)) return { kind: "unrelated" };
   if (fresh && pending?.sourceMessage === text && pending.dueAt !== undefined && pending.dueAt > clock.now)
     return { kind: "reminder", draft: { ...pending, updatedAt: clock.now }, dueAt: pending.dueAt, label: reminderTimeLabel(pending.dueAt, pending.timezone) };
@@ -124,7 +126,7 @@ export function reminderConversation(message: string, previous: ReminderDraft | 
   if (weekday >= 0) { draft.weekday = weekday; draft.nextWeek = /\bnext\b/i.test(text); delete draft.day; delete draft.date; delete draft.dueAt; delete draft.needsDate; }
   const meridiem = text.match(/(?:\b|\d)(a\.?m\.?|p\.?m\.?)(?=\b|$)/i)?.[1];
   if (meridiem) { draft.meridiem = meridiem.toLowerCase().startsWith("a") ? "AM" : "PM"; delete draft.dueAt; }
-  const time = text.match(/(?:\bat\s+|\bnext\s+|^)(\d{1,2})(?::(\d{2}))?(?:\s*(?:a\.?m\.?|p\.?m\.?))?(?=\s|,|$)/i) || text.match(/\b(\d{1,2}):(\d{2})\b/);
+  const time = text.match(/(?:\b(?:at|for|next)\s+|^)(\d{1,2})(?::(\d{2}))?(?:\s*(?:a\.?m\.?|p\.?m\.?))?(?=\s|,|$)/i) || text.match(/\b(\d{1,2}):(\d{2})\b/);
   if (time && !relative && !explicitDate?.startsWith(time[0])) {
     draft.hour = Number(time[1]); draft.minute = Number(time[2] || 0); delete draft.dueAt;
     if (draft.hour === 0 || draft.hour > 12) delete draft.meridiem;
@@ -132,11 +134,11 @@ export function reminderConversation(message: string, previous: ReminderDraft | 
   if (day === "tonight" && draft.hour !== undefined && draft.hour > 0 && draft.hour < 12 && !draft.meridiem) draft.meridiem = "PM";
   if (/\b(noon|midnight)\b/i.test(text)) { draft.hour = /\bnoon\b/i.test(text) ? 12 : 0; draft.minute = 0; draft.meridiem = "AM"; if (draft.hour === 12) draft.meridiem = "PM"; delete draft.dueAt; }
   let reminderText = text.replace(/^(?:please[, ]*)?(?:(?:can|could|would|will) you\s+)?(?:remind me(?: to)?|(?:set|create|schedule)(?: me)? (?:a )?(?:text )?reminder(?: to)?|(?:I need|I'd like) (?:a )?(?:text )?reminder(?: to)?|don't let me forget(?: to)?|reminder:|(?:send me (?:a )?(?:text )?reminder|text me|send me a text))\s*/i, "");
-  const afterTo = reminderText.match(/^(?:at|on|in|tomorrow|today|tonight|\d)[\s\S]*?\b(?:to|about)\s+(.+)$/i);
+  const afterTo = reminderText.match(/^(?:at|on|in|for|tomorrow|today|tonight|\d)[\s\S]*?\b(?:to|about)\s+(.+)$/i);
   if (afterTo) reminderText = afterTo[1];
-  reminderText = reminderText.replace(new RegExp(`\\s+\\b(?:at\\s+(?:\\d|noon|midnight)|in\\s+(?:\\d|an?\\b|half)|on\\s+(?:\\d|${months.join("|")}|(?:next )?(?:${weekdays.join("|")}))|tomorrow\\b|today\\b|tonight\\b).*`, "i"), "").replace(/^(?:to|about)\s+/i, "").trim();
+  reminderText = reminderText.replace(new RegExp(`\\s+\\b(?:at\\s+(?:\\d|noon|midnight)|in\\s+(?:\\d|an?\\b|half)|on\\s+(?:\\d|${months.join("|")}|(?:next )?(?:${weekdays.join("|")}))|tomorrow\\b|today\\b|tonight\\b).*`, "i"), "").replace(/^(?:to|about|for)\s+/i, "").trim();
   reminderText = reminderText.replace(/\s+\b(?:every|daily|weekly|repeat)\b.*$/i, "").trim();
-  if (fresh && reminderText && !/^(?:at|in|on|tomorrow|today|tonight|\d)/i.test(reminderText)) draft.text = reminderText.slice(0, 2000);
+  if (fresh && reminderText && !/^(?:at|in|on|tomorrow|today|tonight|noon|midnight|every|daily|weekly|\d)/i.test(reminderText)) draft.text = reminderText.slice(0, 2000);
   else if (!fresh && /^to\s+/i.test(text)) draft.text = text.replace(/^to\s+/i, "").slice(0, 2000);
   else if (!fresh && !draft.text && !followup) draft.text = text.slice(0, 2000);
   const result = (question: string): ReminderTurn => ({ kind: "reminder", draft, question });

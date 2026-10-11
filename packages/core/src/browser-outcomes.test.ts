@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completionSubject, freshCompletion, matchesCompletion, pendingCompletion, verifiedCompletion } from "./browser-outcomes";
+import { completionKind, completionSubject, freshCompletion, matchesCompletion, pendingCompletion, verifiedCompletion } from "./browser-outcomes";
 import { parseAgentRequest } from "./validation";
 import type { PageSnapshot } from "./contracts";
 
@@ -45,5 +45,32 @@ describe("completion bound to the requested outcome", () => {
       history: [{ action: { type: "click", target: "register" }, result: { ok: true, changed: true, message: "Registered", completion, pendingCompletion: pending }, at: 1 }] };
     expect(parseAgentRequest(input)?.history[0].result).toMatchObject({ completion, pendingCompletion: pending });
     expect(parseAgentRequest({ ...input, history: [{ ...input.history[0], result: { ...input.history[0].result, completion: { ...completion, subject: "x".repeat(201) } } }] })).toBeNull();
+  });
+});
+describe("requested completion boundaries", () => {
+  it("does not require booking proof for flight research that explicitly forbids booking", () => {
+    expect(completionKind("Find roundtrip flights and show me the options. Don't book anything.")).toBeUndefined();
+    expect(verifiedCompletion("Compare flights; do not book or pay", [])).toBe(true);
+    expect(completionKind("Compare two options and stop before checkout")).toBeUndefined();
+  });
+  it("still requires proof for a positive commitment alongside a different prohibited action", () => {
+    expect(completionKind("Book the chosen flight, but do not pay for extras")).toBe("booking");
+    expect(verifiedCompletion("Book the chosen flight, but do not pay for extras", [])).toBe(false);
+    expect(completionKind("Do not send the draft yet; then publish the approved page")).toBe("publication");
+  });
+  it.each([
+    ["Do not book Rome; reserve Paris", "booking", "Paris", "Reserve Paris", "Reservation confirmed for Paris", "Reservation confirmed for Rome"],
+    ['Do not book "Rome"; reserve "Paris"', "booking", "Paris", "Reserve Paris", "Reservation confirmed for Paris", "Reservation confirmed for Rome"],
+    ["Do not delete the old draft; publish the approved page", "publication", "the approved page", "Publish", "Published: approved page", "Published: old draft"],
+    ["Book Paris, but do not pay for extras", "booking", "Paris", "Book Paris", "Reservation confirmed for Paris", "Reservation confirmed for Rome"],
+  ])("binds and verifies the positive subject in %s", (goal, kind, subject, control, notice, wrongNotice) => {
+    expect(completionKind(goal)).toBe(kind);
+    expect(completionSubject(goal)).toBe(subject);
+    const pending = pendingCompletion(goal, control, page());
+    expect(pending).toMatchObject({ kind, subject });
+    expect(freshCompletion(pending, page(wrongNotice))).toBeUndefined();
+    const completion = freshCompletion(pending, page(notice));
+    expect(completion).toMatchObject({ kind, subject, evidence: notice });
+    expect(verifiedCompletion(goal, [{ action: { type: "click", target: "commit" }, result: { ok: true, changed: true, message: notice, completion }, at: 1 }])).toBe(true);
   });
 });

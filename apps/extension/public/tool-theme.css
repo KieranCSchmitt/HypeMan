@@ -507,13 +507,37 @@ html:has(> body.overlay-utility) { min-width: 0; background: #f1f5f5; background
 /* Keep progress, recovery and exact reviews compact within the existing pixel window. */
 .conversation-working { align-items: center; min-width: 0; }
 .conversation-working small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 17px/1.3 Tiny5, monospace; }
+.conversation-working .button { flex: none; min-height: 26px; padding: 1px 6px; font: 17px/1.2 Tiny5, monospace; }
 .conversation-recovery { display: flex; gap: 6px; margin-top: 6px; }
 .conversation-recovery .button { min-height: 30px; padding: 3px 8px; }
-.conversation-pane .confirmation { flex: 0 1 auto; min-height: 0; max-height: min(300px, 55dvh); overflow: auto; }
-.conversation-pane .confirmation p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; }
+.conversation-body.is-confirming { overflow: auto; }
+.conversation-body.is-confirming .conversation-messages { padding-block: 0; }
+.conversation-pane .confirmation[role="alertdialog"] { display: flex; flex-direction: column; flex: 0 1 auto; gap: 8px; min-height: 156px; max-height: min(300px, calc(100% - 88px)); overflow: hidden; }
+.conversation-pane .confirmation .confirmation-status { flex: none; color: var(--deep); font: 18px/1.2 Tiny5, monospace; }
+.conversation-pane .confirmation[role="alertdialog"] .confirmation-review { flex: 1 1 auto; min-height: 26px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; color: var(--ink); font: 20px/1.3 Tiny5, monospace; overscroll-behavior: contain; }
+.conversation-pane .confirmation .confirmation-actions { display: flex; flex: none; flex-wrap: wrap; gap: 8px; }
+.conversation-pane .confirmation[role="alertdialog"] .confirmation-actions button { flex: none; min-height: 34px; margin: 0; font: 19px/1.3 Tiny5, monospace; }
+.conversation-pane .confirmation-review:focus-visible { outline: 2px solid var(--violet); outline-offset: -2px; }
 .conversation-pane .confirmation button:focus-visible { outline: 3px solid var(--violet); outline-offset: 2px; }
 .pixel-workspace .video-original { padding: 10px 12px; color: var(--violet); font: 18px/1.3 Tiny5, monospace; overflow-wrap: anywhere; }
 .conversation-pane .chat-more { margin-top: 6px; }
 .conversation-pane .chat-more summary { cursor: pointer; color: var(--violet); font: 18px/1.3 Tiny5, monospace; }
 .conversation-pane .chat-more[open] p { margin-top: 6px; }
 .conversation-pane .chat-sources { display: flex; gap: 4px 10px; flex-wrap: wrap; margin-top: 6px; font-size: 17px; }
+/* Keep source code and comparisons readable inside the existing pixel bubbles. */
+.conversation-pane .chat-message :is(.message-code, .message-table) { min-width: 0; max-width: 100%; margin-block: 8px; border: 2px solid var(--ink); background: #f1f5f5; }
+.conversation-pane .message-code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px; border-bottom: 2px solid var(--ink); background: var(--chrome); font: 18px/1.2 Tiny5, monospace; }
+.conversation-pane .message-code-header span { min-width: 0; overflow-wrap: anywhere; }
+.conversation-pane .message-code-header button { flex: none; min-height: 30px; padding: 2px 8px; border: 2px solid var(--ink); border-radius: 0; color: var(--ink); background: #fff; box-shadow: inset 2px 2px #fff, inset -2px -2px var(--tool-shade); font: 18px/1.2 Tiny5, monospace; cursor: pointer; }
+.conversation-pane .message-code-header button:disabled { cursor: wait; }
+.conversation-pane .chat-message .message-code :is(pre, code) { color: var(--ink); font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; overflow-wrap: normal; tab-size: 2; }
+.conversation-pane .message-code pre { max-height: 24rem; margin: 0; padding: 10px; overflow: auto; overscroll-behavior: contain; }
+.conversation-pane .message-code code { padding: 0; border: 0; background: transparent; }
+.conversation-pane .message-copy-status { display: block; padding: 3px 6px; font: 17px/1.2 Tiny5, monospace; }
+.conversation-pane .message-copy-status:empty { display: none; }
+.conversation-pane .message-table { max-height: 24rem; overflow: auto; overscroll-behavior: contain; }
+.conversation-pane .message-table table { width: max-content; min-width: 100%; margin: 0; border-collapse: collapse; color: var(--ink); font: 18px/1.35 Tiny5, monospace; }
+.conversation-pane .message-table :is(th, td) { min-width: 7ch; max-width: 26ch; padding: 6px 8px; border: 1px solid var(--ink); white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.conversation-pane .message-table th { background: var(--chrome); font-weight: normal; }
+.conversation-pane .message-table tbody tr:nth-child(even) { background: #fff; }
+.conversation-pane :is(.message-code pre, .message-code-header button, .message-table):focus-visible { outline: 2px solid var(--violet); outline-offset: -2px; }

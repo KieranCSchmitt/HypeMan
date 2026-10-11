@@ -27,7 +27,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
   try {
     const video = await ctx.newPage();
     pages.push(video);
-    await video.goto(`${base}/demo/video/`);
+    await video.goto(`${base}/__test/video/`);
     await video.waitForFunction(() => {
       const v = document.querySelector("video");
       return v?.readyState >= 1 && Array.from(v.textTracks).some((track) => track.cues?.length > 0);
@@ -89,7 +89,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
 
     const unavailable = await ctx.newPage();
     pages.push(unavailable);
-    await unavailable.goto(`${base}/demo/video/uncaptioned.html`);
+    await unavailable.goto(`${base}/__test/video/uncaptioned.html`);
     await unavailable.waitForFunction(() => document.querySelector("video")?.readyState >= 1);
     await pet(unavailable).press("Enter");
     await openTool(unavailable, "Video");
@@ -98,7 +98,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
     const noCaptions = await rpc(home, {
       type: "api",
       path: "/api/video",
-      body: { url: `${base}/demo/video/uncaptioned.html`, segments: [] },
+      body: { url: `${base}/__test/video/uncaptioned.html`, segments: [] },
     });
     assert.equal(noCaptions.available, false);
     assert.equal(noCaptions.source, "none");
@@ -110,7 +110,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
       note: {
         text: "Specialist test note to remove",
         excerpt: "A test-only saved selection.",
-        url: `${base}/demo/video/`,
+        url: `${base}/__test/video/`,
         title: "Specialist lifecycle check",
       },
     });

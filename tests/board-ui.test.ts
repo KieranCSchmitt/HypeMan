@@ -3,10 +3,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action, InkReview } from "@core";
-import { emptyBoard, type BoardDocument } from "../packages/core/src/board";
+import { boardObjectBounds, emptyBoard, type BoardDocument } from "../packages/core/src/board";
 import { Board } from "../apps/extension/src/ui/Board";
 import { request } from "../apps/extension/src/bridge";
 import { WorkbenchContext, type ToolHandler, type WorkbenchState, type ToolResult } from "../apps/extension/src/ui/WorkbenchContext";
+import { isBoardEquation } from "../apps/extension/src/ui/board-layout";
 vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn() }));
 let root: Root, container: HTMLDivElement, handler: ToolHandler, context: WorkbenchState;
 let stored: Map<string, BoardDocument>;
@@ -44,6 +45,49 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("conversation whiteboard", () => {
+  it("recognizes TeX environments and math functions while leaving mixed prose readable", () => {
+    expect(isBoardEquation("\\begin{aligned}x+2&=9\\\\x&=7\\end{aligned}")).toBe(true);
+    expect(isBoardEquation("sin x = 1")).toBe(true);
+    for (const expression of ["\\beta", "a+b", "f(x)", "x"]) expect(isBoardEquation(expression)).toBe(true);
+    expect(isBoardEquation("Check: 9 - 2 = 7.")).toBe(false);
+    expect(isBoardEquation("Start at 7 and count up to 9. How many steps?")).toBe(false);
+  });
+  it("keeps prose out of TeX and separates assistant labels from the title and other text", async () => {
+    await render();
+    await command("add", { sketch: { type: "sketch", title: "Find the missing subtraction", shapes: [{ type: "label", text: "9 - x = 7", x: 55, y: 0 }], lines: ["Think backwards: 7 + 2 = 9."] } });
+    const objects = stored.get("conversation-one")!.objects;
+    const title = boardObjectBounds(objects[0]), expression = boardObjectBounds(objects[1]), prose = boardObjectBounds(objects[2]);
+    expect(expression.y).toBeGreaterThan(title.y + title.height);
+    expect(prose.y).toBeGreaterThan(expression.y + expression.height);
+    expect(objects[2].kind).toBe("text");
+    expect(container.querySelectorAll(".katex")).toHaveLength(1);
+    expect(container.querySelector(".katex-mathml")).toBeNull();
+    await command("add", { objects: [{ kind: "equation", text: "Check by subtracting: 9 - 2 = 7.", x: 55, y: 45 }] });
+    const added = stored.get("conversation-one")!.objects.at(-1)!;
+    expect(added.kind).toBe("text"); expect(added.y).toBeGreaterThan(prose.y + prose.height);
+  });
+  it("reopens a legacy overlapping diagram readably while preserving its saved original and user ink", async () => {
+    const board = emptyBoard();
+    board.objects = [
+      { id: "old-title", source: "assistant", kind: "text", text: "Find the missing subtraction", x: 55, y: 45, fontSize: 30, color: "#1b1f3b" },
+      { id: "old-equation", source: "assistant", kind: "equation", text: "9 - x = 7", x: 55, y: 45, fontSize: 26, color: "#1b1f3b" },
+      { id: "old-prose", source: "assistant", kind: "equation", text: "Think backwards: 7 + 2 = 9.", x: 55, y: 109, fontSize: 26, color: "#1b1f3b" },
+      { id: "user-ink", source: "user", kind: "stroke", x: 400, y: 400, size: 3, color: "#1b1f3b", points: [{ x: 0, y: 0 }, { x: 50, y: 50 }] },
+    ];
+    stored.set("conversation-one", structuredClone(board));
+    await render();
+    const title = container.querySelector<HTMLElement>('[data-board-id="old-title"]')!;
+    const expression = container.querySelector<HTMLElement>('[data-board-id="old-equation"]')!;
+    const prose = container.querySelector<HTMLElement>('[data-board-id="old-prose"]')!;
+    expect(parseFloat(expression.style.top)).toBeGreaterThan(parseFloat(title.style.top) + 48);
+    expect(parseFloat(prose.style.top)).toBeGreaterThan(parseFloat(expression.style.top) + 41.6);
+    expect(prose.querySelector(".katex")).toBeNull();
+    expect(stored.get("conversation-one")).toEqual(board);
+    expect(vi.mocked(request).mock.calls.some(([message]) => message.type === "artifact.put")).toBe(false);
+    await command("add", { text: "One more step" });
+    expect(stored.get("conversation-one")!.objects.find(object => object.id === "user-ink")).toEqual(board.objects[3]);
+    expect(stored.get("conversation-one")!.objects.find(object => object.id === "old-prose")?.kind).toBe("text");
+  });
   it("combines assistant sketches and direct ink in one persisted scene with direct drawing controls", async () => {
     const sketch: Extract<Action, { type: "sketch" }> = { type: "sketch", title: "A worked equation", lines: ["2x + 4 = 10"], shapes: [{ type: "arrow", x: 20, y: 80, toX: 90, toY: 80 }] };
     await render("conversation-one", sketch);

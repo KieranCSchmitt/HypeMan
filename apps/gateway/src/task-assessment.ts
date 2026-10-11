@@ -71,10 +71,10 @@ function demoAssessment(input: TaskAssessmentRequest): TaskAssessment {
     return { stepId: step?.id ?? "", completed: false, evidence: "" };
   let evidence = "";
   const { page } = input;
-  if (/\/demo\//.test(new URL(page.url).pathname)) {
+  if (/\/__test\//.test(new URL(page.url).pathname)) {
     const marker = `Project step completed: ${step.title}`;
     if (page.text.includes(marker)) evidence = marker;
-    if (/\/demo\/workshops(?:\/|$)/.test(new URL(page.url).pathname)) {
+    if (/\/__test\/workshops(?:\/|$)/.test(new URL(page.url).pathname)) {
       if (/compare/i.test(step.title) &&
         /Pottery Basics/.test(page.text) && /Printmaking/.test(page.text) &&
         page.text.includes("Both are under $75. Pottery costs $10 less; printmaking starts later."))
@@ -85,7 +85,7 @@ function demoAssessment(input: TaskAssessmentRequest): TaskAssessment {
         page.text.includes("Sample attendee: Alex Morgan · alex@example.com"))
         evidence = "Sample attendee: Alex Morgan · alex@example.com";
       if (/confirm.*registration/i.test(step.title) && page.text.includes("Registration confirmed"))
-        evidence = "Registration confirmed";
+        evidence = input.completion?.evidence ?? "";
     }
   }
   return groundedAssessment({ stepId: step.id, completed: !!evidence, evidence }, input);

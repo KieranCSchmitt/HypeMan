@@ -19,6 +19,7 @@ import {
   type MessagingPairingResult,
   parseReminderRecurrence,
   type LearningPlanAssessment,
+  type ConversationActivity,
 } from "@core";
 import { GatewayClient } from "./client";
 import { MESSAGING_ALARM, PhoneSync } from "./messaging";
@@ -29,6 +30,7 @@ import { recallSearch } from "./recall";
 import { LearningPracticeService } from "./learning-practice";
 import { handleFrameGrantMessage } from "./frame-grants";
 import { ConversationAssistance } from "./conversation-assistance";
+import { CONVERSATION_ACTIVITY_KEY, ConversationActivityCoordinator, type ActivityOwner } from "./conversation-activity";
 import {
   settings,
   patchSettings,
@@ -70,6 +72,26 @@ const conversationAssistance = new ConversationAssistance({
   phoneStatus: async () => phone.rememberStatus(await gateway.post("/api/messaging/status", {}, crypto.randomUUID(), null, 15000)),
   schedule: async (text, dueAt, idempotencyKey, recurrence) => phone.rememberStatus(await gateway.post("/api/messaging/remind", { text, dueAt, idempotencyKey, ...(recurrence ? { recurrence } : {}) }, crypto.randomUUID(), null, 15000)),
 });
+const conversationActivity = new ConversationActivityCoordinator({
+  load: async () => (await chrome.storage.session.get(CONVERSATION_ACTIVITY_KEY))[CONVERSATION_ACTIVITY_KEY],
+  save: async (value) => { await chrome.storage.session.set({ [CONVERSATION_ACTIVITY_KEY]: value }); },
+  changed: (conversationId, activity) => notify("conversation.activity", { conversationId, activity }),
+  stopped: async (conversationId, activity, markerAlreadyWritten) => {
+    const values = await chrome.storage.session.get(null);
+    const affected = new Set([activity.tabId]);
+    const handoffs: number[] = [];
+    for (const [key, value] of Object.entries(values)) {
+      if (!/^hypeman\.tab\.\d+$/.test(key) || !isRecord(value) || !isRecord(value.handoff) ||
+          value.handoff.conversationId !== conversationId || value.handoff.runId !== activity.runId) continue;
+      const owner = Number(key.slice("hypeman.tab.".length));
+      affected.add(owner);
+      handoffs.push(owner);
+    }
+    await Promise.all([...affected].map((owner) => notify("assistant.stopped", { conversationId, runId: activity.runId, markerAlreadyWritten }, owner)));
+    gateway.cancelOwner(activity.tabId);
+    for (const owner of handoffs) await setSession(owner, { handoff: null, nativeNavigation: null });
+  },
+});
 const ready = (async () => {
   const raw = await chrome.storage.session.get("hypeman.session");
   if (!raw["hypeman.session"]) {
@@ -80,6 +102,10 @@ const ready = (async () => {
 const tabSessionKey = (id: number) => `hypeman.tab.${id}`;
 const loginReturnKey = "hypeman.chatgpt.return";
 const sessionWrites = new Map<number, Promise<unknown>>();
+const NATIVE_NAVIGATION_TTL = 10_000;
+interface NativeNavigation { url: string; at: number; target: "new-tab" }
+const nativeCandidates = new Map<number, { openerTabId: number; createdAt: number }>();
+const nativeAdoptions = new Map<number, Promise<void>>();
 const pendingAssessments = new Map<string, {
   taskId: string; stepId: string; tabId: number; url: string; text: string;
   evidence: string; at: number;
@@ -133,13 +159,43 @@ async function session(id: number): Promise<Record<string, unknown>> {
   const raw = (await chrome.storage.session.get(tabSessionKey(id)))[tabSessionKey(id)];
   return isRecord(raw) ? raw : {};
 }
+function activityOwner(tab: chrome.tabs.Tab, documentId?: string, destination?: string): ActivityOwner {
+  let site = "";
+  try { site = new URL(destination || tab.url || "").hostname; } catch { /* about:blank is prepared before navigation. */ }
+  return { tabId: tab.id!, ...(documentId ? { documentId } : {}), site,
+    title: (tab.title || "").replace(/[\u0000-\u001f]/g, " ").slice(0, 200) };
+}
+async function transferActivity(handoff: unknown, sourceId: number | null, target: chrome.tabs.Tab, documentId?: string, destination?: string): Promise<void> {
+  if (!isRecord(handoff) || typeof handoff.runId !== "string") return;
+  if (typeof handoff.conversationId !== "string" || sourceId === null ||
+      !await conversationActivity.transfer(handoff.conversationId, handoff.runId, { tabId: sourceId, documentId }, activityOwner(target, undefined, destination)))
+    throw new DOMException("This request was stopped or moved to another page.", "AbortError");
+}
+async function assertContinuation(handoff: unknown, ownerId: number): Promise<void> {
+  if (isRecord(handoff) && !handoff.checkpoint && typeof handoff.runId === "string" &&
+      (typeof handoff.conversationId !== "string" || !await conversationActivity.canResume(handoff.conversationId, handoff.runId, ownerId)))
+    throw new DOMException("This request was stopped or moved to another page.", "AbortError");
+}
+async function assertOutgoing(handoff: unknown, ownerId: number | null, documentId?: string): Promise<void> {
+  if (!isRecord(handoff) || typeof handoff.runId !== "string") return;
+  if (typeof handoff.conversationId !== "string" || ownerId === null) throw new DOMException("Stopped request", "AbortError");
+  await conversationActivity.assertOwner(handoff.conversationId, handoff.runId, { tabId: ownerId, documentId }, true);
+}
 async function setSession(id: number, patch: Record<string, unknown>): Promise<void> {
   const operation = (sessionWrites.get(id) ?? Promise.resolve())
     .catch(() => {})
     .then(async () => {
+      if (isRecord(patch.handoff) && !patch.handoff.checkpoint && typeof patch.handoff.runId === "string" &&
+          (typeof patch.handoff.conversationId !== "string" || !conversationActivity.allowsHandoff(patch.handoff.conversationId, patch.handoff.runId, id)))
+        throw new DOMException("Stopped request", "AbortError");
       await chrome.storage.session.set({
         [tabSessionKey(id)]: { ...(await session(id)), ...patch, updatedAt: Date.now() },
       });
+      if (isRecord(patch.handoff) && !patch.handoff.checkpoint && typeof patch.handoff.runId === "string" && typeof patch.handoff.conversationId === "string" &&
+          !conversationActivity.allowsHandoff(patch.handoff.conversationId, patch.handoff.runId, id)) {
+        await chrome.storage.session.set({ [tabSessionKey(id)]: { ...(await session(id)), handoff: null, nativeNavigation: null, updatedAt: Date.now() } });
+        throw new DOMException("Stopped request", "AbortError");
+      }
     });
   sessionWrites.set(id, operation);
   try {
@@ -147,6 +203,71 @@ async function setSession(id: number, patch: Record<string, unknown>): Promise<v
   } finally {
     if (sessionWrites.get(id) === operation) sessionWrites.delete(id);
   }
+}
+function continuationHandoff(value: unknown): SessionHandoff | null {
+  if (!isRecord(value) || typeof value.goal !== "string" || !value.goal.trim() || value.goal.length > 2000 ||
+      !Number.isInteger(value.step) || Number(value.step) < 0 || !Array.isArray(value.history) || value.history.length > 40 ||
+      (value.message !== undefined && (typeof value.message !== "string" || value.message.length > 3000)) ||
+      (value.conversationId !== undefined && (typeof value.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(value.conversationId))) ||
+      (value.runId !== undefined && (typeof value.runId !== "string" || !/^[\w.-]{1,160}$/.test(value.runId))) ||
+      value.history.some((entry) => !isRecord(entry) || !parseAction(entry.action) || !isRecord(entry.result) ||
+        typeof entry.result.ok !== "boolean" || typeof entry.result.changed !== "boolean" ||
+        typeof entry.result.message !== "string" || typeof entry.at !== "number" || !Number.isFinite(entry.at))) return null;
+  return value as unknown as SessionHandoff;
+}
+function nativeNavigationIntent(value: unknown): NativeNavigation | null {
+  if (!isRecord(value) || value.target !== "new-tab" || typeof value.at !== "number" || !Number.isFinite(value.at)) return null;
+  const url = safePageUrl(value.url);
+  return url ? { url, at: value.at, target: "new-tab" } : null;
+}
+/** Follow only the new tab created by an explicitly prepared native link, never an unrelated tab. */
+async function adoptNativeNavigation(targetId: number): Promise<void> {
+  const candidate = nativeCandidates.get(targetId);
+  if (!candidate) return;
+  const previous = nativeAdoptions.get(candidate.openerTabId) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(async () => {
+    await ready;
+    if (nativeCandidates.get(targetId) !== candidate || Date.now() - candidate.createdAt > NATIVE_NAVIGATION_TTL) {
+      nativeCandidates.delete(targetId); return;
+    }
+    const source = await session(candidate.openerTabId);
+    const intent = nativeNavigationIntent(source.nativeNavigation), handoff = continuationHandoff(source.handoff);
+    if (!intent || !handoff || candidate.createdAt < intent.at || Date.now() - intent.at > NATIVE_NAVIGATION_TTL ||
+        intent.at > Date.now() + 1000) return;
+    const target = await chrome.tabs.get(targetId).catch(() => null);
+    if (!target || target.openerTabId !== candidate.openerTabId || safePageUrl(target.url || target.pendingUrl) !== intent.url) return;
+    const config = await settings();
+    const opener = await chrome.tabs.get(candidate.openerTabId).catch(() => null);
+    if (!opener || !safePageUrl(opener.url) || isPaused(config, opener.url!) || isPaused(config, intent.url)) return;
+    const state = await workspace.snapshot();
+    const task = state.tasks.find((item) => item.id === state.activeTaskId && item.status === "running" && item.tabId === candidate.openerTabId);
+    if (handoff.taskId && handoff.taskId !== task?.id) return;
+    const current = await session(candidate.openerTabId), currentIntent = nativeNavigationIntent(current.nativeNavigation);
+    if (!currentIntent || currentIntent.at !== intent.at || currentIntent.url !== intent.url ||
+        JSON.stringify(current.handoff) !== JSON.stringify(source.handoff)) return;
+    await transferActivity(handoff, candidate.openerTabId, target, undefined, intent.url);
+    if (task) await workspace.resume(task.id, targetId);
+    await setSession(targetId, {
+      handoff, conversation: source.conversation ?? [],
+      conversationId: handoff.conversationId || source.conversationId, nativeNavigation: null,
+    });
+    // Consume before dispatch so repeated onCreated/onUpdated events cannot start two continuations.
+    await setSession(candidate.openerTabId, { handoff: null, nativeNavigation: null });
+    nativeCandidates.delete(targetId);
+    if (task) await notify("task.stopped", { taskId: task.id }, candidate.openerTabId);
+    try {
+      await chrome.tabs.sendMessage(targetId, task ? {
+        type: "hypeman.task.run", taskId: task.id, goal: task.goal, handoff,
+      } : { type: "hypeman.assistant.run", goal: handoff.goal, handoff });
+    } catch {
+      // The destination may not have reached document_idle; its normal content script also
+      // hydrates this persisted handoff. Injection covers an already loaded page without a receiver.
+      await chrome.scripting.executeScript({ target: { tabId: targetId }, files: ["content.js"] }).catch(() => {});
+    }
+  });
+  nativeAdoptions.set(candidate.openerTabId, operation);
+  try { await operation; }
+  finally { if (nativeAdoptions.get(candidate.openerTabId) === operation) nativeAdoptions.delete(candidate.openerTabId); }
 }
 async function stopTask(task: BrowserTask | undefined): Promise<void> {
   if (!task) return;
@@ -203,6 +324,7 @@ async function dispatchTask(
 }
 /** The rooftop composer starts a conversation; only a proposed multi-step plan becomes a project. */
 async function dispatchAssistant(goal: string, suppliedUrl?: string, conversationId?: string, freshTab = false): Promise<{ tabId: number }> {
+  const check = conversationAssistance.checkpoint(conversationId);
   const config = await settings();
   const linkedUrl = goal.match(/https?:\/\/[^\s<>"']+/i)?.[0]?.replace(/[),.!?;]+$/, "");
   const destination = safePageUrl(suppliedUrl || linkedUrl);
@@ -222,21 +344,36 @@ async function dispatchAssistant(goal: string, suppliedUrl?: string, conversatio
     source = websites.filter((tab) => tab.id !== undefined && !isPaused(config, tab.url ?? ""))
       .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))[0] ?? null;
   }
-  const handoff: SessionHandoff = { goal, history: [], step: 0, at: Date.now(), ...(conversationId ? { conversationId } : {}) };
+  const runId = conversationId ? crypto.randomUUID() : undefined;
+  const handoff: SessionHandoff = { goal, history: [], step: 0, at: Date.now(), ...(conversationId ? { conversationId, runId } : {}) };
+  check();
   if (!freshTab && source?.id !== undefined && (!destination || safePageUrl(source.url) === destination)) {
+    if (conversationId && runId) await conversationActivity.start(conversationId, runId, activityOwner(source));
+    check();
     await setSession(source.id, { handoff, ...(conversationId ? { conversationId } : {}) });
+    check();
+    await assertContinuation(handoff, source.id);
     await chrome.tabs.update(source.id, { active: true });
     await chrome.windows.update(source.windowId, { focused: true });
+    check();
+    await assertContinuation(handoff, source.id);
     try {
       await chrome.tabs.sendMessage(source.id, { type: "hypeman.assistant.run", goal, handoff });
     } catch {
+      check();
+      await assertContinuation(handoff, source.id);
       await chrome.scripting.executeScript({ target: { tabId: source.id }, files: ["content.js"] });
     }
     return { tabId: source.id };
   }
   const tab = await chrome.tabs.create({ url: "about:blank", active: true });
   if (tab.id === undefined) throw new Error("Couldn't open a browser tab.");
+  try { check(); } catch (error) { await chrome.tabs.remove(tab.id).catch(() => {}); throw error; }
+  if (conversationId && runId) await conversationActivity.start(conversationId, runId, activityOwner(tab, undefined, destination || "https://www.google.com"));
+  check();
   await setSession(tab.id, { handoff, ...(conversationId ? { conversationId } : {}) });
+  check();
+  await assertContinuation(handoff, tab.id);
   await chrome.tabs.update(tab.id, {
     url: destination || `https://www.google.com/search?q=${encodeURIComponent(goal)}`,
   });
@@ -374,8 +511,45 @@ async function handle(
       if (ownerId !== null) await setSession(ownerId, { conversationId });
       return conversation;
     }
+    case "conversation.activity.get": {
+      const activity = await conversationActivity.get(message.conversationId);
+      if (activity && !await chrome.tabs.get(activity.tabId).catch(() => null)) {
+        await conversationActivity.removeOwner(activity.tabId);
+        return null;
+      }
+      return activity;
+    }
+    case "conversation.activity.start":
+    case "conversation.activity.update":
+    case "conversation.activity.end": {
+      if (tabId === null) throw new Error("Open a browser tab to run this request.");
+      if (message.continuation !== undefined && typeof message.continuation !== "boolean") throw new Error("Choose a valid continuation.");
+      if (type === "conversation.activity.end")
+        return conversationActivity.end(message.conversationId, message.runId, { tabId, documentId: sender.documentId });
+      const tab = await chrome.tabs.get(tabId);
+      if (!safePageUrl(tab.url) || isPaused(config, tab.url!)) throw new Error("HypeMan is unavailable on this page.");
+      const owner = activityOwner(tab, sender.documentId);
+      return type === "conversation.activity.start"
+        ? conversationActivity.start(message.conversationId, message.runId, owner, message.continuation === true)
+        : conversationActivity.update(message.conversationId, message.runId, owner, message.phase, message.status);
+    }
+    case "conversation.activity.open": {
+      const activity = await conversationActivity.get(message.conversationId);
+      if (!activity || activity.runId !== message.runId) throw new Error("This browser request has finished.");
+      const tab = await chrome.tabs.get(activity.tabId).catch(() => null);
+      if (!tab || !safePageUrl(tab.url) || isPaused(config, tab.url!)) throw new Error("That browser page is unavailable.");
+      const current = await conversationActivity.get(message.conversationId);
+      if (current?.runId !== activity.runId || current.tabId !== activity.tabId) throw new Error("This browser request has finished.");
+      await chrome.tabs.update(activity.tabId, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      return { ok: true };
+    }
+    case "conversation.append": {
+      const result = await workbenchMessage(message);
+      await notify("conversation.changed", { conversationId: message.conversationId });
+      return result;
+    }
     case "conversation.open":
-    case "conversation.append":
     case "conversation.list":
     case "artifact.get":
     case "artifact.put":
@@ -589,9 +763,28 @@ async function handle(
       return dispatchAssistant(message.goal.trim(), message.url as string | undefined,
         typeof message.conversationId === "string" && /^[\w.-]{1,160}$/.test(message.conversationId) ? message.conversationId : undefined);
     }
-    case "conversation.cancel-pending":
-      await conversationAssistance.cancel(message.conversationId);
-      return { ok: true };
+    case "conversation.cancel-pending": {
+      if (message.markerAlreadyWritten !== undefined && typeof message.markerAlreadyWritten !== "boolean") throw new Error("Choose a valid stop request.");
+      const draftCancellation = conversationAssistance.cancel(message.conversationId).catch(() => {});
+      // Invalidate the activity before notifying runtimes or waiting for saved chat writes.
+      const stopped = await conversationActivity.cancel(message.conversationId, async (activity) => {
+        if (message.markerAlreadyWritten === true) return true;
+        try {
+          await workbenchMessage({ type: "conversation.append", conversationId: message.conversationId,
+            message: { id: crypto.randomUUID(), role: "status", text: "Stopped. Completed work is saved." } });
+          await notify("conversation.changed", { conversationId: message.conversationId });
+          return true;
+        } catch { return false; }
+      });
+      if (stopped) {
+        const state = await workspace.snapshot();
+        const task = state.tasks.find((item) => item.id === state.activeTaskId && item.status === "running" && item.tabId === stopped.tabId &&
+          (!item.conversationId || item.conversationId === message.conversationId));
+        if (task) await workspace.pause(task.id);
+      }
+      await draftCancellation;
+      return { ok: true, stopped: !!stopped, ...(stopped ? { runId: stopped.runId } : {}) };
+    }
     case "conversation.assist":
     case "assistant.turn": {
       if (typeof message.message !== "string" || !message.message.trim() || message.message.length > 4000 ||
@@ -610,7 +803,11 @@ async function handle(
       if (!input) throw new Error("Conversation context is too large. Select a shorter excerpt.");
       const prepared = await conversationAssistance.prepare(input, checkConversation);
       if (message.type === "conversation.assist") return { reply: prepared.reply || null, contextTool: contextTool(prepared.input) || null };
-      return prepared.reply ?? gateway.post<AgentReply>("/api/agent", prepared.input, id, tabId, 120000);
+      let result: AgentReply;
+      try { result = prepared.reply ?? await gateway.post<AgentReply>("/api/agent", prepared.input, id, tabId, 120000); }
+      catch (error) { checkConversation(); throw error; }
+      if (!prepared.reply) checkConversation();
+      return result;
     }
     case "task.start": {
       if (typeof message.goal !== "string" || !message.goal.trim() || message.goal.length > 2000)
@@ -829,6 +1026,17 @@ async function handle(
       if (!input) throw new Error("Invalid page context.");
       if (message.readOnly !== undefined && typeof message.readOnly !== "boolean")
         throw new Error("Choose a valid read-only assistance mode.");
+      if (message.runId !== undefined && (typeof message.runId !== "string" || !/^[\w.-]{1,160}$/.test(message.runId)))
+        throw new Error("Choose a valid browser request.");
+      const activity = !message.readOnly && input.conversationId ? await conversationActivity.get(input.conversationId) : null;
+      const runId = !message.readOnly && (typeof message.runId === "string" ? message.runId : activity?.tabId === tabId ? activity.runId : undefined);
+      const checkActivity = async () => {
+        if (runId && input.conversationId) {
+          if (tabId === null) throw new DOMException("Stopped request", "AbortError");
+          await conversationActivity.assertOwner(input.conversationId, runId, { tabId, documentId: sender.documentId });
+        }
+      };
+      await checkActivity();
       if (isPaused(config, input.page.url)) throw new Error("HypeMan is paused on this site.");
       if (message.readOnly) {
         // A contextual explanation is a side conversation, even in the project owner tab.
@@ -855,7 +1063,12 @@ async function handle(
         }
       }
       const prepared = message.readOnly ? { input } : await conversationAssistance.prepare(input, checkConversation);
-      const result = prepared.reply ?? await gateway.post<AgentReply>("/api/agent", prepared.input, id, tabId, 120000);
+      await checkActivity();
+      let result: AgentReply;
+      try { result = prepared.reply ?? await gateway.post<AgentReply>("/api/agent", prepared.input, id, tabId, 120000); }
+      catch (error) { checkConversation(); await checkActivity(); throw error; }
+      if (!prepared.reply) checkConversation();
+      await checkActivity();
       if (message.readOnly) {
         const action = parseAction(result.action);
         if (!action || action.type !== "say" || !action.text.trim())
@@ -879,7 +1092,8 @@ async function handle(
         handoff = current.handoff as SessionHandoff | undefined;
       const state = await workspace.snapshot();
       const task = state.tasks.find((item) => item.id === state.activeTaskId && item.status === "running" && item.tabId === tabId) ?? null;
-      if (handoff && !handoff.checkpoint && handoff.at && Date.now() - handoff.at > 10 * 60000) {
+      if (handoff && (handoff.runId && !handoff.checkpoint && (!handoff.conversationId || !await conversationActivity.canResume(handoff.conversationId, handoff.runId, tabId)) ||
+          !handoff.checkpoint && handoff.at && Date.now() - handoff.at > 10 * 60000)) {
         await setSession(tabId, { handoff: null });
         return { ...current, handoff: null, task };
       }
@@ -895,11 +1109,28 @@ async function handle(
           message.handoff.history.length > 40
           || (message.handoff.checkpoint !== undefined && typeof message.handoff.checkpoint !== "boolean")
           || (message.handoff.message !== undefined && (typeof message.handoff.message !== "string" || message.handoff.message.length > 3000))
+          || (message.handoff.runId !== undefined && (typeof message.handoff.runId !== "string" || !/^[\w.-]{1,160}$/.test(message.handoff.runId)))
         )
           throw new Error("Invalid continuation.");
       }
+      let nativeNavigation: NativeNavigation | null | undefined;
+      if (message.nativeNavigation != null) {
+        const intent = nativeNavigationIntent(message.nativeNavigation);
+        if (!intent || Date.now() - intent.at > NATIVE_NAVIGATION_TTL || intent.at > Date.now() + 1000 ||
+            !continuationHandoff(message.handoff)) throw new Error("Invalid native navigation continuation.");
+        nativeNavigation = intent;
+      } else if (message.nativeNavigation === null || message.handoff === null) nativeNavigation = null;
+      if (isRecord(message.handoff) && typeof message.handoff.runId === "string" && typeof message.handoff.conversationId === "string" && !message.handoff.checkpoint)
+        await conversationActivity.prepare(message.handoff.conversationId, message.handoff.runId, { tabId, documentId: sender.documentId });
+      if (message.handoff === null) {
+        const current = await session(tabId);
+        if (isRecord(current.handoff) && typeof current.handoff.runId === "string" && typeof current.handoff.conversationId === "string" &&
+            conversationActivity.allowsHandoff(current.handoff.conversationId, current.handoff.runId, tabId))
+          await conversationActivity.release(current.handoff.conversationId, current.handoff.runId, { tabId, documentId: sender.documentId });
+      }
       await setSession(tabId, {
         ...(message.handoff !== undefined ? { handoff: message.handoff } : {}),
+        ...(nativeNavigation !== undefined ? { nativeNavigation } : {}),
         ...(Array.isArray(message.conversation)
           ? { conversation: message.conversation.slice(-60) }
           : {}),
@@ -910,27 +1141,40 @@ async function handle(
       const url = safePageUrl(message.url);
       if (!url) throw new Error("Only ordinary website URLs are supported.");
       if (isPaused(config, url)) throw new Error("HypeMan is paused on the destination site.");
+      await assertOutgoing(message.handoff, tabId, sender.documentId);
       const state = await workspace.snapshot();
       const task = state.tasks.find((t) => t.id === state.activeTaskId && t.tabId === tabId);
       if (message.newTab === true || tabId === null) {
         const target = await chrome.tabs.create({ url: "about:blank", active: true });
         if (target.id === undefined) throw new Error("Couldn't open tab.");
+        try { await transferActivity(message.handoff, tabId, target, sender.documentId, url); }
+        catch (error) { await chrome.tabs.remove(target.id).catch(() => {}); throw error; }
         if (task) await workspace.resume(task.id, target.id);
         await setSession(target.id, {
           handoff: message.handoff ?? null,
           conversation: tabId === null ? [] : ((await session(tabId)).conversation ?? []),
           conversationId: isRecord(message.handoff) && message.handoff.conversationId || (tabId === null ? undefined : (await session(tabId)).conversationId),
         });
+        await assertContinuation(message.handoff, target.id);
         await chrome.tabs.update(target.id, { url });
         if (task && tabId !== null) await notify("task.stopped", { taskId: task.id }, tabId);
       } else {
+        const target = await chrome.tabs.get(tabId);
+        await transferActivity(message.handoff, tabId, target, sender.documentId, url);
         await setSession(tabId, { handoff: message.handoff ?? null, ...(isRecord(message.handoff) && typeof message.handoff.conversationId === "string" ? { conversationId: message.handoff.conversationId } : {}) });
+        await assertContinuation(message.handoff, tabId);
         await chrome.tabs.update(tabId, { url });
       }
       return { ok: true };
     }
     case "nav.back":
       if (tabId === null) throw new Error("No browser tab.");
+      {
+        const current = await session(tabId);
+        await assertOutgoing(current.handoff, tabId, sender.documentId);
+        await transferActivity(current.handoff, tabId, await chrome.tabs.get(tabId), sender.documentId);
+        await assertContinuation(current.handoff, tabId);
+      }
       await chrome.tabs.goBack(tabId);
       return { ok: true };
     case "nav.switch": {
@@ -942,6 +1186,11 @@ async function handle(
         throw new Error("That tab is unavailable.");
       const state = await workspace.snapshot(),
         task = state.tasks.find((t) => t.id === state.activeTaskId && t.tabId === tabId);
+      const continuation = continuationHandoff(message.handoff);
+      if (!task && message.handoff != null && !continuation)
+        throw new Error("Invalid continuation.");
+      await assertOutgoing(message.handoff, tabId, sender.documentId);
+      await transferActivity(message.handoff, tabId, target, sender.documentId);
       if (task) {
         await workspace.resume(task.id, target.id!);
         if (tabId !== null) await notify("task.stopped", { taskId: task.id }, tabId);
@@ -951,15 +1200,20 @@ async function handle(
         conversation: tabId === null ? [] : ((await session(tabId)).conversation ?? []),
           conversationId: isRecord(message.handoff) && message.handoff.conversationId || (tabId === null ? undefined : (await session(tabId)).conversationId),
       });
+      await assertContinuation(message.handoff, target.id!);
       await chrome.tabs.update(target.id!, { active: true });
       await chrome.windows.update(target.windowId, { focused: true });
+      const run = task ? {
+        type: "hypeman.task.run", taskId: task.id, goal: task.goal, handoff: message.handoff,
+      } : continuation ? {
+        type: "hypeman.assistant.run", goal: continuation.goal, handoff: continuation,
+      } : null;
+      // Ordinary browser requests have no persisted task ID. Dispatch their actual continuation
+      // instead of a task.run event that the destination runtime correctly ignores.
+      if (!run) return { ok: true };
+      await assertContinuation(message.handoff, target.id!);
       try {
-        await chrome.tabs.sendMessage(target.id!, {
-          type: "hypeman.task.run",
-          taskId: task?.id,
-          goal: task?.goal,
-          handoff: message.handoff,
-        });
+        await chrome.tabs.sendMessage(target.id!, run);
       } catch {
         await chrome.scripting.executeScript({
           target: { tabId: target.id! },
@@ -1054,15 +1308,28 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, respond) => {
   }
   handle(message, sender)
     .then((data) => respond({ ok: true, data }))
-    .catch((error) => respond({ ok: false, error: errorText(error) }));
+    .catch((error) => respond({ ok: false, error: errorText(error), ...(error instanceof Error && error.name === "AbortError" ? { cancelled: true } : {}) }));
   return true;
 });
 chrome.tabs.onActivated?.addListener(({ tabId }) => { void notify("tab.activated", {}, tabId); });
+chrome.tabs.onCreated?.addListener((tab) => {
+  const createdAt = Date.now();
+  for (const [id, candidate] of nativeCandidates)
+    if (createdAt - candidate.createdAt > NATIVE_NAVIGATION_TTL) nativeCandidates.delete(id);
+  if (tab.id === undefined || !Number.isInteger(tab.openerTabId)) return;
+  if (nativeCandidates.size >= 128) nativeCandidates.delete(nativeCandidates.keys().next().value!);
+  nativeCandidates.set(tab.id, { openerTabId: tab.openerTabId!, createdAt });
+  void adoptNativeNavigation(tab.id).catch(() => {});
+});
 chrome.tabs.onRemoved.addListener((id) => {
+  nativeCandidates.delete(id);
+  for (const [targetId, candidate] of nativeCandidates)
+    if (candidate.openerTabId === id) nativeCandidates.delete(targetId);
   gateway.cancelOwner(id);
   forgetAssessments(id);
   void ready.then(async () => {
     await chrome.storage.session.remove(tabSessionKey(id));
+    await conversationActivity.removeOwner(id);
     const state = await workspace.snapshot();
     const task = state.tasks.find((t) => t.id === state.activeTaskId && t.tabId === id);
     if (task) return workspace.pause(task.id);
@@ -1070,6 +1337,16 @@ chrome.tabs.onRemoved.addListener((id) => {
 });
 // Return to the originating HypeMan screen after the gateway has verified the OAuth result.
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
+  if (change.status === "loading" && (tab.url !== "about:blank" || conversationActivity.ownerDocument(id))) {
+    const observedRunId = conversationActivity.ownerRun(id);
+    const observedDocumentId = conversationActivity.ownerDocument(id);
+    void ready.then(async () => {
+      const value = await session(id), handoff = continuationHandoff(value.handoff);
+      await conversationActivity.navigated(activityOwner(tab), handoff && !handoff.checkpoint ? handoff : null, observedRunId, observedDocumentId);
+    }).catch(() => {});
+  }
+  if (nativeCandidates.has(id) && (change.url || change.status === "complete"))
+    void adoptNativeNavigation(id).catch(() => {});
   if (change.status !== "complete" || !tab.url) return;
   void (async () => {
     await ready;

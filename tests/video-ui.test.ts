@@ -51,6 +51,17 @@ describe("native page video in the conversation workbench", () => {
   });
 });
 
+describe("local video captions", () => {
+  it("sends supplied captions without a fabricated webpage URL", async () => {
+    const result = { segments: [], chapters: [], notes: [], summary: "Local caption summary.", available: true, source: "page", provider: "demo" };
+    vi.mocked(request).mockImplementation(async (message) => message.type === "api" ? result : null);
+    await act(async () => root.render(createElement(VideoComponent, {})));
+    await act(async () => { await state.handler!("captions", { text: "Apply the same operation to both sides." }); });
+    await act(async () => { await state.handler!("summarize", {}); });
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "api", path: "/api/video", body: expect.objectContaining({ url: "", segments: [{ start: 0, end: 0, text: "Apply the same operation to both sides." }] }) }), expect.any(AbortSignal));
+  });
+});
+
 describe("linked video summaries", () => {
   it("opens a new URL, fetches its captions and shows the answer without using stale captions", async () => {
     const result = { segments: [{ start: 100, end: 105, text: "New video caption." }], chapters: [], notes: [], summary: "New video summary.", available: true, source: "service", provider: "openai" };

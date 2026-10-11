@@ -493,7 +493,7 @@ describe("page understanding", () => {
 });
 describe("action policy and execution", () => {
   it("preserves handoff for a native link while its next document is still loading", async () => {
-    const destination = new URL("/demo/workshops/slow-compare.html", document.location.href).href;
+    const destination = new URL("/__test/workshops/slow-compare.html", document.location.href).href;
     document.body.innerHTML = `<a href="${destination}">Compare workshops</a>`;
     const clicked = vi.fn();
     document.querySelector("a")!.addEventListener("click", clicked);
@@ -526,7 +526,7 @@ describe("action policy and execution", () => {
 
   it("runs a prevented SPA link handler and clears handoff after observing its local route", async () => {
     const originalUrl = document.location.href;
-    const destination = new URL("/demo/workshops/local-compare.html", originalUrl).href;
+    const destination = new URL("/__test/workshops/local-compare.html", originalUrl).href;
     document.body.innerHTML = `<a href="${destination}">Compare workshops</a><p id="view">Workshop list</p>`;
     const clicked = vi.fn((event: MouseEvent) => {
       event.preventDefault();
@@ -644,7 +644,7 @@ describe("action policy and execution", () => {
   });
   it("opens registration form links without confirming but still protects consequential links", () => {
     document.body.innerHTML =
-      '<a href="/demo/workshops/register.html">Register for Pottery Basics</a><a href="/delete">Delete registration</a><a href="/register?confirm=1">Confirm registration</a>';
+      '<a href="/__test/workshops/register.html">Register for Pottery Basics</a><a href="/delete">Delete registration</a><a href="/register?confirm=1">Confirm registration</a>';
     const observer = new PageObserver();
     const page = observer.snapshot();
     expect(
@@ -779,7 +779,11 @@ describe("task runtime", () => {
   it("rejects fabricated source quotes while preserving personal notes with real page context", async () => {
     document.body.innerHTML =
       "<h1>Pottery Basics</h1><p>Beginner workshop. Materials included. $60 total.</p>";
-    const b = bridge(async () => ({
+    const b = bridge(async (input) => (input as AgentRequest).history.length ? ({
+      action: { type: "say", text: (input as AgentRequest).history.at(-1)!.result.message },
+      done: true,
+      provider: "demo",
+    }) : ({
       action: {
         type: "note",
         text: "A useful workshop",

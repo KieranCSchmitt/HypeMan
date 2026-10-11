@@ -1,3 +1,4 @@
+import { installBrowserFixtures } from "./fixtures/browser-pages.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -47,6 +48,7 @@ try {
   const extension = resolve("apps/extension/dist");
   context = await chromium.launchPersistentContext(profile, { channel: "chromium", headless: true, acceptDownloads: true,
     args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, "--enable-unsafe-extension-debugging"] });
+  await installBrowserFixtures(context);
   // Chrome 116 lacks this API. Check that the locally bundled reader installs its compatibility layer.
   await context.addInitScript(() => { Promise.withResolvers = undefined; });
   const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
@@ -92,7 +94,7 @@ try {
   assert.deepEqual(await readFile(await download.path()), pdf);
   console.log("✓ Chat tool export downloads the original PDF without changing its bytes");
 
-  const attacker = await context.newPage(); await attacker.goto(`${base}/demo/guide/`);
+  const attacker = await context.newPage(); await attacker.goto(`${base}/__test/guide/`);
   const unauthorizedUrl = `${origin}/documents.html?${new URLSearchParams({ conversationId, documentId: metadata.id, channel, parentOrigin: base })}`;
   await attacker.evaluate((url) => { const iframe = document.createElement("iframe"); iframe.title = "Untrusted PDF fixture"; iframe.src = url; document.body.append(iframe); }, unauthorizedUrl);
   await attacker.frameLocator('iframe[title="Untrusted PDF fixture"]').locator(".pdf-reader").waitFor();

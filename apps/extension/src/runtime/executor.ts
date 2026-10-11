@@ -3,7 +3,7 @@ import { delay, check } from "./async";
 import { PageObserver, privateField, sameTarget } from "./page";
 import type { RuntimeApi } from "./types";
 import type { Highlight } from "./overlay";
-import { actionTarget } from "./policy";
+import { actionTarget, checkPolicy, ConfirmationChangedError, type ActionApproval } from "./policy";
 import { pageState } from "./reliability";
 export interface ExecuteContext {
   api: RuntimeApi;
@@ -16,9 +16,16 @@ export interface ExecuteContext {
   trustedInput: boolean;
   companionHost?: HTMLElement;
   handoff?: SessionHandoff;
+  approval?: ActionApproval;
   sketch: (action: Extract<Action, { type: "sketch" }>) => void;
   plan: (action: Extract<Action, { type: "plan" }>) => void;
   note: (text: string, excerpt?: string) => Promise<void>;
+}
+export class StaleTargetError extends Error {
+  constructor(readonly reason: "page" | "target" = "target", readonly acted = false) {
+    super(reason === "page" ? "The page changed. Observe again before acting." : "The target changed. Observe again before acting.");
+    this.name = "StaleTargetError";
+  }
 }
 const result = (ok: boolean, message: string, changed = false): ActionResult => ({
   ok,
@@ -49,7 +56,7 @@ function dispatchText(node: Element, text: string): void {
   );
   node.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
 }
-function click(node: Element): void {
+function click(node: Element, beforeActivate?: () => void, dispatched?: () => void): void {
   const rect = node.getBoundingClientRect();
   const init = {
     bubbles: true,
@@ -59,23 +66,42 @@ function click(node: Element): void {
     clientY: rect.y + rect.height / 2,
     button: 0,
   };
-  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"])
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+    beforeActivate?.();
+    dispatched?.();
     node.dispatchEvent(
       type.startsWith("pointer") && typeof PointerEvent !== "undefined"
         ? new PointerEvent(type, init)
         : new MouseEvent(type, init),
     );
+  }
   (node as HTMLElement).focus?.({ preventScroll: true });
+  beforeActivate?.();
   if (typeof (node as HTMLElement).click === "function") (node as HTMLElement).click();
   else node.dispatchEvent(new MouseEvent("click", init));
 }
 
 /** Read the browser's default link behavior after site handlers have run. */
+interface NativeDestination { url: string; target: "same-tab" | "new-tab" }
+function linkDestination(anchor: HTMLAnchorElement | undefined, sourceUrl: string): NativeDestination | undefined {
+  if (!anchor || anchor.hasAttribute("download")) return;
+  const target = (anchor.target || document.querySelector("base[target]")?.getAttribute("target") || "_self").toLowerCase();
+  if (!["_self", "_blank"].includes(target)) return;
+  try {
+    const destination = new URL(anchor.href, document.baseURI);
+    const current = new URL(sourceUrl);
+    if (!/^https?:$/.test(destination.protocol)) return;
+    const url = destination.href;
+    destination.hash = current.hash = "";
+    if (target === "_blank" || destination.href !== current.href)
+      return { url, target: target === "_blank" ? "new-tab" : "same-tab" };
+  } catch { /* A site can replace its destination during activation. */ }
+}
 function nativeLinkDestination(
   event: MouseEvent | undefined,
   anchor: HTMLAnchorElement | undefined,
   sourceUrl: string,
-): string | undefined {
+): NativeDestination | undefined {
   if (
     !event ||
     !anchor ||
@@ -88,20 +114,27 @@ function nativeLinkDestination(
     anchor.hasAttribute("download")
   )
     return;
-  const target =
-    anchor.target || document.querySelector("base[target]")?.getAttribute("target") || "_self";
-  if (target.toLowerCase() !== "_self") return;
+  return linkDestination(anchor, sourceUrl);
+}
+function submissionForm(target: Element | null): HTMLFormElement | null {
+  const control = target?.closest("button,input,textarea,select");
+  return (control as HTMLButtonElement | HTMLInputElement | null)?.form ?? target?.closest("form") ?? null;
+}
+function nativeSubmissionDestination(event: Event | undefined, form: HTMLFormElement | null): NativeDestination | undefined {
+  if (!event || event.defaultPrevented || !form) return;
+  const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | HTMLInputElement | null;
+  const method = (submitter?.hasAttribute("formmethod") ? submitter.formMethod : form.method).toLowerCase();
+  if (!["get", "post"].includes(method)) return;
+  const target = (submitter?.hasAttribute("formtarget") ? submitter.formTarget : form.target ||
+    document.querySelector("base[target]")?.getAttribute("target") || "_self").toLowerCase();
+  if (!["_self", "_blank"].includes(target)) return;
   try {
-    const destination = new URL(anchor.href, document.baseURI);
-    const current = new URL(sourceUrl);
+    const destination = new URL(submitter?.hasAttribute("formaction") ? submitter.formAction : form.action, document.baseURI);
     if (!/^https?:$/.test(destination.protocol)) return;
-    const url = destination.href;
-    destination.hash = current.hash = "";
-    // Fragment-only links stay in this document and continue through observation.
-    if (destination.href !== current.href) return url;
-  } catch {
-    // A page may replace its link with an invalid address during the click.
-  }
+    // Do not serialize submitted fields (which may include private values) into
+    // a handoff or action receipt. The destination observes its actual URL.
+    return { url: destination.href, target: target === "_blank" ? "new-tab" : "same-tab" };
+  } catch { /* Invalid action URLs are not navigation evidence. */ }
 }
 
 /** Executes only against the observed node, revalidating after waits and confirmations. */
@@ -109,18 +142,20 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
   const { observer, signal, page, api } = context;
   const id = actionTarget(action);
   const expected = id == null ? undefined : page.elements.find((target) => target.id === id);
-  const node = id == null ? null : observer.resolve(id);
+  const node = id == null ? context.approval?.target ?? null : observer.resolve(id);
+  let acted = false;
   const verify = (ownValueChange = false) => {
     check(signal);
     if (!context.allowed()) throw new DOMException("Paused on this site", "AbortError");
+    if (context.approval && !context.approval.isCurrent(action)) throw new ConfirmationChangedError(acted);
     if (document.location.href !== page.url)
-      throw new Error("The page changed. Observe again before acting.");
+      throw new StaleTargetError("page", acted);
     const actual = node?.isConnected ? observer.describe(node) : undefined;
     const compare =
       ownValueChange && expected && actual ? { ...expected, value: actual.value,
         ...(node?.getAttribute("contenteditable") === "true" ? { name: actual.name } : {}) } : expected;
     if (id && (!node?.isConnected || !compare || !sameTarget(compare, actual)))
-      throw new Error("The target changed. Observe again before acting.");
+      throw new StaleTargetError("target", acted);
   };
   verify();
   const ready = async () => {
@@ -189,6 +224,11 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       verify();
       let clickEvent: MouseEvent | undefined;
       let link: HTMLAnchorElement | undefined;
+      const form = submissionForm(node);
+      let submitEvent: Event | undefined;
+      let persisted = false;
+      let routedDestination: string | undefined;
+      const captureSubmit = (event: Event) => { submitEvent = event; };
       const capture = (event: Event) => {
         if (!(event instanceof MouseEvent)) return;
         clickEvent = event;
@@ -198,14 +238,41 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       };
       const activated = await withoutCompanion(async () => {
         if (covered(node!)) return false;
-        await api.request({ type: "session.set", handoff: context.handoff ?? null }, signal);
+        const anticipated = linkDestination(node!.closest("a") as HTMLAnchorElement | null ?? undefined, page.url);
+        if (anticipated?.target === "new-tab" && node instanceof HTMLAnchorElement &&
+          expected?.href === anticipated.url && !context.approval &&
+          !node.hasAttribute("onclick") && !node.onclick) {
+          const policy = checkPolicy(action, page, observer);
+          const navigationPolicy = checkPolicy({ type: "navigate", url: anticipated.url, newTab: true }, page, observer);
+          if (policy.allowed && !policy.confirmation && navigationPolicy.allowed && !navigationPolicy.confirmation) {
+            // Chrome normally gives _blank links noopener, so opener-based
+            // adoption cannot reliably connect their conversation. Follow the
+            // exact observed ordinary link through the explicit handoff path.
+            verify();
+            acted = true;
+            await api.request({ type: "nav.navigate", url: anticipated.url, newTab: true, handoff: context.handoff }, signal);
+            routedDestination = anticipated.url;
+            return true;
+          }
+        }
+        await api.request({ type: "session.set", handoff: context.handoff ?? null,
+          ...(anticipated?.target === "new-tab" && context.handoff ? {
+            nativeNavigation: { url: anticipated.url, at: Date.now(), target: "new-tab" },
+          } : {}),
+        }, signal);
+        persisted = true;
         verify();
         const rect = node!.getBoundingClientRect();
         if (covered(node!, rect)) return false;
         let trusted = false;
         node!.addEventListener("click", capture, true);
+        form?.addEventListener("submit", captureSubmit, true);
         try {
-          if (action.trusted && context.trustedInput) {
+          // Confirmed submissions stay in this document so their values can be
+          // checked synchronously at activation, rather than across an async
+          // trusted-input transport that cannot inspect the reviewed form.
+          if (action.trusted && context.trustedInput && !context.approval) {
+            acted = true;
             const response = await api.request<{ ok: boolean }>(
                 {
                   type: "input",
@@ -216,32 +283,49 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
             trusted = response.ok;
             if (!trusted) { verify(); if (covered(node!)) return false; }
           }
-          if (!trusted) click(node!);
+          if (!trusted) click(node!, verify, () => { acted = true; });
         } finally {
           node!.removeEventListener("click", capture, true);
+          form?.removeEventListener("submit", captureSubmit, true);
         }
         return true;
+      }).catch(async (error: unknown) => {
+        // A pointer handler can initiate a native submit before a later guard.
+        // Preserve that receipt; never report that nothing happened or replay it.
+        if (nativeSubmissionDestination(submitEvent, form)) return true;
+        if (persisted) {
+          try { await api.request({ type: "session.set", handoff: null }, signal); } catch { /* Preserve the original failure. */ }
+        }
+        throw error;
       });
-      if (!activated) return result(false, "Another control covers the target. Close it first.");
-      const pendingDestination = nativeLinkDestination(clickEvent, link, page.url);
+      if (!activated) {
+        if (persisted) await api.request({ type: "session.set", handoff: null }, signal);
+        return result(false, "Another control covers the target. Close it first.");
+      }
+      if (routedDestination) return { ...result(true, "Link destination opened; verify the destination before continuing"),
+        navigation: true, navigationPending: true, url: routedDestination };
+      const pendingLink = nativeLinkDestination(clickEvent, link, page.url);
+      const pendingSubmission = nativeSubmissionDestination(submitEvent, form);
+      const pendingDestination = pendingLink?.url ?? pendingSubmission?.url;
       const after = pendingDestination ? observer.snapshot() : await settle();
       const navigation = after.url !== page.url || !!pendingDestination;
       const changed =
         after.url !== page.url ||
         after.text !== page.text ||
         JSON.stringify(after.elements) !== JSON.stringify(page.elements);
-      if (!pendingDestination) await api.request({ type: "session.set", handoff: null }, signal);
+      if (!pendingLink && !pendingSubmission) await api.request({ type: "session.set", handoff: null }, signal);
       return {
         ...result(
           true,
           pendingDestination && after.url === page.url
-            ? "Link navigation requested; verify the destination before continuing"
+            ? "Navigation requested; verify the destination before continuing"
             : changed
               ? "Control activated; page change verified"
               : "Control activated; no visible page change",
           changed,
         ),
         navigation,
+        ...(pendingDestination ? { navigationPending: true } : {}),
         url: pendingDestination ?? after.url,
       };
     }
@@ -250,6 +334,7 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
         return result(false, "That field cannot be filled automatically.");
       await ready();
       verify();
+      acted = true;
       dispatchText(node, action.text);
       await settle(300);
       verify(true);
@@ -271,6 +356,7 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       if (!option) return result(false, "That option is unavailable.");
       await ready();
       verify();
+      acted = true;
       node.value = option.value;
       node.dispatchEvent(new Event("input", { bubbles: true }));
       node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -356,18 +442,36 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       };
       await api.request({ type: "session.set", handoff: context.handoff }, signal);
       verify();
-      const proceed = target.dispatchEvent(new KeyboardEvent("keydown", init));
-      target.dispatchEvent(new KeyboardEvent("keyup", init));
-      const form = (target as HTMLInputElement).form;
-      if (key === "Enter" && proceed && form && !(target instanceof HTMLTextAreaElement))
-        form.requestSubmit();
-      const after = await settle();
-      const navigation = after.url !== page.url;
-      if (!navigation) await api.request({ type: "session.set", handoff: null }, signal);
+      acted = true;
+      const form = submissionForm(target);
+      let submitEvent: Event | undefined;
+      const captureSubmit = (event: Event) => { submitEvent = event; };
+      form?.addEventListener("submit", captureSubmit, true);
+      try {
+        const proceed = target.dispatchEvent(new KeyboardEvent("keydown", init));
+        if (context.approval && !nativeSubmissionDestination(submitEvent, form)) verify();
+        target.dispatchEvent(new KeyboardEvent("keyup", init));
+        // A site key handler may already have submitted. Do not submit twice,
+        // and do not throw a stale-value error after a native default action.
+        if (key === "Enter" && proceed && form && !submitEvent && !(target instanceof HTMLTextAreaElement)) {
+          verify();
+          form.requestSubmit();
+        }
+      } catch (error) {
+        if (!nativeSubmissionDestination(submitEvent, form)) {
+          try { await api.request({ type: "session.set", handoff: null }, signal); } catch { /* Preserve the guard failure. */ }
+        }
+        throw error;
+      } finally { form?.removeEventListener("submit", captureSubmit, true); }
+      const pendingSubmission = nativeSubmissionDestination(submitEvent, form);
+      const after = pendingSubmission ? observer.snapshot() : await settle();
+      const navigation = after.url !== page.url || !!pendingSubmission;
+      if (!pendingSubmission) await api.request({ type: "session.set", handoff: null }, signal);
       return {
         ...result(true, `Pressed ${action.key}`, after.text !== page.text),
         navigation,
-        url: after.url,
+        ...(pendingSubmission ? { navigationPending: true } : {}),
+        url: pendingSubmission?.url ?? after.url,
       };
     }
     case "pointer": {
@@ -381,8 +485,8 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
         clientY: rect.y + rect.height / 2,
       };
       if (action.command === "doubleClick") {
-        click(node!);
-        click(node!);
+        click(node!, verify, () => { acted = true; });
+        click(node!, verify, () => { acted = true; });
         node!.dispatchEvent(new MouseEvent("dblclick", { ...init, detail: 2 }));
       } else if (action.command === "rightClick")
         node!.dispatchEvent(new MouseEvent("contextmenu", { ...init, button: 2 }));

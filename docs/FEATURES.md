@@ -1,6 +1,6 @@
 # Feature checklist
 
-Checked items describe implemented behavior. Live provider success requires valid credentials, available models, and the separate checks in [DEMO.md](DEMO.md).
+Checked items describe implemented behavior. Live provider success requires valid credentials, available models, and the separate checks in [verification](VERIFICATION.md).
 
 ## Companion and tasks
 
@@ -29,29 +29,29 @@ Progress is conservative: a click or an agent’s final reply cannot complete a 
 
 ## Rooftop and avatar conversation
 
-- [x] Live layered rooftop with four time-of-day phases, pointer parallax, clouds, blimp, lights, water, pigeons, walking HypeMan, and silent dance interactions. Keyboard-accessible scene hotspots and live reduced motion.
+- [x] Live layered rooftop with four time-of-day phases, pointer parallax, clouds, blimp, lights, water, pigeons, walking HypeMan, and silent dance interactions. Keyboard-accessible HypeMan hotspot, arrow-key character movement, and live reduced motion.
 - [x] New tabs start as a quiet rooftop, with no persistent composer or tool menu. Activate the little avatar on an ordinary webpage to open conversation and requested tools beside that page. Enter sends; Shift+Enter adds a line; Escape stops or dismisses.
 - [x] Pixel styling across the companion, popup, onboarding, drawing, video, PDF reader, and utility windows. All 11 windows drag, resize from every edge and corner, minimize, maximize, and restore; interiors scroll at small sizes.
 - [x] Projects, notes, action history, workspace export, preferences, phone, accounts, and learning open through chat. Old tool links open the shared conversation host.
-- [x] Health distinguishes demo, live, local, and unavailable services. The gateway root only displays connection guidance; it does not redirect into fixtures.
+- [x] Health reports live, local, and unavailable services. The gateway root displays connection guidance.
 
 ## Specialist workspaces
 
-| Feature  | Implemented experience                                                                              | Without paid credentials                                             |
+| Feature  | Implemented experience                                                                              | Without a live AI connection                                         |
 | -------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| Video    | Native controls, page captions, VTT/SRT upload, pasted transcript, timestamped notes/chapters       | Local caption notes and labeled demo responses                       |
-| Whiteboard | Shared persisted strokes, shapes, text, editable KaTeX equations, assistant transactions, keyboard undo/redo, direct manipulation, composite PNG export and review | Local editing/export; labeled review demo |
-| PDFs | PDF.js preview, incremental text, 25 MiB chunked upload into extension IndexedDB, local passwords, highlighted passages, page citations, explicit scanned-page analysis and original-file export | Local viewing/selection without account or observation permission; labeled demo analysis |
-| Learning | Optional plans, hints, page-feedback evidence, teach-back review, concept graph                     | ChatGPT feedback; demo feedback never establishes mastery            |
+| Video    | Native controls, page captions, VTT/SRT upload, pasted transcript, timestamped notes/chapters       | Local playback, supplied captions, and timestamped excerpts           |
+| Whiteboard | Shared persisted strokes, shapes, text, editable KaTeX equations, assistant transactions, keyboard undo/redo, direct manipulation, composite PNG export and review | Local editing and export; assistant additions and review require ChatGPT |
+| PDFs | PDF.js preview, incremental text, 25 MiB chunked upload into extension IndexedDB, local passwords, highlighted passages, page citations, explicit scanned-page analysis and original-file export | Local viewing, selection, and original-file export; analysis requires ChatGPT |
+| Learning | Optional plans, hints, page-feedback evidence, teach-back review, concept graph                     | Saved practice history; new plans and feedback require ChatGPT        |
 
-Task notes and learner diagnostics are separate. Teach-back records an explanation; assessed evidence is accepted only when grounded in that explanation. Demo assessment does not establish mastery. The graph presents practice history, not a grade.
+Task notes and learner diagnostics are separate. Teach-back records an explanation; assessed evidence is accepted only when grounded in that explanation. Mocked assessment in automated tests does not establish mastery. The graph presents practice history, not a grade.
 
 ## Scope and limits
 
 - Local single-user Chrome MV3 release with ChatGPT account selection and optional phone synchronization; no shared workspace or store publication.
 - Top-frame HTTP/HTTPS support. Inaccessible frames and Chrome-protected pages cannot be operated.
 - Caption-based video understanding. HypeMan does not infer unheard narration from frames; live missing captions are reported as unavailable.
-- Missing credentials and invalid provider output produce explicit failures. Explicit `/demo/*` pages and deterministic provider responses are development fixtures for automated tests; there is no product playground entry.
+- Missing credentials and invalid provider output produce explicit failures. Automated tests supply minimal test-only pages and mock provider responses; these are not served by the application.
 - Live AI requires eligible ChatGPT plan permission. Images require a supported account model; unavailable features fail explicitly.
 - Settings, projects, notes, and learning evidence use validated HypeMan storage records. Unrelated extension data is left untouched. Recall credit requires a successful return after a full day away from a concept.
 - Site pause is hostname-wide for webpage work. PDF viewing and document-only help remain independent of it.

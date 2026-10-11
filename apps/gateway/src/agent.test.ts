@@ -22,7 +22,7 @@ const input = (
   history: [],
   mode: "browse",
   page: {
-    url: `http://127.0.0.1:8787/demo/workshops/${path}`,
+    url: `http://127.0.0.1:8787/__test/workshops/${path}`,
     title: "Workshops",
     text: "Pottery Basics $60. Printmaking $70. Both beginner workshops.",
     elements: [target("compare", "Compare workshops")],
@@ -125,6 +125,26 @@ describe("explicit demonstration intent", () => {
   });
 });
 describe("project planning boundary", () => {
+  it("repairs an invalid video discovery action once and validates the replacement before execution", async () => {
+    const request = input("", "pull up a video to show me how to do this");
+    request.page.title = "Missing subtraction";
+    const json = vi.fn().mockResolvedValueOnce({ action: "video", command: "search", query: "missing subtraction" })
+      .mockResolvedValueOnce({ action: "navigate", url: "https://www.youtube.com/results?search_query=missing%20subtraction", newTab: true, done: false });
+    const result = await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(result.action).toEqual({ type: "navigate", url: "https://www.youtube.com/results?search_query=missing%20subtraction", newTab: true });
+    expect(json).toHaveBeenCalledTimes(2);
+    expect(json.mock.calls[1][0]).toContain("nothing executed");
+    expect(json.mock.calls[1][1]).toMatchObject({ message: request.message, page: { title: "Missing subtraction" } });
+  });
+  it("bounds invalid decision recovery to one repair and honors cancellation", async () => {
+    const request = input("", "find a tutorial video");
+    const json = vi.fn().mockResolvedValue({ action: "video", command: "search" });
+    await expect(decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal)).rejects.toThrow("invalid browser action");
+    expect(json).toHaveBeenCalledTimes(2);
+    const controller = new AbortController(); json.mockReset().mockImplementation(async () => { controller.abort(); return { action: "video", command: "search" }; });
+    await expect(decide(request, { json, provider: "openai" } as unknown as Providers, false, controller.signal)).rejects.toBeDefined();
+    expect(json).toHaveBeenCalledOnce();
+  });
   it("plans real workshop outcomes once before browsing", () => {
     const request = input();
     const first = demoDecision(request);
@@ -135,6 +155,28 @@ describe("project planning boundary", () => {
     ] });
     request.history = [{ action: first.action, result: { ok: true, changed: false, message: "Planned" }, at: 1 }];
     expect(demoDecision(request).action).toEqual({ type: "click", target: "compare" });
+  });
+  it("plans an explicit project after destination observation without repeating its saved plan", () => {
+    const request = input();
+    request.history = [{ action: { type: "observe" }, result: { ok: true, changed: false,
+      message: "Destination page observed after browser dispatch", url: request.page.url }, at: 1 }];
+    const first = demoDecision(request);
+    expect(first.action).toMatchObject({ type: "plan", steps: [
+      "Compare two beginner workshops under $75", "Prepare registration for the chosen workshop", "Review and confirm the registration",
+    ] });
+    request.history.push({ action: first.action, result: { ok: true, changed: false, message: "Project planned" }, at: 2 });
+    expect(demoDecision(request).action).toEqual({ type: "click", target: "compare" });
+  });
+  it.each(["click Compare workshops", "summarize this page"])("does not plan ordinary assistance after arrival: %s", (message) => {
+    const request = input("", message);
+    request.history = [{ action: { type: "observe" }, result: { ok: true, changed: false,
+      message: "Destination page observed after browser dispatch", url: request.page.url }, at: 1 }];
+    expect(demoDecision(request).action.type).toBe(message.startsWith("click") ? "click" : "say");
+  });
+  it("does not restart project planning after a changed browser action", () => {
+    const request = input();
+    request.history = [{ action: { type: "click", target: "compare" }, result: { ok: true, changed: true, message: "Opened comparison" }, at: 1 }];
+    expect(demoDecision(request).action.type).not.toBe("plan");
   });
   it("handles explicit non-learning projects even with learning preference enabled", () => {
     const request = input("", "Research source material then draft the report on Google Docs");
@@ -202,4 +244,121 @@ it("adapts flat provider decisions and keeps explicit screenshots outside textua
   expect(context).not.toHaveProperty("screenshot");
   expect(usedSignal).toBe(signal);
   expect(image).toBe(request.screenshot);
+});
+
+describe("browser outcome review", () => {
+  const searched = (message: string): AgentRequest => {
+    const request = input("", message);
+    request.page = {
+      ...request.page, url: "https://jobs.example/search?q=customer+support+remote+full+time&location=New+York",
+      title: "Customer support jobs", text: "Customer support jobs in New York. Date posted. Job type.",
+      elements: [target("date", "Date posted"), target("job", "Customer Support Associate")],
+    };
+    request.contextScope = "page";
+    request.history = [{ action: { type: "navigate", url: request.page.url },
+      result: { ok: true, changed: true, message: "Search results loaded", url: request.page.url }, at: 1 }];
+    return request;
+  };
+  it("reviews a changed search before returning a claim that silently dropped a retained filter", async () => {
+    const request = searched("Use that fallback: search customer support remote full time, keep New York and last 7 days. Open the best matching listing and tell me its pay, schedule and required experience. Don't apply.");
+    request.conversation = [
+      { role: "user", text: "Find full-time remote support jobs in New York, posted in the last 7 days.", at: 1 },
+      { role: "assistant", text: "I will keep all your filters.", at: 2 },
+    ];
+    const proposed = { action: "say", text: "The filtered results are ready. Next: open a matching job.", done: true };
+    const json = vi.fn().mockResolvedValueOnce(proposed)
+      .mockResolvedValueOnce({ action: "click", target: "date", say: "Restoring the seven-day window before checking a listing.", done: false });
+    const result = await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(result).toMatchObject({ action: { type: "click", target: "date" }, done: false });
+    expect(json).toHaveBeenCalledTimes(2);
+    const [reviewInstructions, reviewContext] = json.mock.calls[1];
+    expect(reviewInstructions).toContain("retained filters again after navigation");
+    expect(reviewInstructions).toContain("actual listing/source facts already establish qualification");
+    expect(reviewContext).toMatchObject({
+      message: request.message, goal: request.goal, page: request.page, history: request.history,
+      conversation: request.conversation, proposedReply: { action: { type: "say", text: proposed.text }, done: true },
+    });
+    // The gateway gives the next decision back to the browser; it never rewrites site URLs.
+    expect(result.action.type).not.toBe("navigate");
+  });
+  it("keeps a completed comparison when source facts establish the constraints without filter controls", async () => {
+    const request = searched("Compare two full-time remote New York support jobs posted in the last 7 days, including pay and required experience.");
+    request.page.text = "A: Remote, New York, full-time, posted today, $25/hour, 0–1 years. B: Remote, New York, full-time, posted yesterday, $27/hour, no experience required.";
+    request.page.elements = [];
+    const proposed = { action: "say", text: "A pays $25/hour with 0–1 years; B pays $27/hour with no experience required. Both meet your location, remote, full-time and posting-window requirements.", done: true };
+    const json = vi.fn().mockResolvedValue(proposed);
+    const result = await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(result).toMatchObject({ action: { type: "say", text: proposed.text }, done: true });
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+  it("checks finish claims too and carries date steering into a remaining comparison action", async () => {
+    const request = searched("Actually return November 10. Keep nonstop both ways and depart after 9am. Show the two cheapest roundtrips; stop before booking.");
+    request.page = { ...request.page, url: "https://travel.example/results", title: "Flights",
+      text: "Option A: November 6–10, nonstop both ways, outbound 10am, $297. Another flight option.",
+      elements: [target("other", "Another flight option")] };
+    const json = vi.fn().mockResolvedValueOnce({ action: "finish", summary: "The updated flight comparison is complete.", done: true })
+      .mockResolvedValueOnce({ action: "click", target: "other", done: false });
+    const result = await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(result).toMatchObject({ action: { type: "click", target: "other" }, done: false });
+    expect(json.mock.calls[1][1]).toMatchObject({ message: request.message, page: request.page });
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+  it("does not mistake a summary followed by an authorized browser outcome for a read-only request", async () => {
+    const request = searched("Summarize these results and open the best matching job.");
+    const json = vi.fn().mockResolvedValueOnce({ action: "say", text: "The results list customer support jobs.", done: true })
+      .mockResolvedValueOnce({ action: "click", target: "job", done: false });
+    const result = await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(result).toMatchObject({ action: { type: "click", target: "job" }, done: false });
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+  it("preserves a real blocker and verified partial answer without another review loop", async () => {
+    const request = searched("Open the best matching job and compare it with one other qualifying listing.");
+    request.page.text = "Sign in to view the job description.";
+    const proposed = { action: "say", text: "The results loaded, but descriptions require sign-in. I cannot verify pay or experience yet; sign in to finish the comparison.", done: true };
+    const json = vi.fn().mockResolvedValue(proposed);
+    const result = await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(result.action).toEqual({ type: "say", text: proposed.text });
+    expect(json).toHaveBeenCalledTimes(2);
+  });
+  it("leaves standalone answers, explicit summaries, essential questions and tool-only chains alone", async () => {
+    const ordinary = input("", "What is a read timeout?");
+    const summary = searched("Summarize this page");
+    const conversation = searched("Explain the difference"); conversation.contextScope = "conversation";
+    const toolOnly = searched("What did you find?"); toolOnly.history = [{ action: { type: "tool", tool: "notes", operation: "find", args: { query: "support jobs" } },
+      result: { ok: true, changed: false, message: "Found two notes" }, at: 1 }];
+    const failed = searched("Finish applying the filters"); failed.history[0].result.ok = false;
+    for (const request of [ordinary, summary, conversation, toolOnly, failed]) {
+      const json = vi.fn().mockResolvedValue({ action: "say", text: "Source-backed answer.", done: true });
+      await decide(request, { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+      expect(json).toHaveBeenCalledOnce();
+    }
+    const json = vi.fn().mockResolvedValue({ action: "ask", question: "Which of these two verified options do you prefer?", done: true });
+    await decide(searched("Compare the results, then ask me to choose."), { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal);
+    expect(json).toHaveBeenCalledOnce();
+  });
+  it("rejects an invalid or stale review rather than publishing the unverified original reply", async () => {
+    const proposed = { action: "say", text: "All requested filters are applied.", done: true };
+    for (const [reviewed, code] of [
+      [{ action: "select", target: "date", value: 7 }, "invalid_provider_output"],
+      [{ action: "click", target: "old-date-filter", done: false }, "stale_target"],
+    ] as const) {
+      const json = vi.fn().mockResolvedValueOnce(proposed).mockResolvedValueOnce(reviewed);
+      await expect(decide(searched("Keep the date filter and open a matching job."), { json, provider: "openai" } as unknown as Providers, false, new AbortController().signal))
+        .rejects.toMatchObject({ code });
+      expect(json).toHaveBeenCalledTimes(2);
+    }
+  });
+  it("honors cancellation before reviewing or accepting a completed answer", async () => {
+    for (const abortCall of [1, 2]) {
+      const controller = new AbortController();
+      let calls = 0;
+      const json = vi.fn().mockImplementation(async () => {
+        if (++calls === abortCall) controller.abort();
+        return calls === 1 ? { action: "say", text: "The results are ready.", done: true }
+          : { action: "click", target: "job", done: false };
+      });
+      await expect(decide(searched("Keep the filters and open a matching job."), { json, provider: "openai" } as unknown as Providers, false, controller.signal)).rejects.toBeDefined();
+      expect(json).toHaveBeenCalledTimes(abortCall);
+    }
+  });
 });

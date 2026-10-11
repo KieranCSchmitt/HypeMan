@@ -149,7 +149,11 @@ export function boardObjectBounds(object: BoardObject): { x: number; y: number; 
   if (object.kind === "circle") return { x: object.x - object.radius, y: object.y - object.radius, width: object.radius * 2, height: object.radius * 2 };
   if (object.kind === "text" || object.kind === "equation") {
     const lines = object.text.split("\n");
-    return { x: object.x, y: object.y, width: Math.min(1100, Math.max(...lines.map((line) => line.length), 1) * object.fontSize * .62), height: lines.length * object.fontSize * 1.6 };
+    const characterWidth = object.fontSize * .62;
+    const wrapAt = Math.max(1, Math.floor(1100 / characterWidth));
+    const rows = object.kind === "equation" ? object.text.split(/\n|\\\\/).length : lines.reduce((count, line) => count + Math.max(1, Math.ceil(line.length / wrapAt)), 0);
+    const lineHeight = object.kind === "equation" && /\\(?:frac|dfrac|tfrac)\b/.test(object.text) ? 1.9 : 1.6;
+    return { x: object.x, y: object.y, width: Math.min(1100, Math.max(...lines.map((line) => line.length), 1) * characterWidth), height: rows * object.fontSize * lineHeight };
   }
   const points = object.kind === "stroke" ? object.points.map((point) => ({ x: point.x + object.x, y: point.y + object.y })) : [{ x: object.x, y: object.y }, { x: object.toX, y: object.toY }];
   const xs = points.map((point) => point.x), ys = points.map((point) => point.y);

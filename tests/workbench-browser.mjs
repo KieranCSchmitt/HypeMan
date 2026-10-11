@@ -1,3 +1,4 @@
+import { installBrowserFixtures } from "./fixtures/browser-pages.mjs";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,6 +14,11 @@ const gateway = createGateway(loadConfig({ PORT: "0", DEMO_MODE: "1" }), {
   token,
   agent: async (input) => {
     decisions.push(input);
+    if (/missing subtraction.*visually/i.test(input.message)) return {
+      action: { type: "sketch", title: "Find the missing subtraction", shapes: [{ type: "label", text: "9 - \\square = 7", x: 55, y: 0 }],
+        lines: ["Find the gap: count back from 9 to 7.", "Think backwards: 7 + 2 = 9.", "Check by subtracting that number from 9."] },
+      say: "Count the steps between 7 and 9.", done: true, provider: "demo",
+    };
     if (/fractions.*visually|visual.*fractions/i.test(input.message)) return {
       action: { type: "sketch", title: "Fractions use equal-sized parts", lines: ["\\frac{1}{2}+\\frac{1}{4}=\\frac{2}{4}+\\frac{1}{4}", "\\frac{2}{4}+\\frac{1}{4}=\\frac{3}{4}"], shapes: [
         { type: "circle", x: 140, y: 100, radius: 50 }, { type: "arrow", x: 220, y: 100, toX: 360, toY: 100 }, { type: "label", x: 380, y: 100, text: "Equal-sized pieces" },
@@ -90,6 +96,7 @@ try {
     channel: "chromium", headless: true, viewport: { width: 1540, height: 1100 }, acceptDownloads: true,
     args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, "--enable-unsafe-extension-debugging"],
   });
+  await installBrowserFixtures(context);
   const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
   const extensionId = new URL(worker.url()).host;
   home = await context.newPage(); await home.goto(`chrome-extension://${extensionId}/newtab.html`);
@@ -146,12 +153,14 @@ try {
   check("Tools float, drag, resize, and support keyboard movement without shifting or resizing chat");
   assert.ok(await home.locator(".shared-board button").count() > 0, "Board tools stay available directly");
   const surface = home.locator(".board-viewport"), bounds = await surface.boundingBox();
+  await home.getByRole("button", { name: "Draw", exact: true }).click();
   await home.mouse.move(bounds.x + Math.min(450, bounds.width * .7), bounds.y + 370); await home.mouse.down();
   await home.mouse.move(bounds.x + Math.min(520, bounds.width * .8), bounds.y + 420, { steps: 12 }); await home.mouse.up();
   const inked = await waitFor(async () => { const value = await boardDocument(id); return value?.objects.some((object) => object.kind === "stroke" && object.source === "user") ? value : null; }, "user ink saved in assistant board");
   await send("undo"); await waitFor(async () => (await boardDocument(id)).objects.length === initial.objects.length, "chat undo removes user stroke");
   await send("redo"); await waitFor(async () => (await boardDocument(id)).objects.length === inked.objects.length, "chat redo restores user stroke");
   check("Assistant diagrams, equations, and direct user ink share durable transactional undo and redo");
+  await home.getByRole("button", { name: "Select and move", exact: true }).click();
 
   const firstEquation = initial.objects.find((object) => object.kind === "equation");
   const equationObject = home.locator(`[data-board-id="${firstEquation.id}"]`);
@@ -295,11 +304,22 @@ try {
   check("Every tool shares the theme and independent windows stay in bounds on a smaller viewport");
 
   const article = await context.newPage();
-  assert.equal((await article.goto(`${base}/demo/learning/`)).status(), 200);
+  assert.equal((await article.goto(`${base}/__test/learning/`)).status(), 200);
   await article.bringToFront();
   await article.getByRole("button", { name: /^Open .*\. Drag to move\.$/ }).click();
-  await send("Explain adding fractions visually", article);
+  await send("Explain missing subtraction visually", article);
   await article.locator(".shared-board .katex").first().waitFor();
+  await waitFor(() => article.evaluate(() => [...document.fonts].some(font => font.family === "KaTeX_Main" && font.weight === "400" && font.style === "normal" && font.status === "loaded")), "math fonts registered in the webpage document");
+  assert.equal(await article.locator(".shared-board .katex-mathml").count(), 0, "Math uses one visual rendering");
+  assert.equal(await article.locator(".shared-board .board-text").filter({ hasText: "Think backwards" }).locator(".katex").count(), 0, "Sentences containing equations remain prose");
+  const labels = await article.locator(".shared-board .board-text").evaluateAll(elements => elements.map(element => {
+    const { x, y, width, height } = element.getBoundingClientRect(); return { x, y, width, height, text: element.textContent };
+  }));
+  for (let i = 0; i < labels.length; i++) for (let j = i + 1; j < labels.length; j++) {
+    const a = labels[i], b = labels[j];
+    assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y, `Board text must not overlap: ${a.text} / ${b.text}`);
+  }
+  check("The screenshot's subtraction board renders with math fonts, readable prose, and separated labels inside the webpage overlay");
   assert.ok(await article.locator(".shared-board button").count() > 0);
   assert.equal(await article.locator(".conversation-composer textarea:visible").count(), 1);
   const articleBoard = article.locator(".workspace-board");

@@ -60,7 +60,7 @@ export function validateRoute(path: string, value: unknown) {
       break;
     case "/api/video":
       requireInput(
-        isWebUrl(input.url) &&
+        (isWebUrl(input.url) || input.url === "") &&
           maybe(input.title, (v) => isText(v, 3000)) &&
           maybe(input.question, (v) => isText(v, 3000)) &&
           maybe(

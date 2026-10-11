@@ -6,10 +6,11 @@ import type { WindowGeometrySnapshot } from "@core";
 import { useWindowGeometry, WindowControls, WindowResizeHandles } from "./useWindowGeometry";
 import type { WindowGeometryPersistence } from "./WindowGeometryPersistence";
 
-let root: Root, container: HTMLDivElement;
+let root: Root, container: HTMLDivElement, currentGeometry: ReturnType<typeof useWindowGeometry>;
 function TestWindow({ preferredHeight, chat = false, open = true, persistence }: { preferredHeight?: number; chat?: boolean; open?: boolean; persistence?: WindowGeometryPersistence }) {
   const geometry = useWindowGeometry({ id: chat ? "chat" : "notes", open, persistence, minSize: chat ? { width: 300, height: 120 } : { width: 320, height: 220 }, preferredHeight,
     initialRect: () => ({ x: 500, y: 200, width: 500, height: 500 }) });
+  currentGeometry = geometry;
   return createElement("section", { ref: geometry.hostRef, style: geometry.style, hidden: !open || !geometry.hydrated, ...geometry.shellProps },
     createElement("header", { tabIndex: 0, ...geometry.titleProps }, "Window", createElement(WindowControls, { geometry, title: "Test" })),
     createElement("main", { hidden: geometry.minimized }, "Window contents"), createElement(WindowResizeHandles, { geometry, title: "Test" }));
@@ -80,6 +81,37 @@ describe("shared floating window interaction", () => {
     await render({ chat: true, preferredHeight: 420 });
     expect(rect()).toEqual({ x: 500, y: 300, width: 500, height: 390 });
   });
+  it("temporarily makes room for a review and restores the compact rectangle", async () => {
+    await render({ chat: true, preferredHeight: 120 });
+    const compact = rect(); let restore!: () => void;
+    await act(async () => { restore = currentGeometry.ensureMinHeight(320); });
+    expect(rect()).toEqual({ ...compact, y: compact.y - 200, height: 320 });
+    await act(async () => restore());
+    expect(rect()).toEqual(compact);
+  });
+  it("keeps user movement made during a temporary review expansion", async () => {
+    await render({ chat: true, preferredHeight: 120 }); let restore!: () => void;
+    await act(async () => { restore = currentGeometry.ensureMinHeight(320); });
+    await act(async () => container.querySelector("header")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })));
+    const moved = rect(); await act(async () => restore());
+    expect(rect()).toEqual(moved);
+  });
+  it("respects a user move even if they move back to the expanded rectangle", async () => {
+    await render({ chat: true, preferredHeight: 120 }); let restore!: () => void;
+    await act(async () => { restore = currentGeometry.ensureMinHeight(320); });
+    for (const key of ["ArrowLeft", "ArrowRight"]) await act(async () => container.querySelector("header")!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })));
+    const chosen = rect(); await act(async () => restore());
+    expect(rect()).toEqual(chosen); expect(rect().height).toBe(320);
+  });
+  it("restores compact geometry while minimized without expanding its title bar", async () => {
+    await render({ chat: true, preferredHeight: 120 }); const compact = rect(); let restore!: () => void;
+    await act(async () => { restore = currentGeometry.ensureMinHeight(320); });
+    await act(async () => container.querySelector<HTMLButtonElement>(".pixel-window-minimize")!.click());
+    await act(async () => restore());
+    expect(rect().height).toBe(46);
+    await act(async () => container.querySelector<HTMLButtonElement>(".pixel-window-minimize")!.click());
+    expect(rect()).toEqual(compact);
+  });
   it("keeps a restored window onscreen after its minimized title bar was moved near the bottom", async () => {
     await render();
     await act(async () => container.querySelector<HTMLButtonElement>(".pixel-window-minimize")!.click());
@@ -103,6 +135,24 @@ describe("shared floating window interaction", () => {
 
 describe("session window geometry", () => {
   beforeEach(() => vi.useFakeTimers());
+  it("does not persist a temporary review expansion over the saved compact size", async () => {
+    const stored = snapshot({ rect: { x: 150, y: 120, width: 340, height: 120 }, userResized: true });
+    const persistence = persistenceFor({ chat: stored });
+    await render({ chat: true, persistence }); let restore!: () => void;
+    await act(async () => { restore = currentGeometry.ensureMinHeight(320); });
+    expect(rect().height).toBe(320); await idle();
+    expect(persistence.onGeometryChange).not.toHaveBeenCalled();
+    await act(async () => restore()); await idle();
+    expect(rect()).toEqual(stored.rect); expect(persistence.onGeometryChange).not.toHaveBeenCalled();
+  });
+  it("does not restore an old review rectangle into a different conversation", async () => {
+    const compact = snapshot({ rect: { x: 150, y: 120, width: 340, height: 120 }, userResized: true });
+    await render({ chat: true, persistence: persistenceFor({ chat: compact }, "old-chat") }); let restore!: () => void;
+    await act(async () => { restore = currentGeometry.ensureMinHeight(320); });
+    const incoming = snapshot({ rect: rect(), userResized: true });
+    await render({ chat: true, persistence: persistenceFor({ chat: incoming }, "new-chat") });
+    await act(async () => restore()); expect(rect()).toEqual(incoming.rect);
+  });
   it("waits for stored geometry without saving a default rectangle over it", async () => {
     const stored = snapshot({ userResized: true }), persistence = persistenceFor({ notes: stored });
     await render({ persistence: { ...persistence, ready: false } });

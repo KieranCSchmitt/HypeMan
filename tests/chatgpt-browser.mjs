@@ -1,3 +1,4 @@
+import { installBrowserFixtures } from "./fixtures/browser-pages.mjs";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -47,10 +48,10 @@ const fetcher = async (input, init) => {
     const request = JSON.parse(String(init.body));
     assert.equal(request.model, "model-two");
     const agentInput = JSON.parse(request.input[0].content[0].text);
-    const explainingPage = agentInput.message === "Explain this";
+    const explainingPage = agentInput.message === "Explain this page";
     if (explainingPage) {
       pageExplanations++;
-      assert.ok(agentInput.page.url.endsWith("/demo/learning/"));
+      assert.ok(agentInput.page.url.endsWith("/__test/learning/"));
       assert.ok(agentInput.page.text.includes("equation"));
     }
     const event = {
@@ -175,6 +176,7 @@ try {
       "--enable-unsafe-extension-debugging",
     ],
   });
+  await installBrowserFixtures(context);
   const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent("serviceworker"));
   // Replace only the external authorization page with a test-controlled local callback.
   await worker.evaluate((fixtureOrigin) => {
@@ -292,9 +294,9 @@ try {
   assert.equal(reply.text, "Mock ChatGPT plan response.");
   assert.equal(reply.provider, "openai");
   const article = await context.newPage();
-  await article.goto(`${url}/demo/learning/`);
+  await article.goto(`${url}/__test/learning/`);
   await article.getByRole("button", { name: /Open HypeMan\. Drag/ }).click();
-  await article.getByLabel("What do you need?", { exact: true }).fill("Explain this");
+  await article.getByLabel("What do you need?", { exact: true }).fill("Explain this page");
   await article.getByRole("button", { name: "Send message", exact: true }).click();
   const explanation = article
     .locator(".chat-message.assistant")
@@ -302,7 +304,8 @@ try {
       exact: true,
     });
   const malformed = article.getByText("ChatGPT returned malformed JSON.", { exact: true });
-  await Promise.race([explanation.waitFor(), malformed.waitFor({ state: "attached" })]);
+  await Promise.race([explanation.waitFor(), malformed.waitFor({ state: "attached" }), article.locator(".conversation-pane .notice.error:visible").waitFor()]);
+  assert.equal(await article.locator(".conversation-pane .notice.error:visible").count(), 0);
   assert.equal(await malformed.count(), 0);
   await explanation.waitFor();
   assert.equal(pageExplanations, 1);
@@ -327,6 +330,8 @@ try {
 } catch (error) {
   console.log("Safe auth state", JSON.stringify(auth.status()));
   if (page) console.log("UI", await page.locator("body").innerText());
+  for (const current of context?.pages() || []) if (current.url().includes("/__test/"))
+    console.log("Page conversation", await current.locator(".conversation-pane").innerText());
   throw error;
 } finally {
   await context?.close();

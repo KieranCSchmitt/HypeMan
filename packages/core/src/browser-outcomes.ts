@@ -12,7 +12,19 @@ const outcomes = [
   { kind: "submission", goal: /\b(submit|apply|application)\b/i, success: /\b(submitted|submission (?:received|confirmed)|application (?:received|submitted))\b/i },
 ];
 
+const commit = "(?:place (?:an? |the )?order|create account|save changes|accept terms|cancel (?:the |my |this )?(?:booking|reservation|subscription)|submit|send|invite|buy|purchase|pay|checkout|publish|post|share|register|enroll|book|reserve|delete|remove|discard|subscribe|unsubscribe|sign up|apply)";
+const quotedPhrase = '"[^"\\n]*"|“[^”\\n]*”';
+const clauseBoundary = "[.;!?\\n,]|\\b(?:but|then|instead|however)\\b";
+const negatedCommitment = new RegExp(`${quotedPhrase}|(?:\\b(?:but|and|then)\\s+)?\\b(?:do not|don['’]?t|never|without|stop before)\\s+${commit}\\b(?:(?:${quotedPhrase})|(?!${clauseBoundary})[^"“])*`, "gi");
+function requestedGoal(text: string): string {
+  // Remove the prohibited object as well as its verb, including quoted objects.
+  // Punctuation and explicit transitions preserve a later positive commitment.
+  // A quoted phrase outside a prohibition stays intact.
+  return text.replace(negatedCommitment, (clause) => /^["“]/.test(clause) ? clause : "");
+}
+
 export function completionKind(text: string): string | undefined {
+  text = requestedGoal(text);
   if (/^(?:remove|clear|reset)(?: all)? (?:the )?(?:filters?|sort|selection|search|highlights?)[.!]?$/i.test(text.trim())) return;
   // Preparing a draft is a separate outcome from committing it.
   if (/\b(?:prepare|draft|fill|review|compare|research)\b/i.test(text) &&
@@ -32,6 +44,7 @@ function cleanSubject(value: string | undefined): string | undefined {
 
 /** Bind identifiable objects/recipients; deictic requests keep the held page/control context. */
 export function completionSubject(goal: string): string | undefined {
+  goal = requestedGoal(goal);
   const quoted = goal.match(/["“]([^"”]{2,200})["”]/)?.[1];
   if (quoted) return cleanSubject(quoted);
   const patterns = [
@@ -53,6 +66,7 @@ const sameSubject = (expected: string, actual: string) => {
   return words.length > 0 && words.every((word) => other.has(word));
 };
 function noticeSubject(evidence: string): string | undefined {
+  evidence = evidence.replace(/\s+/g, " ").trim();
   const succeeded = "(?:confirmed|completed|successful|received|placed|registered|enrolled|booked|reserved|scheduled|sent|delivered|deleted|removed|discarded|cancelled|canceled|published|posted|shared|subscribed|unsubscribed|saved|updated|submitted)";
   const patterns = [
     new RegExp(`\\b${succeeded}\\s+(?:for|to|in|at|of)\\s+(.+)`, "i"),
@@ -67,6 +81,14 @@ function noticeSubject(evidence: string): string | undefined {
 }
 function safeDestination(value: string | undefined): string | undefined {
   try { if (value && /^https?:$/.test(new URL(value).protocol)) return value; } catch { /* No usable destination. */ }
+}
+function sourceNotice(text: string, notice: string): string | undefined {
+  const words = notice.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return;
+  // Semantic notices compact text nodes with spaces; page text separates them
+  // with newlines. Return the exact source span so later proof checks stay strict.
+  const pattern = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
+  return text.match(new RegExp(pattern))?.[0];
 }
 
 export function pendingCompletion(goal: string, control: string, page: PageSnapshot, destination?: string): ActionResult["pendingCompletion"] {
@@ -90,9 +112,13 @@ export function freshCompletion(pending: ActionResult["pendingCompletion"], page
     catch { return; }
   }
   const outcome = outcomes.find((item) => item.kind === pending.kind);
-  const evidence = page.successes.find((notice) => !pending.previous.includes(notice) &&
-    notice.length >= 8 && notice.length <= 600 && page.text.includes(notice) && outcome?.success.test(notice) &&
-    (!pending.subject || !noticeSubject(notice) || sameSubject(pending.subject, noticeSubject(notice)!)));
+  let evidence: string | undefined;
+  for (const notice of page.successes) {
+    if (pending.previous.includes(notice) || notice.length < 8 || notice.length > 600 || !outcome?.success.test(notice) ||
+      (pending.subject && noticeSubject(notice) && !sameSubject(pending.subject, noticeSubject(notice)!))) continue;
+    const source = sourceNotice(page.text, notice);
+    if (source && source.length <= 600) { evidence = source; break; }
+  }
   return evidence ? { kind: pending.kind, evidence, url: page.url,
     ...(pending.subject ? { subject: pending.subject } : {}), ...(pending.fromUrl ? { fromUrl: pending.fromUrl } : {}),
     ...(pending.control ? { control: pending.control } : {}), ...(pending.destination ? { destination: pending.destination } : {}) } : undefined;

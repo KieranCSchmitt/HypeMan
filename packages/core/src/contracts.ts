@@ -89,6 +89,8 @@ export interface ActionResult {
   error?: string;
   url?: string;
   navigation?: boolean;
+  /** A dispatched document/tab navigation must yield, even when its URL is unchanged. */
+  navigationPending?: boolean;
   completion?: CompletionBinding & { kind: string; evidence: string; url: string };
   pendingCompletion?: CompletionBinding & { kind: string; previous: string[] };
 }
@@ -178,6 +180,8 @@ export interface ChatGPTStatus {
 }
 export interface SessionHandoff {
   conversationId?: string;
+  /** Identity of active browser work; late continuations cannot revive a stopped run. */
+  runId?: string;
   fromUrl?: string;
   action?: Action;
   taskId?: string | null;
@@ -187,6 +191,15 @@ export interface SessionHandoff {
   at?: number;
   checkpoint?: boolean;
   message?: string;
+}
+export interface ConversationActivity {
+  runId: string;
+  tabId: number;
+  phase: "thinking" | "acting" | "confirming";
+  status: string;
+  /** Public source label only; excludes query strings and fragments. */
+  site: string;
+  title: string;
 }
 export interface RuntimeEvent {
   type: string;

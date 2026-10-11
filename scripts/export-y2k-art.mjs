@@ -33,21 +33,6 @@ try {
       writeFile(resolve(out, file), Buffer.from(data, "base64")),
     ),
   );
-  const demo = resolve(root, "apps/gateway/public/demo/assets/y2k");
-  await mkdir(demo, { recursive: true });
-  await Promise.all(
-    [
-      "scene-night.png",
-      "scene-dusk.png",
-      "prop-crt.png",
-      "prop-boombox.png",
-      "prop-graffiti.png",
-      "hypeman-idle.png",
-      "hypeman-celebrate.png",
-      "prop-bolt.png",
-      "prop-sparkle.png",
-    ].map((file) => writeFile(resolve(demo, file), Buffer.from(art.files[file], "base64"))),
-  );
   const icons = resolve(root, "apps/extension/public/assets/icons");
   await mkdir(icons, { recursive: true });
   await Promise.all(

@@ -1,27 +1,63 @@
 name: Verify HypeMan
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      CI: "true"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: npm run check
-      - run: npx playwright install --with-deps chromium
-      - run: npm run e2e:ui
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check documentation links and public assets
+        run: npm run check:docs
+      - name: Typecheck, test, and build
+        run: npm run check
+      - name: Install isolated Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Main extension browser checks
+        run: npm run e2e
+      - name: Conversation workbench browser checks
+        run: npm run e2e:workbench
+      - name: Rooftop and specialist UI browser checks
+        run: npm run e2e:ui
+      - name: Focused browser regressions
+        run: |
+          node tests/confirmation-browser.mjs
+          node tests/message-content-browser.mjs
+          node tests/navigation-continuation-browser.mjs
+          node tests/conversation-activity-browser.mjs
+      - run: npm run e2e:pdf
+      - run: npm run e2e:auth
       - run: npm run e2e:hints
       - run: npm run e2e:projects
       - run: npm run e2e:execution
       - run: npm run e2e:messaging
       - run: npm run e2e:reminders
-      - run: npm run e2e
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Preserve browser screenshots
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
         with:
           name: browser-screenshots
           path: tests/screenshots/
+          if-no-files-found: ignore
+          retention-days: 7

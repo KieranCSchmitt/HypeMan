@@ -11,7 +11,9 @@ import {
   type AgentRequest,
   type ConversationUIState,
   type WindowGeometrySnapshot,
+  type ConversationActivity,
 } from "@core";
+import { CONVERSATION_ACTIVITY_KEY, ConversationActivityCoordinator } from "../apps/extension/src/background/conversation-activity";
 
 interface Reply {
   ok: boolean;
@@ -174,6 +176,7 @@ beforeEach(async () => {
       goBack: vi.fn(async () => {}),
       captureVisibleTab: vi.fn(async () => "data:image/jpeg;base64,YQ=="),
       onActivated: event(),
+      onCreated: event(),
       onRemoved: event(),
       onUpdated: event(),
       remove: vi.fn(async (id: number) => {
@@ -196,6 +199,226 @@ beforeEach(async () => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("conversation activity coordinator", () => {
+  const owner = (tabId: number, documentId = `document-${tabId}`) => ({ tabId, documentId, site: "example.com", title: `Page ${tabId}` });
+  function host() {
+    let saved: unknown;
+    const changed = vi.fn(async () => {}), stopped = vi.fn(async () => {});
+    const create = () => new ConversationActivityCoordinator({ load: async () => structuredClone(saved),
+      save: async (value) => { saved = structuredClone(value); }, changed, stopped });
+    return { create, changed, stopped, saved: () => saved as { stopped: unknown[] } };
+  }
+  it("persists ownership and stopped tokens across worker restart, with a bounded token history", async () => {
+    const storage = host(), first = storage.create();
+    await first.start("chat", "run", owner(1));
+    expect(await storage.create().get("chat")).toMatchObject({ runId: "run", tabId: 1 });
+    await first.cancel("chat");
+    const restarted = storage.create();
+    expect(await restarted.start("chat", "run", owner(1), true)).toBeNull();
+    expect(await restarted.start("chat", "run", owner(1))).toBeNull();
+    for (let index = 0; index < 260; index++) {
+      await restarted.start("chat", `run-${index}`, owner(1));
+      await restarted.end("chat", `run-${index}`, owner(1));
+    }
+    expect(storage.saved().stopped).toHaveLength(256);
+    expect(await restarted.start("chat", "run", owner(1), true)).toBeNull();
+  });
+  it("supersedes the old run and ignores old owner updates and completion", async () => {
+    const storage = host(), coordinator = storage.create();
+    await coordinator.start("chat", "old", owner(1));
+    await coordinator.start("chat", "new", owner(2));
+    expect(storage.stopped).toHaveBeenCalledExactlyOnceWith("chat", expect.objectContaining({ runId: "old", tabId: 1 }), true);
+    expect(await coordinator.update("chat", "old", owner(1), "acting", "Late edit")).toBeNull();
+    await coordinator.end("chat", "old", owner(1));
+    expect(await coordinator.get("chat")).toMatchObject({ runId: "new", tabId: 2 });
+    expect(await coordinator.start("chat", "new", owner(1), true)).toBeNull();
+    await expect(coordinator.assertOwner("chat", "old", owner(1))).rejects.toThrow(/stopped|moved/);
+  });
+  it("protects prepared native navigation and the destination from the source end", async () => {
+    const coordinator = host().create();
+    await coordinator.start("chat", "run", owner(1, "source"));
+    await coordinator.prepare("chat", "run", owner(1, "source"));
+    await coordinator.end("chat", "run", owner(1, "source"));
+    expect(await coordinator.get("chat")).not.toBeNull();
+    await coordinator.start("chat", "run", owner(1, "destination"), true);
+    await coordinator.end("chat", "run", owner(1, "source"));
+    await expect(coordinator.release("chat", "run", owner(1, "source"))).rejects.toThrow(/stopped|moved/);
+    expect(await coordinator.get("chat")).toMatchObject({ runId: "run", tabId: 1 });
+    await coordinator.end("chat", "run", owner(1, "destination"));
+    expect(await coordinator.get("chat")).toBeNull();
+  });
+  it("releases a prevented native navigation and ends only that document's run", async () => {
+    const coordinator = host().create();
+    await coordinator.start("chat", "run", owner(1));
+    await coordinator.prepare("chat", "run", owner(1));
+    await coordinator.release("chat", "run", owner(1));
+    await coordinator.assertOwner("chat", "run", owner(1));
+    expect(await coordinator.start("chat", "run", owner(1, "unrelated-document"), true)).toBeNull();
+    await coordinator.end("chat", "run", owner(1));
+    expect(await coordinator.get("chat")).toBeNull();
+  });
+});
+
+describe("conversation activity background integration", () => {
+  const conversationId = "research-chat", runId = "research-run";
+  let savedMessages: Array<{ id: string; role: string; text: string; at: number }>;
+  beforeEach(async () => {
+    savedMessages = [];
+    const workbench = await import("../apps/extension/src/background/workbench");
+    vi.spyOn(workbench, "workbenchMessage").mockImplementation(async (message) => {
+      if (message.type === "conversation.open" || message.type === "conversation.append") {
+        if (message.type === "conversation.append") savedMessages.push({ ...(message.message as typeof savedMessages[number]), at: Date.now() });
+        return { id: conversationId, title: "Research", messages: savedMessages, updatedAt: Date.now() };
+      }
+      return null;
+    });
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+  const start = (from = sender(1), token = runId) => ok<ConversationActivity>({ type: "conversation.activity.start", conversationId, runId: token }, from);
+  const activity = () => ok<ConversationActivity | null>({ type: "conversation.activity.get", conversationId }, extensionSender());
+  const continuation = (): SessionHandoff => ({ conversationId, runId, goal: "Compare the workshop sources", message: "Keep the budget under $50", history: [], step: 1, at: Date.now() });
+  const update = () => vi.mocked(chrome.tabs.onUpdated.addListener).mock.calls[0]![0];
+  it("shares only the active owner's site/title, and opens only its matching run", async () => {
+    const row = await start(sender(2));
+    expect(row).toEqual({ runId, tabId: 2, phase: "thinking", status: "Thinking…", site: "destination.example", title: "Page 2" });
+    expect(JSON.stringify(vi.mocked(chrome.runtime.sendMessage).mock.calls)).not.toContain("private=query");
+    expect(await activity()).toEqual(row);
+    expect(await rpc({ type: "conversation.activity.start", conversationId, runId }, extensionSender())).toMatchObject({ ok: false });
+    expect(await rpc({ type: "conversation.activity.open", conversationId, runId: "stale" }, extensionSender())).toMatchObject({ ok: false });
+    await ok({ type: "conversation.activity.open", conversationId, runId }, extensionSender());
+    expect(chrome.tabs.update).toHaveBeenCalledExactlyOnceWith(2, { active: true });
+  });
+  it("transfers before existing-tab activation, ignoring a late source end", async () => {
+    local[SETTINGS_KEY] = { ...DEFAULT_SETTINGS, serverToken: "test", tabContextEnabled: true };
+    await start();
+    beforeTabUpdate = (id, properties) => {
+      if (properties.active) expect(session[CONVERSATION_ACTIVITY_KEY]).toMatchObject({ entries: [{ activity: { runId, tabId: id } }] });
+    };
+    await ok({ type: "nav.switch", tabId: 2, handoff: continuation() });
+    await ok({ type: "conversation.activity.end", conversationId, runId });
+    expect(await activity()).toMatchObject({ runId, tabId: 2 });
+    expect(await ok({ type: "conversation.activity.update", conversationId, runId, phase: "acting", status: "Late source update" })).toBeNull();
+    expect(await ok({ type: "conversation.activity.start", conversationId, runId, continuation: true }, sender(2))).toMatchObject({ runId, tabId: 2 });
+    await ok({ type: "conversation.activity.end", conversationId, runId }, sender(2));
+    expect(await activity()).toBeNull();
+  });
+  it("holds same-tab native handoff through source end and rejects the old document after arrival", async () => {
+    const source = { ...sender(1), documentId: "source-document" }, destination = { ...sender(1), documentId: "destination-document" };
+    await start(source);
+    await ok({ type: "session.set", handoff: continuation() }, source);
+    await ok({ type: "conversation.activity.end", conversationId, runId }, source);
+    expect(await activity()).toMatchObject({ runId, tabId: 1 });
+    await ok({ type: "conversation.activity.start", conversationId, runId, continuation: true }, destination);
+    await ok({ type: "session.set", handoff: null }, destination);
+    await ok({ type: "conversation.activity.end", conversationId, runId }, source);
+    expect(await activity()).toMatchObject({ runId, tabId: 1 });
+    await ok({ type: "conversation.activity.end", conversationId, runId }, destination);
+    expect(await activity()).toBeNull();
+  });
+  it("cancels a remote run once, clears handoffs, pauses its project, and rejects token resurrection", async () => {
+    const task = await ok<BrowserTask>({ type: "task.start", goal: "Research workshop", steps: ["Read sources", "Compare costs"], conversationId, dispatch: false });
+    await start();
+    await ok({ type: "session.set", handoff: { ...continuation(), taskId: task.id }, nativeNavigation: { url: tabs.get(2)!.url, at: Date.now(), target: "new-tab" } });
+    expect(await ok({ type: "conversation.cancel-pending", conversationId }, extensionSender())).toMatchObject({ stopped: true, runId });
+    expect(await activity()).toBeNull();
+    expect(session["hypeman.tab.1"]).toMatchObject({ handoff: null, nativeNavigation: null });
+    expect(savedMessages.map((item) => item.text)).toEqual(["Stopped. Completed work is saved."]);
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(1, { type: "hypeman.assistant.stopped", conversationId, runId, markerAlreadyWritten: true });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: "hypeman.conversation.changed", conversationId });
+    expect((await snapshot()).tasks.find((item) => item.id === task.id)?.status).toBe("paused");
+    expect(await ok({ type: "conversation.cancel-pending", conversationId }, extensionSender())).toMatchObject({ stopped: false });
+    expect(savedMessages).toHaveLength(1);
+    expect(await ok({ type: "conversation.activity.start", conversationId, runId, continuation: true })).toBeNull();
+    expect(await rpc({ type: "session.set", handoff: continuation() })).toMatchObject({ ok: false });
+    expect(await rpc({ type: "nav.navigate", url: "https://destination.example/late", newTab: true, handoff: continuation() })).toMatchObject({ ok: false });
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+  });
+  it("does not duplicate an explicit local Stop marker", async () => {
+    await start();
+    await ok({ type: "conversation.cancel-pending", conversationId, markerAlreadyWritten: true });
+    expect(savedMessages).toEqual([]);
+  });
+  it("rejects a model reply after its active run ended, even when transport succeeded", async () => {
+    await start();
+    const response = new Response("{}", { headers: { "content-type": "application/json" } });
+    vi.spyOn(response, "json").mockImplementation(async () => {
+      await ok({ type: "conversation.activity.end", conversationId, runId });
+      return { action: { type: "type", target: "field", text: "Late result" }, done: false };
+    });
+    vi.mocked(fetch).mockResolvedValue(response);
+    const result = await rpc({ type: "agent.decide", runId, input: { requestId: "model", conversationId, goal: "Compare sources", message: "Compare sources", mode: "browse", task: null, history: [],
+      page: { url: tabs.get(1)!.url, title: "Sources", headings: [], text: "Two workshop sources", elements: [], errors: [], successes: [], selection: "", frames: { count: 0, inaccessible: 0 }, capturedAt: Date.now(), revision: 1 } } });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/stopped|moved/) });
+  });
+  it("generation-checks a standalone conversation reply cancelled while the gateway is pending", async () => {
+    let release!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementation(() => new Promise<Response>((resolve) => { release = resolve; }));
+    const request = rpc({ type: "assistant.turn", conversationId, message: "Explain closures" });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await ok({ type: "conversation.cancel-pending", conversationId });
+    release(new Response(JSON.stringify({ action: { type: "say", text: "Late reply" }, done: true }), { headers: { "content-type": "application/json" } }));
+    expect(await request).toMatchObject({ ok: false, error: "Cancelled" });
+    expect(savedMessages).toHaveLength(0);
+  });
+  it("does not revive a request cancelled while a new tab is being created", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const create = vi.mocked(chrome.tabs.create).getMockImplementation() as (properties: chrome.tabs.CreateProperties) => Promise<chrome.tabs.Tab>;
+    vi.mocked(chrome.tabs.create).mockImplementation(async (properties) => { await hold; return create(properties); });
+    const dispatch = rpc({ type: "assistant.run", conversationId, goal: "Research this source", url: "https://new.example/source" }, extensionSender());
+    await vi.waitFor(() => expect(chrome.tabs.create).toHaveBeenCalledOnce());
+    await ok({ type: "conversation.cancel-pending", conversationId }, extensionSender());
+    release();
+    expect(await dispatch).toMatchObject({ ok: false, error: "Cancelled" });
+    expect(chrome.tabs.remove).toHaveBeenCalledWith(100);
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(await activity()).toBeNull();
+  });
+  it("ignores initial about:blank loading while a managed tab's handoff is being prepared", async () => {
+    let reported = false;
+    beforeSessionSave = async (patch) => {
+      const state = patch[CONVERSATION_ACTIVITY_KEY] as { entries?: Array<{ activity: ConversationActivity }> } | undefined;
+      if (!reported && state?.entries?.some((entry) => entry.activity.tabId === 100)) {
+        reported = true;
+        update()(100, { status: "loading" }, tabs.get(100)!);
+      }
+    };
+    expect(await ok({ type: "assistant.run", conversationId, goal: "Read the source", url: "https://new.example/source" }, extensionSender())).toEqual({ tabId: 100 });
+    expect(await activity()).toMatchObject({ tabId: 100, site: "new.example" });
+    expect(session["hypeman.tab.100"]).toMatchObject({ handoff: { conversationId, runId: expect.any(String) } });
+    expect(chrome.tabs.update).toHaveBeenCalledWith(100, { url: "https://new.example/source" });
+  });
+  it("cleans a handoff write that finishes after Stop without navigating the new tab", async () => {
+    await start();
+    let release!: () => void, arrived!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; }), saving = new Promise<void>((resolve) => { arrived = resolve; });
+    beforeSessionSave = async (patch) => { if ("hypeman.tab.100" in patch) { arrived(); await hold; } };
+    const navigation = rpc({ type: "nav.navigate", url: "https://new.example/source", newTab: true, handoff: continuation() });
+    await saving;
+    await ok({ type: "conversation.cancel-pending", conversationId }, extensionSender());
+    release();
+    expect(await navigation).toMatchObject({ ok: false });
+    expect(session["hypeman.tab.100"]).toMatchObject({ handoff: null, nativeNavigation: null });
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+  it("clears stale activity on manual document navigation, but keeps an explicit matching handoff", async () => {
+    await start();
+    update()(1, { status: "loading" }, tabs.get(1)!);
+    await vi.waitFor(async () => expect(await activity()).toBeNull());
+    await start(sender(1), "second-run");
+    await ok({ type: "session.set", handoff: { ...continuation(), runId: "second-run" } });
+    update()(1, { status: "loading" }, tabs.get(1)!);
+    await vi.waitFor(async () => expect(await activity()).toMatchObject({ runId: "second-run" }));
+    await ok({ type: "conversation.activity.end", conversationId, runId: "second-run" });
+    expect(await activity()).toMatchObject({ runId: "second-run" });
+  });
+  it("broadcasts shared chat changes after saving a reply", async () => {
+    await ok({ type: "conversation.append", conversationId, message: { id: "reply", role: "assistant", text: "Sources compared" } }, sender(2));
+    expect(savedMessages.map((item) => item.text)).toEqual(["Sources compared"]);
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: "hypeman.conversation.changed", conversationId });
+  });
 });
 
 describe("background ownership and handoff integration", () => {
@@ -307,6 +530,150 @@ describe("background ownership and handoff integration", () => {
     });
     await ok(evidence, sender(2));
     expect((await snapshot()).events).toMatchObject([{ id: "next-tab-evidence", taskId: task.id }]);
+  });
+  it("continues ordinary assistant work in an existing tab with the original goal and latest steering", async () => {
+    await ok({ type: "settings.patch", patch: { tabContextEnabled: true } }, extensionSender());
+    const conversation = [{ role: "user", text: "Compare two lamps under $35." }];
+    const continuation: SessionHandoff = {
+      goal: "Compare two lamps under $35 and open the better option",
+      message: "Keep the budget, but compare adjustable arms now.",
+      conversationId: "lamp-comparison", fromUrl: tabs.get(1)!.url, step: 4, at: Date.now(),
+      history: [{ action: { type: "navigate", url: tabs.get(2)!.url! },
+        result: { ok: true, changed: true, message: "First product observed" }, at: Date.now() }],
+    };
+    await ok({ type: "session.set", conversation });
+    beforeTabUpdate = (id) => {
+      expect(id).toBe(2);
+      expect(session["hypeman.tab.2"]).toMatchObject({ handoff: continuation, conversation, conversationId: "lamp-comparison" });
+    };
+    await ok({ type: "nav.switch", tabId: 2, handoff: continuation });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(2, {
+      type: "hypeman.assistant.run", goal: continuation.goal, handoff: continuation,
+    });
+    expect(vi.mocked(chrome.tabs.sendMessage).mock.calls.some(([, event]) =>
+      !!event && typeof event === "object" && "type" in event && event.type === "hypeman.task.run",
+    )).toBe(false);
+    expect((await snapshot()).tasks).toEqual([]);
+    expect(chrome.windows.update).toHaveBeenCalledWith(1, { focused: true });
+  });
+  it("persists an ordinary cross-tab continuation before reinjecting a missing content script", async () => {
+    await ok({ type: "settings.patch", patch: { tabContextEnabled: true } }, extensionSender());
+    const continuation: SessionHandoff = {
+      goal: "Compare both options", message: "Keep the seven-day window", step: 2, history: [], at: Date.now(),
+    };
+    vi.mocked(chrome.tabs.sendMessage).mockRejectedValueOnce(new Error("No receiver"));
+    vi.mocked(chrome.scripting.executeScript).mockImplementationOnce(async () => {
+      expect(session["hypeman.tab.2"]).toMatchObject({ handoff: continuation });
+      return [];
+    });
+    await ok({ type: "nav.switch", tabId: 2, handoff: continuation });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(2, {
+      type: "hypeman.assistant.run", goal: continuation.goal, handoff: continuation,
+    });
+    expect(chrome.scripting.executeScript).toHaveBeenCalledWith({ target: { tabId: 2 }, files: ["content.js"] });
+  });
+  it("activates a tab without inventing assistant work when there is no continuation", async () => {
+    await ok({ type: "settings.patch", patch: { tabContextEnabled: true } }, extensionSender());
+    vi.mocked(chrome.tabs.sendMessage).mockClear();
+    await ok({ type: "nav.switch", tabId: 2 });
+    expect(chrome.tabs.update).toHaveBeenCalledWith(2, { active: true });
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect((await snapshot()).tasks).toEqual([]);
+  });
+  it("rejects malformed ordinary continuations before replacing another tab's session", async () => {
+    await ok({ type: "settings.patch", patch: { tabContextEnabled: true } }, extensionSender());
+    session["hypeman.tab.2"] = { conversationId: "existing-chat" };
+    for (const continuation of [
+      { goal: "", step: 1, history: [] }, { goal: "Keep searching", step: -1, history: [] },
+      { goal: "Keep searching", step: 1, history: "invalid" },
+    ]) expect(await rpc({ type: "nav.switch", tabId: 2, handoff: continuation })).toMatchObject({ ok: false, error: "Invalid continuation." });
+    expect(session["hypeman.tab.2"]).toEqual({ conversationId: "existing-chat" });
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("explicit native new-tab continuation", () => {
+  const destination = "https://destination.example/product?color=black#details";
+  const ordinary = (): SessionHandoff => ({
+    goal: "Compare two lamps under $35", message: "Keep the budget and open the adjustable option",
+    conversationId: "native-link-comparison", fromUrl: tabs.get(1)!.url,
+    step: 3, at: Date.now(), history: [{ action: { type: "click", target: "product-link" },
+      result: { ok: true, changed: false, message: "Link navigation dispatched" }, at: Date.now() }],
+  });
+  const create = (id: number, url = destination, openerTabId = 1) => {
+    const created = { ...tab(id, url), openerTabId };
+    tabs.set(id, created);
+    vi.mocked(chrome.tabs.onCreated.addListener).mock.calls[0]![0](created);
+  };
+  const update = (id: number, url = destination) => {
+    const updated = { ...tabs.get(id)!, url };
+    tabs.set(id, updated);
+    vi.mocked(chrome.tabs.onUpdated.addListener).mock.calls[0]![0](id, { url, status: "complete" }, updated);
+  };
+  const flushed = () => new Promise((resolve) => setTimeout(resolve, 0));
+  it.each([false, true])("adopts only the prepared link and preserves ordinary/project dispatch (project: %s)", async (project) => {
+    const task = project ? await ok<BrowserTask>({ type: "task.start", goal: "Compare two lamps", steps: ["Read both products", "Open the better lamp"], dispatch: false }) : null;
+    const continuation = task ? { ...handoff(task), message: "Keep the budget", conversationId: "native-link-comparison" } : ordinary();
+    const conversation = [{ role: "user", text: "Compare two lamps under $35" }];
+    await ok({ type: "session.set", handoff: continuation, conversation,
+      nativeNavigation: { url: destination, target: "new-tab", at: Date.now() } });
+    vi.mocked(chrome.tabs.sendMessage).mockClear();
+    create(3);
+    update(3); // Chrome can emit both events before the first adoption finishes.
+    await vi.waitFor(() => expect(session["hypeman.tab.3"]).toMatchObject({ handoff: continuation, conversation, conversationId: "native-link-comparison" }));
+    await vi.waitFor(() => expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(3, task ? {
+      type: "hypeman.task.run", taskId: task.id, goal: task.goal, handoff: continuation,
+    } : { type: "hypeman.assistant.run", goal: continuation.goal, handoff: continuation }));
+    await flushed();
+    expect(vi.mocked(chrome.tabs.sendMessage).mock.calls.filter(([id]) => id === 3)).toHaveLength(1);
+    expect(session["hypeman.tab.1"]).toMatchObject({ handoff: null, nativeNavigation: null });
+    if (task) expect((await snapshot()).tasks.find((item) => item.id === task.id)).toMatchObject({ tabId: 3, status: "running" });
+    else expect((await snapshot()).tasks).toEqual([]);
+    create(4); await flushed();
+    expect(session["hypeman.tab.4"]).toBeUndefined();
+  });
+  it("waits for an initially blank new tab to reach the exact observed URL", async () => {
+    const continuation = ordinary();
+    await ok({ type: "session.set", handoff: continuation,
+      nativeNavigation: { url: destination, target: "new-tab", at: Date.now() } });
+    create(3, "about:blank"); await flushed();
+    expect(session["hypeman.tab.3"]).toBeUndefined();
+    update(3);
+    await vi.waitFor(() => expect(session["hypeman.tab.3"]).toMatchObject({ handoff: continuation }));
+  });
+  it.each(["different opener", "different URL", "expired", "created before intent", "prevented", "existing tab", "paused destination"])("does not take over a tab when the native continuation is %s", async (condition) => {
+    const continuation = ordinary();
+    await ok({ type: "session.set", handoff: continuation,
+      nativeNavigation: { url: destination, target: "new-tab", at: Date.now() } });
+    if (condition === "expired") (session["hypeman.tab.1"] as { nativeNavigation: { at: number } }).nativeNavigation.at -= 11_000;
+    if (condition === "created before intent") (session["hypeman.tab.1"] as { nativeNavigation: { at: number } }).nativeNavigation.at += 500;
+    if (condition === "prevented") await ok({ type: "session.set", handoff: null });
+    if (condition === "paused destination") await ok({ type: "settings.patch", patch: { hiddenOnHosts: ["destination.example"] } }, extensionSender());
+    vi.mocked(chrome.tabs.sendMessage).mockClear();
+    if (condition === "existing tab") {
+      tabs.set(3, { ...tab(3, destination), openerTabId: 1 });
+      update(3);
+    } else create(3, condition === "different URL" ? "https://destination.example/unrelated" : destination,
+      condition === "different opener" ? 2 : 1);
+    await flushed();
+    expect(session["hypeman.tab.3"]).toBeUndefined();
+    expect(vi.mocked(chrome.tabs.sendMessage).mock.calls.some(([id, event]) => id === 3 &&
+      !!event && typeof event === "object" && "type" in event && /\.run$/.test(String(event.type)),
+    )).toBe(false);
+    expect((await snapshot()).tasks).toEqual([]);
+  });
+  it("rejects invalid native metadata without overwriting the previous source session", async () => {
+    const continuation = ordinary();
+    await ok({ type: "session.set", handoff: continuation });
+    const previous = structuredClone(session["hypeman.tab.1"]);
+    for (const nativeNavigation of [
+      { url: "chrome://settings", target: "new-tab", at: Date.now() },
+      { url: destination, target: "named-window", at: Date.now() },
+      { url: destination, target: "new-tab", at: Date.now() - 11_000 },
+      { url: destination, target: "new-tab", at: Date.now() + 11_000 },
+    ]) expect(await rpc({ type: "session.set", handoff: continuation, nativeNavigation })).toMatchObject({ ok: false, error: "Invalid native navigation continuation." });
+    expect(session["hypeman.tab.1"]).toEqual(previous);
   });
 });
 

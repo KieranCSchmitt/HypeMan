@@ -4,11 +4,28 @@ const clock = { now: Date.parse("2026-10-11T04:29:00Z"), timezone: "America/New_
 const parse = (text: string, draft: ReminderDraft | null = null, now = clock.now) => reminderConversation(text, draft, { ...clock, now }, "request-1");
 const pending = (text: string) => { const turn = parse(text); if (turn.kind !== "reminder") throw new Error("Missing reminder"); return turn.draft; };
 describe("reminder clarification", () => {
+  it("keeps a time-only reminder unscheduled until its missing message is supplied", () => {
+    const first = parse("set a text reminder for 1:40 AM");
+    expect(first).toMatchObject({ kind: "reminder", question: "What should I remind you to do?", draft: { hour: 1, minute: 40, meridiem: "AM" } });
+    expect(first.kind === "reminder" && first.draft.text).toBeUndefined();
+    expect(first.kind === "reminder" && first.dueAt).toBeUndefined();
+    const question = parse("What is the reminder for", first.kind === "reminder" ? first.draft : null);
+    expect(question).toMatchObject({ kind: "reminder", question: "What should I remind you to do?" });
+    expect(parse("To study", question.kind === "reminder" ? question.draft : null)).toMatchObject({ dueAt: Date.parse("2026-10-11T05:40:00Z"), draft: { text: "study" } });
+    expect(parse("set a text reminder for 1:40 AM to study")).toMatchObject({ dueAt: Date.parse("2026-10-11T05:40:00Z"), draft: { text: "study" } });
+    expect(parse("set a reminder for study at 1:40 AM")).toMatchObject({ draft: { text: "study" } });
+    expect(parse("To study", pending("set a text reminder for 9 AM"))).toMatchObject({ dueAt: Date.parse("2026-10-11T13:00:00Z"), draft: { text: "study" } });
+  });
   it("retains the original text while resolving the screenshot's terse AM/EST answer", () => {
     const first = parse("send me a text reminder at 12:30 to practice math");
     expect(first).toMatchObject({ kind: "reminder", question: "12:30 AM or PM?", draft: { text: "practice math", hour: 12, minute: 30 } });
     const next = parse("AM est", first.kind === "reminder" ? first.draft : null);
     expect(next).toMatchObject({ kind: "reminder", dueAt: Date.parse("2026-10-11T05:30:00Z"), draft: { text: "practice math", timezone: "Etc/GMT+5" } });
+  });
+  it("resolves the next future occurrence if the requested time passes while answering the subject question", () => {
+    const first = parse("set a text reminder for 1:40 AM", null, Date.parse("2026-10-11T05:39:45Z"));
+    expect(parse("To study", first.kind === "reminder" ? first.draft : null, Date.parse("2026-10-11T05:40:21Z")))
+      .toMatchObject({ dueAt: Date.parse("2026-10-12T05:40:00Z"), draft: { text: "study" } });
   });
   it("uses saved local timezone and the next occurrence without asking date or recurrence", () => {
     expect(parse("remind me to practice math at 12:30 AM")).toMatchObject({ kind: "reminder", dueAt: Date.parse("2026-10-11T04:30:00Z") });

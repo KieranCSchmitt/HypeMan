@@ -55,9 +55,9 @@ export function request<T = unknown>(message: BridgeMessage, signal?: AbortSigna
           reject(new Error("The extension restarted. Refresh this page."));
           return;
         }
-        const envelope = response as { ok: boolean; data?: T; error?: string };
+        const envelope = response as { ok: boolean; data?: T; error?: string; cancelled?: boolean };
         if (!envelope.ok)
-          reject(new Error(envelope.error || "HypeMan couldn't complete that request."));
+          reject(envelope.cancelled === true ? new DOMException(envelope.error || "Cancelled", "AbortError") : new Error(envelope.error || "HypeMan couldn't complete that request."));
         else resolve(envelope.data as T);
       });
     } catch (error) {

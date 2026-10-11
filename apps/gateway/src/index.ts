@@ -29,6 +29,7 @@ import { PhotonAdapter } from "./photon";
 import { MessagingService } from "./messaging";
 const here = dirname(fileURLToPath(import.meta.url));
 const publicDirectory = resolve(here, "../public");
+const publicPaths = new Set(["/", "/fonts/PressStart2P.ttf", "/fonts/Tiny5.ttf", "/fonts/OFL-PressStart2P.txt", "/fonts/OFL-Tiny5.txt"]);
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css",
@@ -236,7 +237,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
         return;
       }
       if (!url.pathname.startsWith("/api/")) {
-        if (request.method === "GET" && staticFile(request, response, url.pathname)) return;
+        if (request.method === "GET" && publicPaths.has(url.pathname) && staticFile(request, response, url.pathname)) return;
         throw new GatewayError(404, "Not found.");
       }
       if (url.pathname === "/api/connection") {
@@ -313,7 +314,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
           return;
         }
         if (config.demo || !chatgpt)
-          throw new GatewayError(409, "Start live mode (DEMO_MODE=0) to connect ChatGPT.");
+          throw new GatewayError(409, "ChatGPT sign-in is unavailable in this test gateway.");
         if (action === "login") {
           json(
             response,
@@ -452,11 +453,12 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
   };
 }
 export async function startGateway() {
-  const config = loadConfig(),
+  // Scripted providers are injected by tests; the user-facing process is always live.
+  const config = { ...loadConfig(), demo: false },
     token = loadPairingToken();
-  const chatgpt = !config.demo ? new ChatGPTAuth() : undefined;
+  const chatgpt = new ChatGPTAuth();
   const providers = new Providers(config, undefined, chatgpt);
-  const messaging = config.demo ? undefined : new MessagingService({
+  const messaging = new MessagingService({
     transport: new PhotonAdapter(config),
     providers,
     demo: config.demo,
@@ -472,7 +474,7 @@ export async function startGateway() {
     console.error("Photon phone companion could not start. Check its status in HypeMan Settings.");
   });
   console.info(
-    `HypeMan ${config.demo ? "DEMO — labeled fixtures" : "LIVE"} gateway: http://127.0.0.1:${port}`,
+    `HypeMan gateway: http://127.0.0.1:${port}`,
   );
   console.info("HypeMan connects automatically. Use the avatar on an ordinary Chrome webpage to continue.");
   const stop = () => {

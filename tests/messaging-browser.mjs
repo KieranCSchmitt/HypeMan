@@ -1,3 +1,4 @@
+import { installBrowserFixtures } from "./fixtures/browser-pages.mjs";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -80,6 +81,7 @@ async function launch() {
     proxy: { server: `http://127.0.0.1:${proxy.address().port}`, bypass: "<-loopback>" },
     args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, "--enable-unsafe-extension-debugging"],
   });
+  await installBrowserFixtures(context);
   context.setDefaultTimeout(15000);
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
   extensionId = new URL(worker.url()).host;
@@ -88,12 +90,13 @@ async function launch() {
   await home.locator("#task-goal").waitFor();
   for (const page of context.pages()) if (page !== home) await page.close();
 }
-async function chat(page, text) {
+async function chat(page, text, approve) {
   await page.bringToFront();
   const field = page.getByLabel("What do you need?", { exact: true });
   await field.fill(text);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await waitFor(async () => await field.inputValue() === "", `composer clears after ${text}`);
+  if (approve) await page.getByRole("alertdialog", { name: "Confirm action", exact: true }).getByRole("button", { name: approve, exact: true }).click();
   await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
 }
 async function openPreferences() {
@@ -138,7 +141,7 @@ try {
   assert.equal(messaging.status().paired, false);
   check("Real extension Settings displays a configured Photon connection without live credentials");
 
-  await chat(preferences, `pair phone ${ownerPhone}`);
+  await chat(preferences, `pair phone ${ownerPhone}`, "Pair phone");
   const code = await waitFor(async () => {
     const content = await phone.locator(".phone-pair-code strong").textContent().catch(() => "");
     return content?.match(/^PAIR (\d{6})$/)?.[1];
@@ -159,7 +162,7 @@ try {
   await waitFor(() => messaging.status().settings.morningTime === "10:30", "phone preferences saved");
   assert.equal(messaging.status().settings.morningTime, "10:30");
   const beforeTestText = sent.length;
-  await chat(preferences, "send test text");
+  await chat(preferences, "send test text", "Send test");
   await waitFor(() => sent.length > beforeTestText, "test text delivered through gateway");
   assert.deepEqual(sent.at(-1).destination, { phone: ownerPhone, spaceId: conversation });
   check("Settings updates persist through the gateway and test texts use only the paired owner");
@@ -168,6 +171,7 @@ try {
   transport.failNext = true;
   await preferences.getByLabel("What do you need?", { exact: true }).fill("send test text");
   await preferences.getByRole("button", { name: "Send message", exact: true }).click();
+  await preferences.getByRole("alertdialog", { name: "Confirm action", exact: true }).getByRole("button", { name: "Send test", exact: true }).click();
   await preferences.getByRole("alert").filter({ hasText: "Delivery is uncertain" }).waitFor();
   await refreshPhone(); await refreshPhone();
   assert.equal(sent.length, beforeUncertain + 1, "Refreshing an uncertain delivery must never resend it");
@@ -188,7 +192,7 @@ try {
   assert.equal(messaging.status().reminders.filter((item) => item.status === "pending").length, 0);
   check("Conversational reminder creation and selected-reminder snooze/cancel use the durable service");
 
-  const target = `${base}/demo/workshops/`;
+  const target = `${base}/__test/workshops/`;
   const goal = `Compare pottery workshops from ${target}`;
   await receive(`QUEUE ${goal}`, { fromMe: true });
   await receive(`QUEUE ${goal}`, { isGroup: true });
@@ -218,7 +222,7 @@ try {
   check("Chrome restart preserves the imported inbox without duplicate captures or automatic continuation");
 
   await phone.locator(".phone-inbox .phone-item").filter({ hasText: goal }).click();
-  await chat(preferences, "continue this idea in chrome");
+  await chat(preferences, "continue this idea in chrome", "Continue idea");
   const article = await waitFor(() => context.pages().find((page) => page.url() === target), "explicit Chrome continuation tab");
   await waitFor(() => decisions.find((input) => input.goal === goal), "browser assistant receives the stored phone goal");
   assert.equal((await rpc({ type: "messaging.inbox", refresh: false })).captures.length, 0);
@@ -237,7 +241,7 @@ try {
   assert.equal(await noteEditor.inputValue(), noteText);
   await noteEditor.click();
   const beforeNoteText = sent.length;
-  await chat(article, "text this to me");
+  await chat(article, "text this to me", "Send text");
   await waitFor(() => sent.slice(beforeNoteText).find((message) => message.text.includes(noteText)), "saved-note text from content overlay");
   const sentNote = sent.slice(beforeNoteText).find((message) => message.text.includes(noteText));
   assert.deepEqual(sentNote.destination, { phone: ownerPhone, spaceId: conversation });
@@ -260,7 +264,7 @@ try {
   assert.equal((await rpc({ type: "workspace.get" })).notes.length, 1);
   check("Freeform phone ideas remain separate from source notes and dismissed captures do not reappear");
 
-  const remoteUrl = `${base}/demo/workshops/?phone=remote`;
+  const remoteUrl = `${base}/__test/workshops/?phone=remote`;
   const remoteText = `control my desktop to open ${remoteUrl}`;
   for (const patch of [{ fromMe: true }, { isGroup: true }, { sender: "+14155559999" }, { spaceId: "wrong-thread" }])
     await receive(remoteText, patch);

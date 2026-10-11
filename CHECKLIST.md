@@ -1,8 +1,8 @@
 # Release checks
 
-Run `npm run check` and `npm run e2e` using Node 24. See [feature status](docs/FEATURES.md) and the [demo walkthrough](docs/DEMO.md).
+Run `npm run check` and `npm run e2e` using Node 24. See [feature status](docs/FEATURES.md) and the [verification guide](docs/VERIFICATION.md).
 
-With `DEMO_MODE=0`, verify ChatGPT sign-in, model selection, grounded summaries/highlights, cancellation, account-limit errors, sign-out, and explicit confirmation. Check image features with an account model that supports them. Use `npm run e2e:auth` for the deterministic authentication checks; actual account access requires a separate live check.
+Start `npm start` and verify ChatGPT sign-in, model selection, grounded summaries/highlights, cancellation, account-limit errors, sign-out, and explicit confirmation. Check image features with an account model that supports them. Use `npm run e2e:auth` for the deterministic authentication checks; actual account access requires a separate live check.
 
 For credential-dependent checks, start the live server and open HypeMan in regular Chrome, then verify:
 

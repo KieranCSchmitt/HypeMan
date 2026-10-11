@@ -3,7 +3,7 @@ import type { TranscriptSegment, VideoState } from "@core";
 import { request } from "../bridge";
 import { Notice, ToolButton } from "./common";
 import { Icon } from "./Icon";
-import { message, useSettings } from "./hooks";
+import { message } from "./hooks";
 import { useToolHandler, useWorkbench, type ToolResult } from "./WorkbenchContext";
 interface VideoReply { segments: TranscriptSegment[]; chapters: { start: number; title: string }[]; notes: { start: number; end: number; text: string }[]; summary?: string; available?: boolean; source: string; provider: string; coverage?: { partial: boolean; suppliedCues: number; totalCues: number } }
 const timestamp = (seconds: number) => `${Math.floor(seconds / 60)}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
@@ -35,7 +35,6 @@ export type NativeVideoState = VideoState & { available?: boolean; summary?: str
 export function Video({ embedded = false, active = true, page, onSeek, nativeState, onNativeCommand, onCaptionsChange }: { embedded?: boolean; active?: boolean; page?: { url: string; title: string }; onSeek?: (seconds: number) => void; nativeState?: NativeVideoState | null; onNativeCommand?: (operation: string, args: Record<string, unknown>) => Promise<ToolResult> | ToolResult; onCaptionsChange?: (text: string) => Promise<void> | void } = {}) {
   const [linkedMode, setLinkedMode] = useState(false);
   const native = linkedMode ? null : nativeState;
-  const { settings } = useSettings();
   const workbench = useWorkbench();
   const video = useRef<HTMLVideoElement>(null), objectUrl = useRef(""), abort = useRef<AbortController | null>(null);
   const [src, setSrc] = useState(page?.url || ""), [title, setTitle] = useState(page?.title || "Your video");
@@ -82,7 +81,7 @@ export function Video({ embedded = false, active = true, page, onSeek, nativeSta
     const controller = new AbortController(); abort.current?.abort(); abort.current = controller; setBusy(true); setError("");
     try {
       const segments = linked ? [] : captions.length ? captions : captionText.trim().split(/\n+/).filter(Boolean).flatMap((line) => line.match(/[\s\S]{1,1800}/g) || []).map((text) => ({ start: 0, end: 0, text }));
-      const result = await request<VideoReply>({ type: "api", path: "/api/video", body: { url: linked?.url || (/^https?:/.test(src) ? src : `${settings.serverUrl}/demo/video/`), title: linked?.title || title, segments, question } }, controller.signal);
+      const result = await request<VideoReply>({ type: "api", path: "/api/video", body: { url: linked?.url || (/^https?:/.test(src) ? src : ""), title: linked?.title || title, segments, question } }, controller.signal);
       controller.signal.throwIfAborted();
       setReply(result); setTab("Summary");
       return { message: result.summary || "Your video notes are ready.", changed: true, data: { url: linked?.url || src, title: linked?.title || title, summary: result.summary, notes: result.notes, available: result.available, source: result.source, coverage: result.coverage }, continue: result.available !== false };

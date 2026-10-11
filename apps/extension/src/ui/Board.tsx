@@ -9,11 +9,12 @@ import {
 import { request } from "../bridge";
 import { Notice, ToolButton } from "./common";
 import { useToolHandler, useWorkbench } from "./WorkbenchContext";
+import { isBoardEquation as equation, placeBoardLabels, restoreBoardLabels } from "./board-layout";
+import { loadBoardFonts } from "../entries/fonts";
 
 const inkColor = "#1b1f3b";
-const mathOptions: katex.KatexOptions = { throwOnError: false, trust: false, output: "htmlAndMathml", maxExpand: 500, maxSize: 15, strict: "warn" };
+const mathOptions: katex.KatexOptions = { throwOnError: false, trust: false, output: "html", maxExpand: 500, maxSize: 15, strict: "warn" };
 const textOf = (object: BoardObject) => object.kind === "text" || object.kind === "equation" ? object.text : `${object.kind} on whiteboard`;
-const equation = (text: string) => /^\s*(?:\$|\\\(|\\\[)/.test(text) || /(?:[=<>]|\\(?:frac|sqrt|sum|int|begin|alpha|theta)|\^[{\d])/.test(text);
 const unDelimit = (text: string) => text.trim().replace(/^\$\$?|\$\$?$/g, "").replace(/^\\[([]|\\[)\]]$/g, "");
 const makeId = () => crypto.randomUUID();
 function sketchKey(sketch: Extract<Action, { type: "sketch" }>): string {
@@ -27,7 +28,8 @@ function dimensions(objects: BoardObject[]) {
     height: Math.min(20_000, Math.max(850, ...boxes.map((box) => box.y + box.height + 60))) };
 }
 function objectFromArgs(input: Record<string, unknown>, source: "user" | "assistant", fallback?: BoardObject): BoardObject {
-  const kind = String(input.kind || input.type || fallback?.kind || (typeof input.text === "string" && equation(input.text) ? "equation" : "text"));
+  let kind = String(input.kind || input.type || fallback?.kind || (typeof input.text === "string" && equation(input.text) ? "equation" : "text"));
+  if (kind === "equation" && typeof input.text === "string" && !equation(input.text)) kind = "text";
   const candidate = { id: input.id || fallback?.id || makeId(), x: 60, y: 60, color: inkColor, size: 3, fontSize: 26,
     ...fallback, ...input, source, kind, ...(kind === "equation" && typeof input.text === "string" ? { text: unDelimit(input.text) } : {}) };
   const object = parseBoardObject(candidate);
@@ -115,6 +117,7 @@ export interface BoardProps {
   embedded?: boolean; active?: boolean; conversationId?: string; sketch?: Extract<Action, { type: "sketch" }> | null;
 }
 export function Board({ embedded = false, active = true, conversationId: explicitId, sketch }: BoardProps) {
+  useEffect(() => { void loadBoardFonts(); }, []);
   const workbench = useWorkbench();
   const conversationId = explicitId || workbench.conversationId;
   const [board, setBoard] = useState<BoardDocument>(emptyBoard());
@@ -144,7 +147,7 @@ export function Board({ embedded = false, active = true, conversationId: explici
       const parsed = value === null || value === undefined ? emptyBoard() : parseBoardDocument(value);
       if (!parsed) throw new Error("This saved board could not be read. Its original data has been preserved.");
       queues.current.set(conversationId, { revision: parsed.revision, pending: Promise.resolve(), blocked: false });
-      update(parsed); setLoaded(true);
+      update({ ...parsed, objects: restoreBoardLabels(parsed.objects) }); setLoaded(true);
     }).catch((reason: unknown) => { if (token === session.current) { blocked.current = true; setError(reason instanceof Error ? reason.message : String(reason)); } throw reason; });
     ready.current = load;
     void load.catch(() => {});
@@ -209,6 +212,7 @@ export function Board({ embedded = false, active = true, conversationId: explici
     const scale = Math.min(1, 5000 / Math.max(width, height));
     canvas.width = Math.ceil(width * scale); canvas.height = Math.ceil(height * scale);
     const context = canvas.getContext("2d"); if (!context) throw new Error("This browser could not create the board image.");
+    await loadBoardFonts();
     await document.fonts?.ready;
     context.scale(scale, scale); context.fillStyle = "#ffffff"; context.fillRect(0, 0, width, height); context.translate(-minX, -minY);
     for (const object of current.objects) {
@@ -233,10 +237,15 @@ export function Board({ embedded = false, active = true, conversationId: explici
       return receipt("Diagram saved.", current);
     }
     const startY = current.objects.length ? Math.max(...current.objects.map((object) => { const box = boardObjectBounds(object); return box.y + box.height; })) + 60 : 45;
-    const shapes: BoardObject[] = (sketch.shapes || []).map((shape, index) => objectFromArgs({ ...shape, id: `${key}-shape-${index}`, kind: shape.type === "label" ? equation(shape.text) ? "equation" : "text" : shape.type, y: shape.y + startY, ...(shape.type === "line" || shape.type === "arrow" ? { toY: shape.toY + startY } : {}) }, "assistant"));
+    const title = objectFromArgs({ id: `${key}-title`, kind: "text", text: sketch.title, x: 55, y: startY, fontSize: 30 }, "assistant");
+    let shapes: BoardObject[] = (sketch.shapes || []).map((shape, index) => objectFromArgs({ ...shape, id: `${key}-shape-${index}`, kind: shape.type === "label" ? equation(shape.text) ? "equation" : "text" : shape.type, y: shape.y + startY, ...(shape.type === "line" || shape.type === "arrow" ? { toY: shape.toY + startY } : {}) }, "assistant"));
+    if (shapes.length) {
+      const gap = Math.max(0, startY + boardObjectBounds(title).height + 20 - Math.min(...shapes.map(object => boardObjectBounds(object).y)));
+      shapes = shapes.map(object => moveBoardObject(object, 0, gap));
+    }
     const bottom = shapes.length ? Math.max(...shapes.map((object) => { const box = boardObjectBounds(object); return box.y + box.height; })) + 35 : startY + 60;
-    const objects = [objectFromArgs({ id: `${key}-title`, kind: "text", text: sketch.title, x: 55, y: startY, fontSize: 30 }, "assistant"), ...shapes, ...sketch.lines.map((text, index) => objectFromArgs({ id: `${key}-line-${index}`, kind: equation(text) ? "equation" : "text", text, x: 60, y: bottom + index * 64 }, "assistant"))];
-    const next = editBoard(current, { upsert: objects, title: sketch.title }); next.appliedSketches = [...next.appliedSketches, key].slice(-100);
+    const objects = [title, ...shapes, ...sketch.lines.map((text, index) => objectFromArgs({ id: `${key}-line-${index}`, kind: equation(text) ? "equation" : "text", text, x: 60, y: bottom + index * 64 }, "assistant"))];
+    const next = editBoard(current, { upsert: placeBoardLabels(objects, current.objects), title: sketch.title }); next.appliedSketches = [...next.appliedSketches, key].slice(-100);
     await commit(next); return receipt("Diagram saved.", current, next);
   };
   useToolHandler("board", async (operation, args) => {
@@ -302,7 +311,7 @@ export function Board({ embedded = false, active = true, conversationId: explici
         return objectFromArgs({ x: 60, y: startY + i * 60, ...value as Record<string, unknown> }, "assistant");
       });
       if (objects.some((object) => next.objects.some((current) => current.id === object.id))) throw new Error("Use update to change an existing board object.");
-      next = editBoard(next, { upsert: objects, ...(typeof args.title === "string" ? { title: args.title } : {}) });
+      next = editBoard(next, { upsert: placeBoardLabels(objects, next.objects), ...(typeof args.title === "string" ? { title: args.title } : {}) });
     } else if (operation === "update") {
       const id = String(args.id || (workbench.selected?.kind === "board" ? workbench.selected.id : selection) || "");
       const existing = next.objects.find((object) => object.id === id);
@@ -450,7 +459,7 @@ export function Board({ embedded = false, active = true, conversationId: explici
         {shown.map((object) => (object.kind === "text" || object.kind === "equation") && <div key={object.id} className="board-text" data-board-id={object.id} role="option" aria-selected={selection === object.id} tabIndex={0}
           aria-label={`${object.kind}: ${object.text}`} style={{ left: object.x, top: object.y, fontSize: object.fontSize, color: object.color } as CSSProperties}
           onFocus={() => select(object)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.stopPropagation(); startEdit(object.id); } }}>
-          {object.kind === "equation" ? <span dangerouslySetInnerHTML={{ __html: katex.renderToString(unDelimit(object.text), mathOptions) }} /> : object.text}
+          {object.kind === "equation" && equation(object.text) ? <span dangerouslySetInnerHTML={{ __html: katex.renderToString(unDelimit(object.text), mathOptions) }} /> : object.text}
         </div>)}
         {editing && (() => { const object = shown.find((value) => value.id === editing); return object ? <textarea className="board-editor" aria-label="Edit selected board text or equation" autoFocus
           style={{ left: object.x, top: object.y }} value={draftText} maxLength={4000} onChange={(event) => setDraftText(event.target.value)}

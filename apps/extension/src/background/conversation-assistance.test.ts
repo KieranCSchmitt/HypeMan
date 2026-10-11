@@ -16,6 +16,17 @@ function fixture() {
   return { api, drafts, messages, phone, service: new ConversationAssistance(api) };
 }
 describe("conversation reminder orchestration", () => {
+  it("holds a time-only reminder through its subject clarification and schedules the completed request once", async () => {
+    const f = fixture(), initial = request("set a text reminder for 1:40 AM");
+    expect((await f.service.prepare(initial)).reply?.action).toEqual({ type: "say", text: "What should I remind you to do?" });
+    expect(f.api.schedule).not.toHaveBeenCalled();
+    const replacement = new ConversationAssistance(f.api);
+    expect((await replacement.prepare(request("What is the reminder for"))).reply?.action).toEqual({ type: "say", text: "What should I remind you to do?" });
+    expect(f.api.schedule).not.toHaveBeenCalled();
+    await replacement.prepare(request("To study"));
+    expect(f.api.schedule).toHaveBeenCalledExactlyOnceWith("study", Date.parse("2026-10-11T05:40:00Z"), initial.requestId);
+    expect(f.drafts.size).toBe(0);
+  });
   it("finishes the screenshot's two-turn request without invoking a model or opening a phone window", async () => {
     const f = fixture();
     const initial = request("send me a text reminder at 12:30 to practice math");

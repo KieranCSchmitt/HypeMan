@@ -1,0 +1,54 @@
+{
+  "capturedWith": "Playwright Chromium, shipped extension, isolated new profile",
+  "mode": "Real public website and genuine app interactions; no supplied AI replies",
+  "width": 1600,
+  "height": 1000,
+  "sourceUrls": [
+    "https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/What_is_JavaScript"
+  ],
+  "liveResult": {
+    "available": true,
+    "attempted": true,
+    "success": true,
+    "response": "HTML creates a button labeled “Say hello.”\nCSS makes that button blue with rounded corners.\nJavaScript makes it display “Hello!” when clicked."
+  },
+  "scenes": [
+    {
+      "file": "showcase-rooftop.png",
+      "description": "Actual extension new-tab rooftop at the capture time.",
+      "width": 1600,
+      "height": 1000,
+      "source": "chrome-extension://lgafhjdfipidpblcihokcjfcgkilbekd/newtab.html"
+    },
+    {
+      "file": "showcase-saved-notes.png",
+      "description": "A real selected MDN passage saved with its source URL and edited directly.",
+      "width": 1600,
+      "height": 1000,
+      "source": "https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/What_is_JavaScript"
+    },
+    {
+      "file": "showcase-whiteboard.png",
+      "description": "User-authored study notes and directly drawn ink on the real shared whiteboard.",
+      "width": 1600,
+      "height": 1000,
+      "source": "chrome-extension://lgafhjdfipidpblcihokcjfcgkilbekd/newtab.html"
+    },
+    {
+      "file": "showcase-project-notes.png",
+      "description": "Real saved source note and actual saved conversations; no fictional project.",
+      "width": 1600,
+      "height": 1000,
+      "source": "chrome-extension://lgafhjdfipidpblcihokcjfcgkilbekd/newtab.html"
+    },
+    {
+      "file": "showcase-real-page.png",
+      "description": "Actual MDN page and an untouched live ChatGPT response in a fresh conversation.",
+      "width": 1600,
+      "height": 1000,
+      "source": "https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Scripting/What_is_JavaScript"
+    }
+  ],
+  "taskStates": [],
+  "limitations": []
+}

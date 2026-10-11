@@ -54,7 +54,7 @@ export interface CompanionRuntime {
   send(message: string): Promise<void>;
   retry?(): Promise<void>;
   confirm(answer: boolean): void;
-  stop(): void;
+  stop(pauseTask?: boolean, announce?: boolean): void;
   subscribe(listener: () => void): () => void;
   getSnapshot(): CompanionSnapshot;
   setSettings(settings: Settings): void;

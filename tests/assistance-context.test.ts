@@ -140,7 +140,9 @@ describe("speculative practice context", () => {
     expect(context.page.text).toBe("Solve 2x = 8. [answer]");
     expect(context.page.selection).toBe("");
     expect(context.page.video).toBeUndefined();
-    expect(JSON.stringify(context)).not.toMatch(/private-note|999|14:22|Correct|Other source|Unrelated/);
+    // A current millisecond timestamp may contain 999; the answer must not
+    // appear as its own numeric value anywhere in the transmitted context.
+    expect(JSON.stringify(context)).not.toMatch(/private-note|(?<!\d)999(?!\d)|14:22|Correct|Other source|Unrelated/);
   });
 });
 

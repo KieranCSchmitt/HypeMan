@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from "react";
 import type { WindowGeometrySnapshot, WorkbenchWindowId } from "@core";
 import { clampWindow, maximizedWindow, nextWindowLayer, resizeEdges, resizeWindowEdge, windowViewport, type ResizeEdge, type WindowRect, type WindowSize, type WindowViewport } from "./window-layout";
 import { isOverlaySection } from "./overlay-sections";
 import { useWindowGeometryPersistence, type WindowGeometryPersistence } from "./WindowGeometryPersistence";
 
 const fallbackCollapsedHeight = 46;
+const sameRect = (left: WindowRect, right: WindowRect) => left.x === right.x && left.y === right.y && left.width === right.width && left.height === right.height;
 const snapshotKey = ({ rect, minimized, maximized, restoreRect, userResized }: WindowGeometrySnapshot) => JSON.stringify([
   rect.x, rect.y, rect.width, rect.height, minimized, maximized,
   restoreRect && [restoreRect.x, restoreRect.y, restoreRect.width, restoreRect.height], userResized,
@@ -23,6 +24,8 @@ interface WindowGeometryOptions {
 export function useWindowGeometry({ id, open = true, minSize = { width: 320, height: 220 }, initialRect, preferredHeight, onFocus, persistence: suppliedPersistence }: WindowGeometryOptions) {
   const contextPersistence = useWindowGeometryPersistence(), persistence = suppliedPersistence || contextPersistence;
   const persistenceKey = `${persistence?.conversationId || "local"}:${id}`, ready = persistence?.ready ?? true;
+  const activePersistenceKey = useRef(persistenceKey); activePersistenceKey.current = persistenceKey;
+  const geometryRevision = useRef(0);
   const hostRef = useRef<HTMLElement>(null);
   const [hydratedFor, setHydratedFor] = useState<string | null>(null);
   const options = useRef({ minSize, initialRect, onFocus }); options.current = { minSize, initialRect, onFocus };
@@ -32,6 +35,7 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
   const [collapsedHeight, setCollapsedHeight] = useState(fallbackCollapsedHeight);
   const [interacting, setInteracting] = useState(false), [userResized, setUserResized] = useState(false);
   const state = useRef({ rect, minimized, maximized, userResized, collapsedHeight }); state.current = { rect, minimized, maximized, userResized, collapsedHeight };
+  const temporaryHeight = useRef<{ before: WindowRect; expanded: WindowRect; owner: string; revision: number } | null>(null);
   const restoreRect = useRef<WindowRect | null>(null), gesture = useRef<Gesture | null>(null);
   const preferred = useRef<{ key: string; height: number | undefined } | null>(null);
   type SavedWindow = { owner: WindowGeometryPersistence; id: WorkbenchWindowId; snapshot: WindowGeometrySnapshot };
@@ -40,7 +44,9 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
   const captureSnapshot = () => {
     if (persistence && ready && open && hydratedFor === persistenceKey && (id === "chat" || isOverlaySection(id))) {
       const current = state.current;
-      latestSnapshots.current.set(persistenceKey, { owner: persistence, id, snapshot: { rect: current.rect, minimized: current.minimized, maximized: current.maximized, restoreRect: restoreRect.current, userResized: current.userResized } });
+      const temporary = temporaryHeight.current;
+      const savedRect = temporary && temporary.owner === persistenceKey && temporary.revision === geometryRevision.current && sameRect(current.rect, temporary.expanded) ? temporary.before : current.rect;
+      latestSnapshots.current.set(persistenceKey, { owner: persistence, id, snapshot: { rect: savedRect, minimized: current.minimized, maximized: current.maximized, restoreRect: restoreRect.current, userResized: current.userResized } });
     }
   };
   captureSnapshot();
@@ -63,6 +69,7 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
   useLayoutEffect(() => {
     if (!open || !ready || hydratedFor === persistenceKey) return;
     endGesture();
+    temporaryHeight.current = null;
     const saved = persistence && (id === "chat" || isOverlaySection(id)) ? persistence.geometry[id] : undefined;
     const viewport = windowViewport(), minimum = options.current.minSize;
     let next = clampWindow(saved?.rect || options.current.initialRect(viewport, hostRef.current), viewport, minimum);
@@ -122,6 +129,7 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
   };
   const startGesture = (event: PointerEvent<HTMLElement>, edge?: ResizeEdge) => {
     if (!ready || hydratedFor !== persistenceKey || event.button !== 0 || event.isPrimary === false || gesture.current || state.current.maximized || (!edge && (event.target as Element).closest("button,a,input,textarea,select,[contenteditable]"))) return;
+    geometryRevision.current++;
     focus(); event.preventDefault(); event.stopPropagation(); event.currentTarget.focus({ preventScroll: true });
     gesture.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, rect: state.current.rect, userResized: state.current.userResized, edge, target: event.currentTarget };
     if (edge) { state.current.userResized = true; setUserResized(true); }
@@ -145,6 +153,7 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
     const step = event.shiftKey ? 50 : 10;
     const delta: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
     if (!delta[event.key]) return;
+    geometryRevision.current++;
     event.preventDefault(); event.stopPropagation(); focus(); const [dx, dy] = delta[event.key];
     if (edge) { state.current.userResized = true; setUserResized(true); setRect((current) => resizeWindowEdge(current, edge, dx, dy, windowViewport(), options.current.minSize)); }
     else setRect((current) => {
@@ -164,6 +173,7 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
     setMinimized((value) => !value);
   };
   const toggleMaximized = () => {
+    geometryRevision.current++;
     endGesture(); focus(); setMinimized(false);
     if (state.current.maximized) {
       setRect(clampWindow(restoreRect.current || state.current.rect, windowViewport(), options.current.minSize)); setMaximized(false);
@@ -171,6 +181,23 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
       restoreRect.current = state.current.rect; setRect(maximizedWindow(windowViewport())); setMaximized(true);
     }
   };
+  const ensureMinHeight = useCallback((height: number) => {
+    const current = state.current;
+    if (current.maximized || current.rect.height >= height) return () => {};
+    const before = current.rect;
+    const expanded = clampWindow({ ...before, y: before.y + before.height - height, height }, windowViewport(), options.current.minSize);
+    if (expanded.height <= before.height) return () => {};
+    const temporary = { before, expanded, owner: activePersistenceKey.current, revision: geometryRevision.current }; temporaryHeight.current = temporary;
+    state.current.rect = expanded; setRect(expanded);
+    return () => {
+      const latest = state.current;
+      if (temporaryHeight.current === temporary) temporaryHeight.current = null;
+      // A user's move, resize, or maximize takes precedence over restoring the compact window.
+      if (activePersistenceKey.current !== temporary.owner || geometryRevision.current !== temporary.revision || latest.maximized || !sameRect(latest.rect, expanded)) return;
+      const restored = clampWindow(before, windowViewport(), options.current.minSize);
+      state.current.rect = restored; setRect(restored);
+    };
+  }, []);
   const lostCapture = (event: PointerEvent<HTMLElement>) => { if (gesture.current?.pointerId === event.pointerId) endGesture(); };
   const titleProps = {
     onPointerDown: (event: PointerEvent<HTMLElement>) => startGesture(event),
@@ -184,7 +211,7 @@ export function useWindowGeometry({ id, open = true, minSize = { width: 320, hei
     onKeyDown: (event: KeyboardEvent<HTMLElement>) => key(event, edge),
   });
   const style: CSSProperties = { position: "fixed", transform: "none", left: rect.x, top: rect.y, width: rect.width, height: minimized ? collapsedHeight : rect.height, maxWidth: "none", maxHeight: "none", minWidth: 0, minHeight: 0, zIndex: layer, boxSizing: "border-box" };
-  return { hostRef, rect, style, minimized, maximized, interacting, userResized, hydrated: ready && hydratedFor === persistenceKey, focus, titleProps, getResizeProps, toggleMinimized, toggleMaximized,
+  return { hostRef, rect, style, minimized, maximized, interacting, userResized, hydrated: ready && hydratedFor === persistenceKey, focus, titleProps, getResizeProps, toggleMinimized, toggleMaximized, ensureMinHeight,
     shellProps: { onPointerDownCapture: focus, onFocusCapture: focus, "data-minimized": minimized || undefined, "data-maximized": maximized || undefined, "data-interacting": interacting || undefined } };
 }
 

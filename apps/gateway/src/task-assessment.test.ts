@@ -116,13 +116,30 @@ describe("read-only project progress", () => {
   });
   it("uses visible demo markers without treating ordinary live pages as fixtures", async () => {
     const request = input();
-    request.page.url = "http://127.0.0.1:8787/demo/project/";
+    request.page.url = "http://127.0.0.1:8787/__test/project/";
     request.page.text = "Project step completed: Research sources";
     const providers = { json: vi.fn() } as unknown as Providers;
     expect(await assessTask(request, providers, true, new AbortController().signal)).toEqual({
       stepId: "step-1", completed: true, evidence: request.page.text,
     });
     request.page.url = "https://example.com/project/";
+    expect((await assessTask(request, providers, true, new AbortController().signal)).completed).toBe(false);
+    expect(providers.json).not.toHaveBeenCalled();
+  });
+  it("uses the exact multiline registration receipt in the demo assessment", async () => {
+    const request = input();
+    request.task.steps[0].title = "Review and confirm the registration";
+    request.page.url = "http://127.0.0.1:8787/__test/workshops/register.html";
+    request.page.text = "Register for Pottery Basics.\nRegistration confirmed\nYour fictional place is reserved. No real charge was made.\n";
+    const evidence = "Registration confirmed\nYour fictional place is reserved. No real charge was made.";
+    request.completion = { kind: "registration", evidence, url: request.page.url };
+    const providers = { json: vi.fn() } as unknown as Providers;
+    expect(await assessTask(request, providers, true, new AbortController().signal)).toEqual({
+      stepId: "step-1", completed: true, evidence,
+    });
+    request.completion.evidence = evidence.replace(/\s+/g, " ");
+    expect((await assessTask(request, providers, true, new AbortController().signal)).completed).toBe(false);
+    delete request.completion;
     expect((await assessTask(request, providers, true, new AbortController().signal)).completed).toBe(false);
     expect(providers.json).not.toHaveBeenCalled();
   });

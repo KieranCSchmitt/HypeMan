@@ -9,11 +9,11 @@
   },
   "scripts": {
     "dev": "concurrently -k -n gateway,extension \"tsx watch apps/gateway/src/index.ts\" \"node scripts/build.mjs --watch\"",
-    "demo": "DEMO_MODE=1 tsx apps/gateway/src/index.ts",
     "start": "tsx apps/gateway/src/index.ts",
     "build": "node scripts/build.mjs",
     "art:export": "node scripts/export-y2k-art.mjs",
     "typecheck": "tsc --noEmit",
+    "check:docs": "node scripts/check-doc-links.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "node tests/browser.mjs",
