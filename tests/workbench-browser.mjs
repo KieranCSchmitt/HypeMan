@@ -43,7 +43,8 @@ async function send(text, page = home) {
   const field = page.getByRole("textbox", { name: "What do you need?", exact: true });
   await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
   await field.fill(text); await field.press("Enter");
-  await waitFor(async () => (await field.inputValue()) === "", `conversation finishes: ${text}`, 30_000);
+  await waitFor(async () => (await field.inputValue()) === "", `composer clears: ${text}`, 30_000);
+  await page.getByRole("button", { name: "Send message", exact: true }).waitFor({ timeout: 30_000 });
   const error = page.locator(".conversation-pane .notice.error:visible");
   assert.equal(await error.count(), 0, await error.allTextContents());
 }

@@ -14,7 +14,8 @@ const pet = (page) =>
 async function chat(page, text) {
   await page.getByRole("textbox", { name: "What do you need?", exact: true }).fill(text);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
-  await until(async () => await page.getByRole("textbox", { name: "What do you need?", exact: true }).inputValue() === "", `conversation finishes: ${text}`);
+  await until(async () => await page.getByRole("textbox", { name: "What do you need?", exact: true }).inputValue() === "", `composer clears: ${text}`);
+  await page.getByRole("button", { name: "Send message", exact: true }).waitFor({ timeout: 20_000 });
   assert.equal(await page.locator(".conversation-pane .notice.error:visible").count(), 0);
 }
 async function openTool(page, name) { await chat(page, `open ${name}`); }

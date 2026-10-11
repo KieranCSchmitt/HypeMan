@@ -289,7 +289,13 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     for (const message of runtime?.getSnapshot().messages || []) seen.current.add(message.id);
     } finally { if (alive.current && version === loadingSequence.current) setHydrating(false); }
   };
-  const submit = async (event?: FormEvent) => { event?.preventDefault(); const text = draft; try { await send(text); if (!pending.current) setDraft(""); } catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); } };
+  const submit = async (event?: FormEvent) => {
+    event?.preventDefault(); const text = draft;
+    if (!text.trim() || !state.current.conversationId || hydrating) return;
+    setDraft("");
+    try { await send(text); }
+    catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); }
+  };
   const acceptFiles = async (files: FileList | File[]) => {
     const controller = new AbortController(); pending.current?.abort(); pending.current = controller; setBusy(true); setError("");
     try {

@@ -97,6 +97,22 @@ describe("shared conversation", () => {
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.run" }));
     expect(container.textContent).toContain("Fixture answer."); expect(saved.map((m) => m.role)).toEqual(["user", "assistant"]);
   });
+  it.each(["button", "Enter"])("clears on %s submission and preserves the next draft when the reply arrives", async (method) => {
+    let finish!: (value: any) => void;
+    decide = async () => new Promise((resolve) => { finish = resolve; });
+    await render(); await fill("A slow question");
+    await act(async () => {
+      if (method === "button") container.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click();
+      else container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(container.querySelector("textarea")!.value).toBe("");
+    expect(container.querySelector('[aria-label="Stop"]')).not.toBeNull();
+    expect(saved.find((message) => message.role === "user")?.text).toBe("A slow question");
+    await fill("My next question");
+    await act(async () => finish({ action: { type: "say", text: "Fixture answer." } }));
+    expect(container.textContent).toContain("Fixture answer.");
+    expect(container.querySelector("textarea")!.value).toBe("My next question");
+  });
   it("opens tools through chat locally and keeps the same composer on close", async () => {
     await render(); await fill("open whiteboard"); await submit(); expect(container.querySelector('[data-section="board"]')).not.toBeNull();
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.turn" }), expect.anything());
@@ -114,30 +130,34 @@ describe("shared conversation", () => {
     await fill("Compare two sources then prepare the chosen option"); await submit();
     expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.run", goal: "Compare two sources then prepare the chosen option" }));
   });
-  it("cancels a request, preserves its draft, and ignores a late answer", async () => {
+  it("cancels a request, preserves the next unsent draft, and ignores a late answer", async () => {
     let finish!: (value: any) => void; let signal!: AbortSignal;
     decide = async (_message, requestSignal) => { signal = requestSignal!; return new Promise((resolve) => { finish = resolve; }); };
     await render(); await fill("A slow question"); await submit();
+    expect(container.querySelector("textarea")!.value).toBe("");
+    await fill("An unsent follow-up");
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click()); expect(signal.aborted).toBe(true);
     await act(async () => finish({ action: { type: "say", text: "Late answer" } }));
-    expect(container.textContent).not.toContain("Late answer"); expect(container.querySelector("textarea")!.value).toBe("A slow question");
+    expect(container.textContent).not.toContain("Late answer"); expect(container.querySelector("textarea")!.value).toBe("An unsent follow-up");
   });
-  it("keeps a failed submission editable for retry", async () => {
+  it("keeps the sent message in history and the composer clear when a request fails", async () => {
     decide = async () => { throw new Error("Reconnect the local server."); };
     await render(); await fill("Please help"); await submit();
-    expect(container.textContent).toContain("Reconnect the local server."); expect(container.querySelector("textarea")!.value).toBe("Please help");
+    expect(container.textContent).toContain("Reconnect the local server."); expect(container.querySelector("textarea")!.value).toBe("");
+    expect(container.querySelector(".chat-message.user")!.textContent).toBe("Please help");
   });
   it("cancels when the mascot closes chat and does not reopen a tool from a late answer", async () => {
     let finish!: (value: any) => void; let signal!: AbortSignal;
     decide = async (_message, requestSignal) => { signal = requestSignal!; return new Promise((resolve) => { finish = resolve; }); };
     await render(); await fill("Explain this with a diagram"); await submit();
+    await fill("Draft after sending");
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
     expect(signal.aborted).toBe(true);
     expect(container.querySelector("main")!.hidden).toBe(true);
     await act(async () => finish({ action: { type: "tool", tool: "board", operation: "open" } }));
     expect(container.querySelector("[data-section]")).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
-    expect(container.querySelector("textarea")!.value).toBe("Explain this with a diagram");
+    expect(container.querySelector("textarea")!.value).toBe("Draft after sending");
   });
   it("saves conversational notes without inventing a webpage URL", async () => {
     await render(); await fill("remember: Newton's first law"); await submit();
