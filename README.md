@@ -10,7 +10,9 @@ Built by **Kieran Schmitt** · Chrome Manifest V3 · TypeScript · React · Loca
 
 [Judging walkthrough](docs/JUDGING.md) · [Get started](#get-started) · [Detailed setup](docs/SETUP.md) · [Feature checklist](docs/FEATURES.md)
 
-![HypeMan's interactive pixel rooftop in a new Chrome tab](docs/media/showcase-rooftop.png)
+[Privacy policy](docs/PRIVACY.md) · [Chrome Web Store release preparation](docs/CHROME_WEB_STORE.md)
+
+![HypeMan's interactive pixel rooftop in a new Chrome tab](docs/media/store/01-rooftop-1280x800.png)
 
 ## A companion for the whole task
 
@@ -68,6 +70,8 @@ Live AI uses your eligible ChatGPT plan through the local gateway. No OpenAI API
 Local whiteboard editing, PDF viewing, notes, and saved work are available without live AI.
 
 After rebuilding, reload the extension and refresh webpage tabs. `npm run dev` watches the gateway and extension build. See [detailed setup](docs/SETUP.md) for connection recovery, phone pairing, environment settings, controls, and troubleshooting.
+
+For a Chrome Web Store installation, set `HYPEMAN_STORE_EXTENSION_ID` in the gateway's `.env` to the exact item ID assigned by Google, then restart the gateway. The unpacked development extension remains recognized by its pinned identity. `npm run package:store` builds the store upload ZIP; it does not publish the extension. AI and phone features still require the local gateway in this edition.
 
 ## How it works
 

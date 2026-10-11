@@ -1,4 +1,5 @@
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { replaceFileAtomically } from "./atomic-file";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -120,7 +121,7 @@ export class MessagingStore {
       writeFileSync(descriptor, serialized, "utf8");
       fsyncSync(descriptor);
       closeSync(descriptor); descriptor = undefined;
-      renameSync(temporary, this.path);
+      replaceFileAtomically(temporary, this.path);
       this.saved = serialized;
     } catch {
       if (this.saved) this.state = JSON.parse(this.saved) as MessagingState;

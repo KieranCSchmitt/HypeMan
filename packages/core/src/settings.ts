@@ -21,7 +21,7 @@ export const DEFAULT_SETTINGS: Settings = {
   version: 2,
   serverUrl: "http://localhost:8787",
   serverToken: "",
-  proactiveEnabled: true,
+  proactiveEnabled: false,
   learningEnabled: false,
   screenshotEnabled: false,
   tabContextEnabled: false,

@@ -57,7 +57,11 @@ describe("shared conversation", () => {
     await render(false);
     expect(container.querySelector(".conversation-workbench")).toBeNull();
     expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.resolve" }));
-    expect([...container.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toEqual(["Open HypeMan", "Open HypeMan chat"]);
+    expect([...container.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toEqual(["Change HypeMan skin", "Open HypeMan", "Open HypeMan chat"]);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Change HypeMan skin"]')!.click());
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(container.querySelector(".conversation-workbench")).toBeNull();
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
     expect(container.querySelector("textarea")).not.toBeNull();
     expect(container.querySelector("main")!.hidden).toBe(false);
@@ -107,7 +111,7 @@ describe("shared conversation", () => {
   it("has one composer, contextual file input, and no persistent feature launchers or modes", async () => {
     await render(); expect(container.querySelectorAll("textarea")).toHaveLength(1);
     expect(container.querySelector('input[type="file"]')).not.toBeNull();
-    expect([...container.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")).sort()).toEqual(["Attach a file", "Close HypeMan chat", "Close HypeMan window", "Maximize HypeMan window", "Minimize HypeMan window", "Open HypeMan", "Send message"]);
+    expect([...container.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")).sort()).toEqual(["Attach a file", "Change HypeMan skin", "Close HypeMan chat", "Close HypeMan window", "Maximize HypeMan window", "Minimize HypeMan window", "Open HypeMan", "Send message"]);
     expect(container.querySelector(".conversation-context")).toBeNull();
     expect(container.querySelector(".conversation-welcome")).toBeNull();
     expect(container.querySelector('a[href*="control.html"]')).toBeNull();

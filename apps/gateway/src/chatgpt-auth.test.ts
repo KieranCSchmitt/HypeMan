@@ -84,8 +84,13 @@ describe("ChatGPT public-client sign-in", () => {
     expect(test.verifyIdentity).toHaveBeenCalledWith("private-id-oaiapp_one", {
       clientId: "oaiapp_one", nonce: authorize.searchParams.get("nonce"),
     });
-    expect(statSync(test.storage).mode & 0o777).toBe(0o700);
-    expect(statSync(join(test.storage, "chatgpt-auth.json")).mode & 0o777).toBe(0o600);
+    // POSIX mode bits have no owner-only meaning on Windows; its profile ACLs
+    // provide access control. Keep persistence and credential isolation checks
+    // on every platform, and assert POSIX permissions where they are supported.
+    if (process.platform !== "win32") {
+      expect(statSync(test.storage).mode & 0o777).toBe(0o700);
+      expect(statSync(join(test.storage, "chatgpt-auth.json")).mode & 0o777).toBe(0o600);
+    }
     expect(test.auth.status()).toMatchObject({ connected: true, sharing: true, pending: false });
     const publicStatus = JSON.stringify(test.auth.status());
     for (const secret of ["private-access", "private-refresh", "private-id", "oaiapp_one", "urn:uuid:"])
@@ -381,8 +386,10 @@ describe("HypeMan credential storage", () => {
     const separate = fixture();
     expect(separate.auth.status()).toMatchObject({ connected: false, activeProfileId: null });
     expect(readFileSync(join(account.storage, "chatgpt-auth.json"), "utf8")).toBe(before);
-    expect(statSync(separate.storage).mode & 0o777).toBe(0o700);
-    expect(statSync(join(separate.storage, "chatgpt-auth.json")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(statSync(separate.storage).mode & 0o777).toBe(0o700);
+      expect(statSync(join(separate.storage, "chatgpt-auth.json")).mode & 0o777).toBe(0o600);
+    }
   });
 
   it("rejects corrupt stored credentials without overwriting the source file", () => {

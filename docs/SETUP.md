@@ -29,6 +29,8 @@ The [verification guide](VERIFICATION.md) covers automated checks and live accou
 
 After rebuilding, reload the extension in `chrome://extensions` and refresh website tabs. `npm run dev` watches the gateway and extension build.
 
+For the store-installed edition, copy its exact 32-letter item ID from `chrome://extensions` into `HYPEMAN_STORE_EXTENSION_ID` in the gateway's `.env`, then restart `npm start`. This explicitly trusts that store installation for automatic local connection. Leave the value blank for the unpacked development edition. See [store release preparation](CHROME_WEB_STORE.md) and [privacy policy](PRIVACY.md).
+
 ## What is included
 
 - A task companion with highlights, navigation, ordinary form filling, confirmation, cancellation, and verified action history.

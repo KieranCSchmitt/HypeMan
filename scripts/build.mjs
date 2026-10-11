@@ -34,6 +34,10 @@ function copy() {
   for (const name of ["cmaps", "standard_fonts", "wasm"])
     cpSync(resolve(pdfRoot, name), resolve(pdfOutput, name), { recursive: true });
   cpSync(resolve(root, "node_modules/katex/dist/fonts"), resolve(output, "fonts"), { recursive: true });
+  const licenses = resolve(output, "licenses");
+  mkdirSync(licenses, { recursive: true });
+  for (const name of ["react", "react-dom", "katex", "pdfjs-dist"])
+    cpSync(resolve(root, "node_modules", name, "LICENSE"), resolve(licenses, `${name}.txt`));
   const styles = ["ui.css", "y2k-base.css", "y2k-art.css", "y2k-hub.css", "y2k-tools.css", "overlays.css", "tool-theme.css"]
     .map((name) => resolve(source, "public", name))
     .filter(existsSync)
