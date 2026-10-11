@@ -351,6 +351,8 @@ async function handle(
     case "artifact.get":
     case "artifact.put":
     case "workbench.export":
+    case "workbench.ui.get":
+    case "workbench.ui.patch":
       return workbenchMessage(message);
     case "workspace.get":
       return workspace.snapshot();

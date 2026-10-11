@@ -9,6 +9,8 @@ import {
   type SessionHandoff,
   type PageSnapshot,
   type AgentRequest,
+  type ConversationUIState,
+  type WindowGeometrySnapshot,
 } from "@core";
 
 interface Reply {
@@ -296,6 +298,110 @@ describe("background ownership and handoff integration", () => {
     });
     await ok(evidence, sender(2));
     expect((await snapshot()).events).toMatchObject([{ id: "next-tab-evidence", taskId: task.id }]);
+  });
+});
+
+describe("conversation window session state", () => {
+  const conversationId = "window-conversation";
+  const geometry = (x = 20): WindowGeometrySnapshot => ({
+    rect: { x, y: 30, width: 640, height: 480 }, minimized: false, maximized: false,
+    restoreRect: null, userResized: true,
+  });
+  const ui = (): ConversationUIState => ({ open: true, tools: ["notes", "board"], active: "board", geometry: { chat: geometry(), board: geometry(80) } });
+  const get = (id = conversationId, from = sender(1)) => ok<ConversationUIState | null>({ type: "workbench.ui.get", conversationId: id }, from);
+
+  it("keeps window state in session storage without selecting conversations or replaying work", async () => {
+    const workspaceBefore = await snapshot(), localBefore = structuredClone(local);
+    expect(await get()).toBeNull();
+    expect(await ok({ type: "workbench.ui.patch", conversationId, patch: ui() })).toEqual(ui());
+    expect(await get(conversationId, sender(2))).toEqual(ui());
+    expect(await get("another-conversation")).toBeNull();
+    expect(session["hypeman.workbench.ui.window-conversation"]).toEqual(ui());
+    expect(session["hypeman.tab.1"]).toBeUndefined();
+    expect(local).toEqual(localBefore);
+    expect(await snapshot()).toEqual(workspaceBefore);
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    vi.resetModules();
+    await import("../apps/extension/src/background/index");
+    expect(await get()).toEqual(ui());
+  });
+
+  it("serializes partial patches and merges geometry from independent windows", async () => {
+    await ok({ type: "workbench.ui.patch", conversationId, patch: ui() });
+    let blocked!: () => void, release!: () => void;
+    const saving = new Promise<void>((resolve) => { blocked = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let writes = 0;
+    beforeSessionSave = async (patch) => {
+      if (!("hypeman.workbench.ui.window-conversation" in patch)) return;
+      writes++;
+      if (writes === 1) { blocked(); await hold; }
+    };
+    const moving = ok({ type: "workbench.ui.patch", conversationId, patch: { geometry: { notes: geometry(120) } } });
+    await saving;
+    const closing = ok({ type: "workbench.ui.patch", conversationId, patch: { open: false, tools: ["notes"] } }, sender(2));
+    const maximizing = ok({ type: "workbench.ui.patch", conversationId, patch: { geometry: { board: { ...geometry(40), maximized: true, restoreRect: geometry(80).rect } } } });
+    release();
+    await Promise.all([moving, closing, maximizing]);
+    expect(await get()).toEqual({ open: false, tools: ["notes"], active: null,
+      geometry: { chat: geometry(), notes: geometry(120), board: { ...geometry(40), maximized: true, restoreRect: geometry(80).rect } } });
+    await ok({ type: "workbench.ui.patch", conversationId, patch: { geometry: { notes: null } } });
+    expect((await get())!.geometry).toEqual({ chat: geometry(), board: { ...geometry(40), maximized: true, restoreRect: geometry(80).rect } });
+  });
+
+  it.each([false, true])("follows a conversation through navigation (new tab: %s)", async (newTab) => {
+    session["hypeman.tab.1"] = { conversationId };
+    await ok({ type: "workbench.ui.patch", conversationId, patch: ui() });
+    const task = await ok<BrowserTask>({ type: "task.start", goal: "Read the source", steps: ["Read the source page", "Summarize the findings"], dispatch: false });
+    await ok({ type: "nav.navigate", url: "https://source.example/read", newTab, handoff: { ...handoff(task), conversationId } });
+    const targetId = newTab ? 100 : 1;
+    const targetSession = await ok<{ conversationId: string }>({ type: "session.get" }, sender(targetId));
+    expect(targetSession.conversationId).toBe(conversationId);
+    const workspaceBefore = await snapshot();
+    vi.mocked(chrome.tabs.sendMessage).mockClear();
+    expect(await get(targetSession.conversationId, sender(targetId))).toEqual(ui());
+    expect(await snapshot()).toEqual(workspaceBefore);
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("restores the shared state in an existing destination tab without changing its task", async () => {
+    session["hypeman.tab.1"] = { conversationId };
+    session["hypeman.tab.2"] = { conversationId: "old-destination-conversation" };
+    await ok({ type: "workbench.ui.patch", conversationId, patch: ui() });
+    await ok({ type: "workbench.ui.patch", conversationId: "old-destination-conversation", patch: { open: false, tools: ["video"] } }, sender(2));
+    await ok({ type: "settings.patch", patch: { tabContextEnabled: true } }, extensionSender());
+    const task = await ok<BrowserTask>({ type: "task.start", goal: "Read another source", steps: ["Read the other source", "Summarize the findings"], dispatch: false });
+    await ok({ type: "nav.switch", tabId: 2, handoff: { ...handoff(task), conversationId } });
+    const targetSession = await ok<{ conversationId: string }>({ type: "session.get" }, sender(2));
+    expect(targetSession.conversationId).toBe(conversationId);
+    const workspaceBefore = await snapshot();
+    vi.mocked(chrome.tabs.sendMessage).mockClear();
+    expect(await get(targetSession.conversationId, sender(2))).toEqual(ui());
+    expect(await snapshot()).toEqual(workspaceBefore);
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(await get("old-destination-conversation", sender(2))).toMatchObject({ open: false, tools: ["video"] });
+  });
+
+  it("rejects untrusted state and geometry atomically and preserves the existing bridge caller check", async () => {
+    await ok({ type: "workbench.ui.patch", conversationId, patch: ui() });
+    for (const patch of [
+      null, [], { open: "true" }, { tools: ["chat"] }, { tools: ["board", "board"] }, { active: "video" },
+      { taskId: "replay" }, { geometry: { unknown: geometry() } }, { geometry: { board: { ...geometry(), minimized: "yes" } } },
+      ...[NaN, Infinity, -Infinity, 100001].map((x) => ({ geometry: { board: { ...geometry(), rect: { ...geometry().rect, x } } } })),
+      { geometry: { board: { ...geometry(), rect: { ...geometry().rect, width: 0 } } } },
+      { geometry: { board: { ...geometry(), restoreRect: { ...geometry().rect, height: -1 } } } },
+    ]) {
+      expect(await rpc({ type: "workbench.ui.patch", conversationId, patch })).toMatchObject({ ok: false });
+      expect(await get()).toEqual(ui());
+    }
+    expect(await rpc({ type: "workbench.ui.get", conversationId: "../invalid" })).toMatchObject({ ok: false });
+    expect(await rpc({ type: "workbench.ui.patch", conversationId, patch: { open: false } }, { ...sender(1), id: "untrusted" })).toEqual({ ok: false, error: "Unknown caller" });
+    expect(await get()).toEqual(ui());
+    session["hypeman.workbench.ui.corrupt"] = { ...ui(), geometry: { board: { ...geometry(), rect: { ...geometry().rect, height: Infinity } } } };
+    expect(await get("corrupt")).toBeNull();
+    expect(await ok({ type: "workbench.ui.patch", conversationId: "corrupt", patch: { open: true } })).toEqual({ open: true, tools: [], active: null, geometry: {} });
   });
 });
 

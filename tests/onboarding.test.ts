@@ -13,7 +13,7 @@ vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: () => createElement("span"
 let root: Root, container: HTMLDivElement, demo: boolean;
 beforeEach(() => {
  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("chrome", { tabs: {} }); demo = false;
- vi.mocked(request).mockReset().mockImplementation(async (m) => m.type === "conversation.resolve" ? { id: "setup", messages: [] } : m.type === "health" ? { demoMode: demo } : {});
+ vi.mocked(request).mockReset().mockImplementation(async (m) => m.type === "conversation.resolve" ? { id: "setup", messages: [] } : m.type === "workbench.ui.get" ? null : m.type === "health" ? { demoMode: demo } : {});
  container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });

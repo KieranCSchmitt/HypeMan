@@ -25,7 +25,7 @@ export function NewTab({ initialTool }: { initialTool?: string }) {
       <input type="search" name="q" aria-label="Search the web" placeholder="Search the web" autoComplete="off" required />
     </form>}
     {mounted && <div className="conversational-companion"><main id="newtab-companion-chat" aria-label="HypeMan avatar conversation" hidden={!open} className="companion-workbench-host">
-      <ConversationWorkbench initialTool={initialTool} onActivity={setBusy} onClose={close} />
+      <ConversationWorkbench initialTool={initialTool} chatOpen={open} onRestoreChatOpen={() => open} onActivity={setBusy} onClose={close} />
     </main></div>}
     <Rooftop reduced={reduced} activity={busy && open ? "thinking" : "idle"}
       onCompanion={() => { if (open) close(); else reveal(); }} />

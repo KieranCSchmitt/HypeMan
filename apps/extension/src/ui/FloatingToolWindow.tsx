@@ -23,7 +23,7 @@ export function FloatingToolWindow({ section, open, focused, cascade, onFocus, o
     window.addEventListener("blur", childFocus); return () => { clearTimeout(timer); window.removeEventListener("blur", childFocus); };
   }, [open, section]);
   const title = overlaySections[section].title, help = `tool-window-help-${section}`;
-  return <section ref={geometry.hostRef} hidden={!open} className={`pixel-workspace workspace-${section}`} role="region" aria-label={title} data-window-tool={section}
+  return <section ref={geometry.hostRef} hidden={!open || !geometry.hydrated} className={`pixel-workspace workspace-${section}`} role="region" aria-label={title} data-window-tool={section}
     {...geometry.shellProps} style={geometry.style}>
     <header className="pixel-workspace-bar" tabIndex={0} aria-label={`Move ${title} window`} aria-describedby={help} aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" {...geometry.titleProps}>
       <span><Icon name={overlaySections[section].icon} /><strong>{title}</strong></span><span className="pixel-window-grip" aria-hidden="true" />

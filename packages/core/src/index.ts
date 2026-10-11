@@ -13,3 +13,4 @@ export type {
 export * from "./tools";
 export * from "./documents";
 export * from "./board";
+export * from "./workbench-ui";

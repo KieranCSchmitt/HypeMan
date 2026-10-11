@@ -142,6 +142,36 @@ async function projects() {
   await chat("open projects");
   await article.locator(".inline-toolbox-tasks .task-card").first().waitFor();
 }
+async function prepareWindows() {
+  await chat("open whiteboard");
+  const board = article.locator(".workspace-board:visible");
+  await board.waitFor();
+  const before = await board.boundingBox();
+  await board.getByRole("group", { name: "Resize Whiteboard window", exact: true }).press("Shift+ArrowLeft");
+  await board.getByRole("group", { name: "Resize Whiteboard window", exact: true }).press("ArrowUp");
+  await board.locator(".pixel-workspace-bar").press("ArrowLeft");
+  const rect = await waitFor(async () => {
+    const rect = await board.boundingBox();
+    return rect.width < before.width - 40 && rect.height < before.height - 5 ? rect : null;
+  }, "board moved and resized before navigation");
+  await chat("open notes");
+  const notes = article.locator(".workspace-notes:visible");
+  await notes.getByRole("button", { name: "Minimize Notes window", exact: true }).click();
+  await waitFor(async () => await notes.getAttribute("data-minimized") === "true", "notes minimized before navigation");
+  return rect;
+}
+async function restoredWindows(rect) {
+  // Do not call panel/chat/projects here: those helpers can reopen a lost UI.
+  await article.locator(".conversation-pane:visible").waitFor();
+  const board = article.locator(".workspace-board:visible"), notes = article.locator(".workspace-notes:visible");
+  await board.waitFor(); await notes.waitFor();
+  await waitFor(async () => {
+    const actual = await board.boundingBox();
+    return ["x", "y", "width", "height"].every((key) => Math.abs(actual[key] - rect[key]) <= 1);
+  }, "same-tab navigation restores board position and size");
+  assert.equal(await notes.getAttribute("data-minimized"), "true", "notes stay minimized after navigation");
+  assert.equal(await notes.locator(".pixel-workspace-content").isVisible(), false);
+}
 async function mutateOutcome(text) {
   await article.evaluate((text) => { document.querySelector("#outcome").textContent = text; }, text);
 }
@@ -177,6 +207,7 @@ try {
   assert.equal(assessments.length, 0);
   check("A simple question stays in chat without a task or progress-analysis request");
 
+  const preservedBoard = await prepareWindows();
   await chat("Project: compare two workshop options, then prepare a draft on another website and review it together. Wait for me to do the steps.");
   const task = await waitFor(async () => (await state()).tasks.find((task) => task.status === "running"), "explicit project plan");
   assert.deepEqual(task.steps.map((step) => step.title), milestones);
@@ -200,13 +231,14 @@ try {
   const decisionsBeforeNavigation = decisions.length;
   await article.getByRole("link", { name: "Review comparison details", exact: true }).press("Enter");
   await article.waitForURL(`${firstSite}/next`);
+  await restoredWindows(preservedBoard);
   await projects();
   const restoredCard = article.locator(".task-card").filter({ hasText: task.goal });
   await restoredCard.locator("summary").click();
   assert.equal(await restoredCard.locator(".steps li.done").count(), 1);
   assert.equal((await project(task.id)).steps[1].status, "doing");
   assert.equal(decisions.length, decisionsBeforeNavigation);
-  check("Ordinary same-tab navigation restores the current project without replaying actions");
+  check("Ordinary same-tab navigation restores chat, resized board, minimized notes and the project without replaying actions");
 
   const previousPage = article;
   await openWebsite(secondSite);

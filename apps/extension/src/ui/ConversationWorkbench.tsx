@@ -15,14 +15,17 @@ import { parseCaptions } from "./Video";
 import { MessageContent } from "./MessageContent";
 import { clampWindow } from "./window-layout";
 import { useWindowGeometry, WindowControls, WindowResizeHandles } from "./useWindowGeometry";
+import { useConversationUI } from "./useConversationUI";
+import { WindowGeometryProvider, type WindowGeometryPersistence } from "./WindowGeometryPersistence";
 
 interface Message { id: string; role: "user" | "assistant" | "status"; text: string; at: number }
 const sections: Record<string, string> = { projects: "tasks", pdf: "documents" };
 const resolveSection = (tool: string | null): OverlaySection | null => {
   const value = tool && (sections[tool] || tool); return isOverlaySection(value) ? value : null;
 };
-export function ConversationWorkbench({ runtime, initialTool, onClose, onActivity }: {
+export function ConversationWorkbench({ runtime, initialTool, onClose, onActivity, chatOpen = true, onRestoreChatOpen }: {
   runtime?: CompanionRuntime; initialTool?: string; onClose?: () => void; onActivity?: (busy: boolean) => void;
+  chatOpen?: boolean; onRestoreChatOpen?: (open: boolean, conversationId: string) => boolean;
 }) {
   const { settings } = useSettings();
   const [conversationId, setConversationId] = useState("");
@@ -32,23 +35,40 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     const active = resolveSection(initialTool || location.hash.slice(1));
     return { active, open: active ? [active] : [] };
   });
+  const windowsRef = useRef(windows); windowsRef.current = windows;
+  const ui = useConversationUI(conversationId, { open: chatOpen, tools: windows.open, active: windows.active, geometry: {} }, (saved) => {
+    const restored = { open: saved.tools, active: saved.active };
+    windowsRef.current = restored; setWindows(restored);
+    return { ...saved, open: onRestoreChatOpen?.(saved.open, conversationId) ?? saved.open };
+  });
+  const lastChatOpen = useRef(chatOpen);
+  useEffect(() => {
+    if (lastChatOpen.current !== chatOpen) { lastChatOpen.current = chatOpen; ui.patch({ open: chatOpen }); }
+  }, [chatOpen, ui.patch]);
+  const updateWindows = useCallback((change: (current: typeof windows) => typeof windows) => {
+    const next = change(windowsRef.current);
+    windowsRef.current = next; setWindows(next);
+    ui.patch({ tools: next.open, active: next.active });
+  }, [ui.patch]);
   const tool = windows.active;
   const closeTool = useCallback((section: OverlaySection) => {
-    setWindows((current) => {
+    updateWindows((current) => {
       const open = current.open.filter((value) => value !== section);
       return { open, active: current.active === section ? open.at(-1) || null : current.active };
     });
-  }, []);
+  }, [updateWindows]);
   const setTool = useCallback((section: OverlaySection | null) => {
-    setWindows((current) => {
+    updateWindows((current) => {
       const open = current.open.filter((value) => value !== (section || current.active));
       if (section) open.push(section);
       return { open, active: section || open.at(-1) || null };
     });
-  }, []);
+  }, [updateWindows]);
   const focusTool = useCallback((section: OverlaySection) => {
-    setWindows((current) => current.active === section ? current : { ...current, active: section });
-  }, []);
+    if (windowsRef.current.active !== section) updateWindows((current) => ({ ...current, active: section }));
+  }, [updateWindows]);
+  const onGeometryChange: WindowGeometryPersistence["onGeometryChange"] = useCallback((id, snapshot) => ui.patch({ geometry: { [id]: snapshot } }), [ui.patch]);
+  const persistence: WindowGeometryPersistence = { conversationId, ready: ui.ready, geometry: ui.geometry, onGeometryChange };
   const [selected, setSelected] = useState<SelectedContent | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -64,7 +84,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const field = useRef<HTMLTextAreaElement>(null), end = useRef<HTMLDivElement>(null), files = useRef<HTMLInputElement>(null);
   const preferredHeight = Math.min(400, messages.length ? 360 : confirmation || snapshot?.confirmation ? 240 : image ? 220 : error ? 180 : 120);
   const chatWindow = useWindowGeometry({
-    id: "chat", minSize: { width: 300, height: 120 }, preferredHeight,
+    id: "chat", minSize: { width: 300, height: 120 }, preferredHeight, persistence,
     initialRect: (viewport) => clampWindow({ x: viewport.x + viewport.width - 368, y: viewport.y + viewport.height - 105 - preferredHeight, width: 340, height: preferredHeight }, viewport, { width: 300, height: 120 }),
   });
   const handlers = useRef(new Map<string, ToolHandler>());
@@ -77,7 +97,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     handlers.current.set(name, handler);
     return () => { if (handlers.current.get(name) === handler) handlers.current.delete(name); };
   }, []);
-  const openTool = useCallback((name: string | null) => { setTool(resolveSection(name)); }, []);
+  const openTool = useCallback((name: string | null) => { setTool(resolveSection(name)); }, [setTool]);
   const append = useCallback(async (role: Message["role"], text: string, id: string = crypto.randomUUID()) => {
     if (!text || !state.current.conversationId) return;
     const message = { id, role, text, at: Date.now() };
@@ -140,7 +160,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     if (!handler) throw new Error("The tool is still opening. Try your request again.");
     const result = await handler(operation, { ...args, conversationId: state.current.conversationId, ...(!args.selected && state.current.selected ? { selected: state.current.selected } : {}) });
     signal?.throwIfAborted(); return result;
-  }, []);
+  }, [setTool]);
   useEffect(() => {
     runtime?.setToolHandler?.((action) => executeTool(action.tool, action.operation, action.args));
     return () => runtime?.setToolHandler?.(null);
@@ -218,6 +238,8 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     if (pending.current) stop();
     const controller = new AbortController(); pending.current = controller; setBusy(true); setError("");
     try {
+      window.dispatchEvent(new Event("hypeman.flush-window-geometry"));
+      await ui.flush(); controller.signal.throwIfAborted();
       await append("user", text);
       const dismiss = text.match(/^(?:close|dismiss|hide)(?: this| the)?(?: (tool|board|whiteboard|documents?|pdf|notes|video|projects|settings|preferences|practice|phone|connection))?$/i);
       if (dismiss) {
@@ -315,11 +337,12 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     finally { if (pending.current === controller) { pending.current = null; setBusy(false); } }
   };
   const working = busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting";
-  return <WorkbenchContext.Provider value={{ conversationId: conversationId || "default", selected, selectContent: setSelected, openTool, register, executeTool, send }}>
+  return <WorkbenchContext.Provider value={{ conversationId: conversationId || "default", selected, selectContent: setSelected, openTool, register, executeTool, send }}><WindowGeometryProvider {...persistence}>
     <div className={`conversation-workbench ${tool ? "has-tool" : ""}`} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }}
       onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); event.stopPropagation(); void acceptFiles(event.dataTransfer.files); } }}>
       <section ref={chatWindow.hostRef} className="conversation-pane pixel-workspace workspace-chat" aria-label="HypeMan conversation"
         data-window-tool="chat"
+        hidden={!chatWindow.hydrated}
         style={chatWindow.style} {...chatWindow.shellProps}>
         <header className="conversation-title pixel-workspace-bar" tabIndex={0} aria-label="Move HypeMan window" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" {...chatWindow.titleProps}>
           <span><Icon name="chat" /><strong>HypeMan</strong></span><span className="pixel-window-grip" aria-hidden="true" />
@@ -362,5 +385,5 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         onClose={(section) => { window.dispatchEvent(new Event("hypeman.cancel-tools")); closeTool(section); field.current?.focus(); }} onError={setError} />
       {captureRegion && <ScreenRegion onImage={(data) => regionAnswer.current?.(data)} onError={(cause) => { if (cause.name !== "AbortError") setError(cause.message); regionAnswer.current?.(null); }} />}
     </div>
-  </WorkbenchContext.Provider>;
+  </WindowGeometryProvider></WorkbenchContext.Provider>;
 }

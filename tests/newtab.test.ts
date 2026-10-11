@@ -19,6 +19,7 @@ beforeEach(() => {
   saved = []; decide = async () => ({ action: { type: "say", text: "Fixture answer." }, done: true });
   vi.mocked(request).mockReset().mockImplementation(async (message, signal) => {
     if (message.type === "conversation.resolve") return { id: "fixture-conversation", messages: saved };
+    if (message.type === "workbench.ui.get") return null;
     if (message.type === "conversation.append") { saved.push(message.message); return {}; }
     if (message.type === "assistant.turn") return decide(message, signal);
     return {};
