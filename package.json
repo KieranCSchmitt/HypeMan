@@ -1,6 +1,6 @@
 {
   "name": "hypeman-browser-companion",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "HypeMan, a Y2K browser task companion powered by ChatGPT sign-in.",
@@ -11,6 +11,8 @@
     "dev": "concurrently -k -n gateway,extension \"tsx watch apps/gateway/src/index.ts\" \"node scripts/build.mjs --watch\"",
     "start": "tsx apps/gateway/src/index.ts",
     "build": "node scripts/build.mjs",
+    "package:store": "npm run build && node scripts/package-extension.mjs",
+    "store:assets": "node scripts/store-assets.mjs",
     "art:export": "node scripts/export-y2k-art.mjs",
     "art:skins": "node scripts/export-character-skins.mjs",
     "typecheck": "tsc --noEmit",

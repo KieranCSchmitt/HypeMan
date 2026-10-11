@@ -17,8 +17,11 @@ export function authenticated(req: IncomingMessage, token: string): boolean {
 /** Browser-controlled Origin is required to discover the local connection secret.
  * CLI requests without an Origin and ordinary web/other extension origins do not qualify.
  */
-export function firstPartyExtension(origin: string | undefined): boolean {
-  return origin === HYPEMAN_EXTENSION_ORIGIN;
+export function firstPartyExtension(origin: string | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (origin === HYPEMAN_EXTENSION_ORIGIN) return true;
+  const storeId = env.HYPEMAN_STORE_EXTENSION_ID?.trim();
+  // Never accept an arbitrary extension, URL, wildcard, or malformed ID.
+  return !!storeId && /^[a-p]{32}$/.test(storeId) && origin === `chrome-extension://${storeId}`;
 }
 /** No Origin is allowed for local CLI clients; browser requests must identify a trusted origin. */
 export function allowedOrigin(origin: string | undefined, port: number): boolean {

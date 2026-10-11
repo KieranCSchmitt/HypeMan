@@ -35,6 +35,7 @@ const agentInput = (requestId = "integration-request"): AgentRequest => ({
 const running: ReturnType<typeof createGateway>[] = [];
 afterEach(async () => {
   await Promise.all(running.splice(0).map((gateway) => gateway.close()));
+  vi.unstubAllEnvs();
 });
 async function start(
   options: Partial<Parameters<typeof createGateway>[1]> = {},
@@ -99,6 +100,27 @@ describe("local gateway boundary", () => {
     expect(
       (await post(url, "/api/agent", agentInput(), { origin: HYPEMAN_EXTENSION_ORIGIN })).status,
     ).toBe(200);
+  });
+  it("connects only the configured store extension and still requires API authentication", async () => {
+    const id = "abcdefghijklmnopabcdefghijklmnop";
+    vi.stubEnv("HYPEMAN_STORE_EXTENSION_ID", id);
+    const origin = `chrome-extension://${id}`;
+    const { url } = await start();
+    const response = await fetch(url + "/api/connection", {
+      method: "POST", headers: { "content-type": "application/json", origin }, body: "{}",
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+    expect(await response.json()).toEqual({ token });
+    const unauthorized = await fetch(url + "/api/agent", {
+      method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify(agentInput()),
+    });
+    expect(unauthorized.status).toBe(401);
+    const other = await fetch(url + "/api/connection", {
+      method: "POST", headers: { "content-type": "application/json", origin: `chrome-extension://${"a".repeat(32)}` }, body: "{}",
+    });
+    expect(other.status).toBe(403);
+    expect(await other.text()).not.toContain(token);
   });
   it("never reveals the connection token to missing, web, or other extension origins", async () => {
     const { url } = await start();
@@ -373,7 +395,7 @@ it("persists a restrictive local token and reuses it without exposing it in heal
     expect(first).toMatch(/^[a-f0-9]{64}$/);
     expect(loadPairingToken({}, directory)).toBe(first);
     expect(readFileSync(join(directory, ".hypeman-token"), "utf8").trim()).toBe(first);
-    expect(statSync(join(directory, ".hypeman-token")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(join(directory, ".hypeman-token")).mode & 0o777).toBe(0o600);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -387,7 +409,7 @@ it("reuses an existing HypeMan token and tightens its permissions", () => {
     writeFileSync(path, `${token}\n`, { mode: 0o644 });
     expect(loadPairingToken({}, directory)).toBe(token);
     expect(readFileSync(path, "utf8")).toBe(`${token}\n`);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

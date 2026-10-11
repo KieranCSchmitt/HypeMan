@@ -16,9 +16,13 @@ npm run e2e:projects
 npm run e2e:execution
 npm run e2e:auth
 npm run e2e:messaging
+npm run package:store
+npm run store:assets
 ```
 
 Browser checks use isolated Chromium profiles, minimal test-only pages, and controlled provider responses. They verify browser policy, persistence, tool interactions, transport, and failure recovery. Mocked authentication does not sign in to an actual account or consume plan usage.
+
+Store preparation also loads the staged package without the development manifest key and verifies local tools without a gateway, privacy defaults, and listing-image dimensions. Store-ID tests check the exact configured origin and continued API authentication. Atomic-file tests cover Windows lock retries, preservation of the previous state, and bounded failure. POSIX permission-bit and privileged file-symlink assertions run on supported platforms; Windows uses filesystem ACLs, which those POSIX assertions do not validate.
 
 ## Live checks
 

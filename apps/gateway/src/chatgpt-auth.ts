@@ -8,10 +8,10 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { replaceFileAtomically } from "./atomic-file";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
@@ -197,7 +197,7 @@ export class ChatGPTAuth {
       fsyncSync(descriptor);
       closeSync(descriptor);
       descriptor = undefined;
-      renameSync(temporary, this.path);
+      replaceFileAtomically(temporary, this.path);
       chmodSync(this.path, 0o600);
     } catch {
       throw authError(503, "ChatGPT credentials could not be saved. Check the local app directory.", "chatgpt_storage_error");

@@ -350,15 +350,21 @@ describe("accountability, delivery, and synchronization recovery", () => {
   it("preserves private atomic state and refuses corrupt or symlinked files", async () => {
     const f = fixture(); await f.pair();
     const path = join(f.directory, "messaging.json");
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(statSync(f.directory).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(f.directory).mode & 0o777).toBe(0o700);
+    }
     await f.service.close();
     writeFileSync(path, "corrupt");
     expect(() => new MessagingStore(f.directory)).toThrow("existing data was preserved");
     expect(readFileSync(path, "utf8")).toBe("corrupt");
-    rmSync(path); const target = join(f.directory, "target"); writeFileSync(target, "preserved"); symlinkSync(target, path);
-    expect(() => new MessagingStore(f.directory)).toThrow();
-    expect(readFileSync(target, "utf8")).toBe("preserved");
+    // Creating file symlinks on Windows needs privileges/developer mode.
+    // Linux CI retains this check; corrupt-state refusal is checked everywhere.
+    if (process.platform !== "win32") {
+      rmSync(path); const target = join(f.directory, "target"); writeFileSync(target, "preserved"); symlinkSync(target, path);
+      expect(() => new MessagingStore(f.directory)).toThrow();
+      expect(readFileSync(target, "utf8")).toBe("preserved");
+    }
   });
   it("bounds a hung send, records unknown delivery, and can continue processing", async () => {
     const f = fixture(); await f.pair(); await f.service.close();

@@ -1,4 +1,5 @@
 node_modules/
+release/
 apps/extension/dist/
 .env
 .env.local

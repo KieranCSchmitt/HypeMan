@@ -148,7 +148,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
       : await providers.status();
     return {
       ok: true,
-      version: "0.2.0",
+      version: "0.2.1",
       demoMode: config.demo,
       authRequired: true,
       capabilities: {
