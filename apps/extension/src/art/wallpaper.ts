@@ -1,10 +1,13 @@
 import atlas from "../../public/assets/y2k/hypeman-atlas.json";
 import { LAYOUT, SCENE_H, SCENE_W, type Rect } from "../../../../scripts/art/scene/constants";
 import { AmbientBubbles, Effects } from "../../../../scripts/art/scene/fx";
-import { drawFar, drawNear, drawPool, drawRoof, drawSky, BLIMP_CROSSING_MS } from "../../../../scripts/art/scene/layers";
+import { drawFar, drawNear, drawRoof, drawSky, drawSignSupports, BLIMP_CROSSING_MS } from "../../../../scripts/art/scene/layers";
+import { CLOUDS } from "../../../../scripts/art/scene/sprites";
+import { drawFountain, drawFountainStone } from "../../../../scripts/art/scene/fountain";
 import { drawBoombox, drawCrt, drawCrtShell, drawGraffiti, drawJumbotron, drawPigeons, drawPropOutline, drawStringLights, pigeonsAreBack, type World } from "../../../../scripts/art/scene/props";
 import { Surface, clearTextCache, dissolve } from "../../../../scripts/art/scene/surface";
 import { DayClock, PHASES, THEMES, type Phase } from "../../../../scripts/art/scene/timeOfDay";
+import { wallpaperLayout, wallpaperTiles, wallpaperPoint, wallpaperClouds } from "./wallpaper-layout";
 
 export type WallpaperAction = "sky" | "clock" | "graffiti" | "crt" | "pigeons" | "hypeman" | "boombox";
 export type WallpaperActivity = keyof typeof atlas.animations;
@@ -26,6 +29,8 @@ type Options = { reduced: boolean; spriteURL: string; onLayout: (viewport: Viewp
 export class Wallpaper {
   private readonly ink: CanvasRenderingContext2D;
   private readonly scene = new Surface(SCENE_W, SCENE_H);
+  private readonly scenery = new Surface(SCENE_W, SCENE_H);
+  private readonly clouds = CLOUDS.map(sprite => new Surface(sprite[0].length, sprite.length));
   private readonly layer = new Surface(SCENE_W, SCENE_H);
   private readonly from = new Surface(SCENE_W, SCENE_H);
   private readonly to = new Surface(SCENE_W, SCENE_H);
@@ -35,6 +40,7 @@ export class Wallpaper {
   private readonly bubbles = new AmbientBubbles(SCENE_W, SCENE_H, 7);
   private readonly effects = new Effects();
   private readonly observer: ResizeObserver;
+  private densityQuery: MediaQueryList | null = null;
   private readonly world: World = {
     t: 0, now: new Date(), glow: 0, avatarState: "idle",
     im: { text: "", caret: 0, focused: false, log: [] },
@@ -78,6 +84,8 @@ export class Wallpaper {
     this.sprite.src = options.spriteURL;
     this.observer = new ResizeObserver(this.resize);
     this.observer.observe(canvas);
+    window.addEventListener("resize", this.resize);
+    this.watchDensity();
     document.addEventListener("visibilitychange", this.visibility);
     document.fonts.addEventListener("loadingdone", this.fontsChanged);
     void document.fonts.ready.then(() => { if (!this.disposed) this.fontsChanged(); });
@@ -87,7 +95,9 @@ export class Wallpaper {
   }
   get still(): boolean { return this.reduced; }
   get dancing(): boolean { return this.world.boombox.playing; }
+  setDancing(playing: boolean): void { this.world.boombox.playing = playing; this.draw(); }
   get timeOfDay(): Phase { return this.clock.blend().to; }
+  setSprite(url: string): void { if (this.sprite.src !== url) this.sprite.src = url; }
   setReducedMotion(reduced: boolean): void { this.reduced = reduced; this.motionChanged(); }
   setActivity(activity: WallpaperActivity, animationKey = 0): void {
     if (activity === this.activity && animationKey === this.activityKey) return;
@@ -105,12 +115,20 @@ export class Wallpaper {
     cancelAnimationFrame(this.raf);
     clearInterval(this.timer);
     this.observer.disconnect();
+    window.removeEventListener("resize", this.resize);
+    this.densityQuery?.removeEventListener("change", this.densityChanged);
     document.removeEventListener("visibilitychange", this.visibility);
     document.fonts.removeEventListener("loadingdone", this.fontsChanged);
     this.sprite.onload = null;
     this.effects.clear();
   }
   private fontsChanged = (): void => { clearTextCache(); this.draw(); };
+  private watchDensity(): void {
+    this.densityQuery?.removeEventListener("change", this.densityChanged);
+    this.densityQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    this.densityQuery.addEventListener("change", this.densityChanged);
+  }
+  private densityChanged = (): void => { this.watchDensity(); this.resize(); };
   private visibility = (): void => {
     cancelAnimationFrame(this.raf); this.raf = 0;
     if (!document.hidden) { this.draw(); this.resume(); }
@@ -126,12 +144,12 @@ export class Wallpaper {
   }
   private resize = (): void => {
     const box = this.canvas.getBoundingClientRect();
-    this.cssWidth = box.width;
-    this.cssHeight = box.height;
-    this.width = this.canvas.width = Math.max(1, Math.ceil(box.width / 3));
-    this.height = this.canvas.height = Math.max(1, Math.ceil(box.height / 3));
-    const scale = Math.min(this.width / SCENE_W, this.height / SCENE_H);
-    this.viewport = { x: (this.width - SCENE_W * scale) / 2, y: this.height - SCENE_H * scale, scale };
+    this.cssWidth = Math.max(1, box.width);
+    this.cssHeight = Math.max(1, box.height);
+    const layout = wallpaperLayout(this.cssWidth, this.cssHeight, window.devicePixelRatio);
+    this.width = this.canvas.width = layout.width;
+    this.height = this.canvas.height = layout.height;
+    this.viewport = layout.viewport;
     this.draw();
   };
   private frame = (now: number): void => {
@@ -159,7 +177,7 @@ export class Wallpaper {
   };
   private nativePoint(clientX: number, clientY: number): { x: number; y: number } {
     const box = this.canvas.getBoundingClientRect();
-    return { x: (((clientX - box.left) / box.width) * this.width - this.viewport.x) / this.viewport.scale, y: (((clientY - box.top) / box.height) * this.height - this.viewport.y) / this.viewport.scale };
+    return wallpaperPoint(this.viewport, clientX - box.left, clientY - box.top);
   }
   pointerMove(clientX: number, clientY: number): void {
     const p = this.nativePoint(clientX, clientY);
@@ -227,13 +245,21 @@ export class Wallpaper {
     const t = this.still ? 0 : this.world.t;
     this.scene.clear();
     this.backdrop((s, p) => drawSky(s, p, t, this.still), 3);
-    this.backdrop((s, p) => drawFar(s, p, t, this.still ? null : this.blimpAt), 2);
-    this.backdrop((s, p) => drawNear(s, p, t), 1);
-    this.backdrop((s, p) => { drawRoof(s, p); drawCrtShell(s, p); }, 0);
-    drawPool(this.scene, this.phase, t, this.still);
-    if (!this.still) this.bubbles.draw(this.scene, t, THEMES[this.phase].bubble);
+    this.backdrop((s, p) => drawFar(s, p, t, this.still ? null : this.blimpAt, false), 2);
+    this.backdrop((s, p) => drawNear(s, p, t, false), 1);
+    this.backdrop((s, p) => drawRoof(s, p, false), 0);
     const world = this.still ? { ...this.world, t: 0, pigeons: { scatteredAt: null }, graffiti: { shimmerAt: null } } : this.world;
-    drawStringLights(this.scene, world); drawGraffiti(this.scene, world); drawCrt(this.scene, world);
+    drawStringLights(this.scene, world, this.phase);
+    // Repeat only the environment: the avatar and interactive props stay unique.
+    this.scenery.clear();
+    this.scenery.blit(this.scene.canvas);
+    this.scene.clear();
+    this.backdrop((s, p) => drawSignSupports(s, p), 1);
+    this.backdrop((s, p) => drawCrtShell(s, p), 0);
+    this.backdrop((s, p) => drawFountainStone(s, p), 0);
+    drawFountain(this.scene, this.phase, t, this.still);
+    if (!this.still) this.bubbles.draw(this.scene, t, THEMES[this.phase].bubble);
+    drawGraffiti(this.scene, world); drawCrt(this.scene, world);
     drawPigeons(this.scene, world); drawBoombox(this.scene, world); drawJumbotron(this.scene, world);
     this.drawAvatar();
     if (!this.still) this.effects.draw(this.scene, t);
@@ -267,18 +293,32 @@ export class Wallpaper {
   }
   private present(): void {
     const { x, y, scale } = this.viewport; const ctx = this.ink;
-    ctx.imageSmoothingEnabled = false; ctx.fillStyle = "#1B1F3B"; ctx.fillRect(0, 0, this.width, this.height);
-    if (y > 0) ctx.drawImage(this.scene.canvas, 0, 0, SCENE_W, 1, x, 0, SCENE_W * scale, y);
-    if (x > 0) ctx.drawImage(this.scene.canvas, 0, 0, 1, SCENE_H, 0, y, x, SCENE_H * scale);
-    const right = x + SCENE_W * scale;
-    if (right < this.width) ctx.drawImage(this.scene.canvas, SCENE_W - 1, 0, 1, SCENE_H, right, y, this.width - right, SCENE_H * scale);
-    if (x > 0 && y > 0) { ctx.drawImage(this.scene.canvas, 0, 0, 1, 1, 0, 0, x, y); ctx.drawImage(this.scene.canvas, SCENE_W - 1, 0, 1, 1, right, 0, this.width - right, y); }
+    ctx.setTransform(this.width / this.cssWidth, 0, 0, this.height / this.cssHeight, 0, 0);
+    ctx.imageSmoothingEnabled = false; ctx.fillStyle = "#1B1F3B"; ctx.fillRect(0, 0, this.cssWidth, this.cssHeight);
+    for (const tile of wallpaperTiles(this.cssWidth, x, scale)) {
+      ctx.save();
+      ctx.translate(tile.x + (tile.mirrored ? SCENE_W * scale : 0), y);
+      ctx.scale(tile.mirrored ? -1 : 1, 1);
+      // Continue the sky upward on tall windows without stretching clouds or buildings.
+      if (y > 0) ctx.drawImage(this.scenery.canvas, 0, 0, SCENE_W, 1, 0, -y, SCENE_W * scale, y);
+      ctx.drawImage(this.scenery.canvas, 0, 0, SCENE_W * scale, SCENE_H * scale);
+      ctx.restore();
+    }
+    const cloud = THEMES[this.phase].cloud;
+    for (const [index, surface] of this.clouds.entries()) {
+      surface.clear();
+      surface.sprite(CLOUDS[index], 0, 0, { remap: { w: cloud.light, c: cloud.shade } });
+    }
+    for (const position of wallpaperClouds(this.cssWidth, scale, this.still ? 0 : this.world.t)) {
+      const surface = this.clouds[position.shape];
+      ctx.drawImage(surface.canvas, position.x, position.y, surface.canvas.width * scale, surface.canvas.height * scale);
+    }
+    // Foreground props cover clouds naturally, without clipping them at tile seams.
     ctx.drawImage(this.scene.canvas, x, y, SCENE_W * scale, SCENE_H * scale);
     const key = `${this.width}:${this.height}:${this.cssWidth}:${this.cssHeight}:${this.x}`;
     if (key !== this.layoutKey) {
       this.layoutKey = key;
-      const cssX = this.cssWidth / this.width; const cssY = this.cssHeight / this.height;
-      this.options.onLayout({ x: x * cssX, y: y * cssY, scale: scale * cssX, scaleY: scale * cssY }, this.avatarRect());
+      this.options.onLayout({ x, y, scale, scaleY: scale }, this.avatarRect());
     }
   }
 }

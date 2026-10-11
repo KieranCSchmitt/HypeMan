@@ -4,6 +4,7 @@ import atlas from "../../public/assets/y2k/hypeman-atlas.json";
 import { useReducedMotion } from "./hooks";
 import { artURL } from "./ArtSprite";
 import type { AvatarAnimation } from "./useAvatarAnimation";
+import { avatarAsset } from "./avatar-skins";
 
 export function Pet({
   state = "idle",
@@ -74,6 +75,7 @@ export function Pet({
       className="hypeman-pet"
       data-state={current.state}
       data-frame={current.frame}
+      data-skin={settings?.avatarSkin ?? "hypeman"}
       style={{
         width: atlas.meta.frameWidth * scale,
         height: atlas.meta.frameHeight * scale,
@@ -89,7 +91,7 @@ export function Pet({
           bottom: 0,
           width: tile.w * pixel,
           height: tile.h * pixel,
-          backgroundImage: `url(${artURL("hypeman.png")})`,
+          backgroundImage: `url(${artURL(avatarAsset(settings?.avatarSkin))})`,
           backgroundSize: `${atlas.meta.sheetWidth * pixel}px ${atlas.meta.sheetHeight * pixel}px`,
           backgroundPosition: `${-tile.x * pixel}px ${-tile.y * pixel}px`,
           backgroundRepeat: "no-repeat",

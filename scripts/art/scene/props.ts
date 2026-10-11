@@ -154,15 +154,25 @@ interface Bulb {
   index: number;
 }
 
-const STRANDS = (() => {
+export const STRING_LIGHT_SUPPORTS = (() => {
   const { leftWall, rightWall } = LAYOUT;
-  const a = { x: leftWall.x + leftWall.w, y: leftWall.y - 12 };
-  const b = { x: rightWall.x, y: rightWall.y - 14 };
+  // Edge supports meet their reflected neighbors when scenery repeats.
+  // Interior supports sit inside the wall, rather than over the open gap.
+  return [
+    { x: 0, y: leftWall.y - 14, roofY: leftWall.y - 3 },
+    { x: leftWall.x + leftWall.w - 2, y: leftWall.y - 12, roofY: leftWall.y - 3 },
+    { x: rightWall.x + 2, y: rightWall.y - 14, roofY: rightWall.y - 3 },
+    { x: SCENE_W - 1, y: rightWall.y - 16, roofY: rightWall.y - 3 },
+  ];
+})();
+
+const STRANDS = (() => {
+  const [left, a, b, right] = STRING_LIGHT_SUPPORTS;
   return {
-    posts: [rect(a.x - 1, a.y, 2, 12), rect(b.x - 1, b.y, 2, 14)],
     runs: [
+      { x0: left.x, y0: left.y, x1: a.x, y1: a.y, sag: 8, seed: 4 },
       { x0: a.x, y0: a.y, x1: b.x, y1: b.y, sag: 15, seed: 0 },
-      { x0: b.x, y0: b.y, x1: SCENE_W + 6, y1: rightWall.y - 16, sag: 9, seed: 2 },
+      { x0: b.x, y0: b.y, x1: right.x, y1: right.y, sag: 9, seed: 2 },
     ],
   };
 })();
@@ -180,10 +190,23 @@ const BULBS: Bulb[] = STRANDS.runs.flatMap((run) => {
   return bulbs;
 });
 
-export function drawStringLights(s: Surface, world: World): void {
+export function drawStringLights(s: Surface, world: World, phase: Phase = 'day'): void {
   // The wires never change, so they are drawn once; only the bulbs are live.
-  const wires = memoSurface('string-light-wires', SCENE_W, SCENE_H, (m) => {
-    for (const post of STRANDS.posts) m.rect(post.x, post.y, post.w, post.h, 'K');
+  const wires = memoSurface(`string-light-wires:${phase}`, SCENE_W, SCENE_H, (m) => {
+    const { metal, roof } = THEMES[phase];
+    for (const { x, y, roofY } of STRING_LIGHT_SUPPORTS) {
+      // A shaded metal mast, bolted into the coping with a contact shadow.
+      m.rect(x - 1, y - 1, 3, roofY - y + 3, metal.lo);
+      m.rect(x - 1, y, 1, roofY - y + 1, metal.light);
+      m.rect(x, y, 1, roofY - y + 1, metal.body);
+      m.rect(x - 2, y - 1, 5, 2, metal.lo);
+      m.px(x - 1, y - 1, metal.gloss);
+      m.rect(x - 3, roofY + 2, 7, 1, roof.parapetShade);
+      m.rect(x - 3, roofY, 7, 2, roof.coping);
+      m.rect(x - 2, roofY - 1, 5, 2, metal.body);
+      m.px(x - 2, roofY, metal.lo);
+      m.px(x + 2, roofY, metal.lo);
+    }
     for (const run of STRANDS.runs) {
       for (let i = 0; i <= run.x1 - run.x0; i++) m.px(run.x0 + i, strandY(run, i), 'K');
     }
@@ -337,7 +360,7 @@ export function drawGraffiti(s: Surface, world: World): void {
 // --- CRT TV ---------------------------------------------------------------------------------
 
 const CRT_BODY = rect(LAYOUT.crt.x, LAYOUT.crt.y + 12, LAYOUT.crt.w, 68);
-const CRT_SCREEN = rect(CRT_BODY.x + 6, CRT_BODY.y + 6, 98, 56);
+export const CRT_SCREEN = rect(CRT_BODY.x + 6, CRT_BODY.y + 6, 98, 56);
 export const CRT_COLUMNS = 12;
 const CRT_LINE = 14;
 const CRT_ROWS = 4;

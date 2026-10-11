@@ -285,9 +285,9 @@ function farStatic(phase: Phase): Surface {
   });
 }
 
-export function drawFar(surface: Surface, phase: Phase, t: number, blimpStartedAt: number | null): void {
+export function drawFar(surface: Surface, phase: Phase, t: number, blimpStartedAt: number | null, clouds = true): void {
   const theme = THEMES[phase];
-  drawClouds(surface, theme, t);
+  if (clouds) drawClouds(surface, theme, t);
   drawBlimp(surface, theme, t, blimpStartedAt);
   surface.blit(farStatic(phase).canvas, -BLEED, -BLEED);
 }
@@ -404,18 +404,6 @@ function nearStatic(phase: Phase): Surface {
         surface.sprite(DISH, b.x + 22, b.top - DISH.length, { remap: { 1: metal.gloss, 2: metal.light, 3: metal.body, 4: metal.lo } });
       }
       if (b.extra === 'waterTower') drawWaterTower(surface, theme, b);
-      if (b.extra === 'scaffold') {
-        // Lattice legs that carry the jumbotron.
-        const { jumbotron } = LAYOUT;
-        const legTop = jumbotron.y + jumbotron.h - 6;
-        for (const lx of [jumbotron.x + 14, jumbotron.x + jumbotron.w - 16]) {
-          surface.rect(lx, legTop, 2, b.top - legTop, metal.light);
-          surface.rect(lx + 8, legTop, 2, b.top - legTop, metal.body);
-          for (let y = legTop; y < b.top - 2; y += 6) {
-            for (let i = 0; i < 6; i++) surface.px(lx + 2 + i, y + i, metal.body);
-          }
-        }
-      }
     }
   });
 }
@@ -478,12 +466,27 @@ function drawBeacons(surface: Surface, theme: Theme, t: number): void {
   }
 }
 
-export function drawNear(surface: Surface, phase: Phase, t: number): void {
+export function drawSignSupports(surface: Surface, phase: Phase): void {
+  const metal = THEMES[phase].metal;
+  const { jumbotron } = LAYOUT;
+  const legTop = jumbotron.y + jumbotron.h - 6;
+  const top = BUILDINGS.find(b => b.extra === 'scaffold')!.top;
+  for (const lx of [jumbotron.x + 14, jumbotron.x + jumbotron.w - 16]) {
+    surface.rect(lx, legTop, 2, top - legTop, metal.light);
+    surface.rect(lx + 8, legTop, 2, top - legTop, metal.body);
+    for (let y = legTop; y < top - 2; y += 6) {
+      for (let i = 0; i < 6; i++) surface.px(lx + 2 + i, y + i, metal.body);
+    }
+  }
+}
+
+export function drawNear(surface: Surface, phase: Phase, t: number, signSupports = true): void {
   surface.blit(nearStatic(phase).canvas, -BLEED, -BLEED);
   const panes = stepped('panes', phase, Math.floor(t / 250), (target, theme) => drawPanes(target, theme, t));
   surface.blit(panes.canvas, -BLEED, -BLEED);
   surface.blit(glassStreaks(phase).canvas, -BLEED, -BLEED);
   drawBeacons(surface, THEMES[phase], t);
+  if (signSupports) drawSignSupports(surface, phase);
 }
 
 // --- rooftop: walls, parapet, floor, planters, pool ----------------------------------------
@@ -525,6 +528,11 @@ export function roofKeyAt(theme: Theme, x: number, y: number): string | null {
   if (x >= rightWall.x - 2 && y >= rightWall.y - 3 && y < rightWall.y) return roof.coping;
   if (x >= rightWall.x && y >= rightWall.y) {
     if (y === rightWall.y) return roof.panelSeam;
+    // Close the outer panel before reflection; otherwise two unfinished panels
+    // meet at a tile boundary and leave a double-width, featureless patch.
+    const rightEdge = rightWall.x + rightWall.w - 1;
+    if (x === rightEdge) return roof.panelSeam;
+    if (x === rightEdge - 1) return roof.panelHi;
     const px = (x - rightWall.x) % PANEL_W;
     if (px === 0) return roof.panelSeam;
     if (px === 1) return roof.panelHi;
@@ -597,16 +605,16 @@ function drawPoolBasin(surface: Surface, theme: Theme): void {
   surface.shade(x + 3, y + 3, w - 6, 1, pool.band, 8);
 }
 
-function roofStatic(phase: Phase): Surface {
-  return cached('roof', phase, SCENE_W, SCENE_H, (surface, theme) => {
+function roofStatic(phase: Phase, pool = true): Surface {
+  return cached(pool ? 'roof' : 'roof-no-pool', phase, SCENE_W, SCENE_H, (surface, theme) => {
     surface.paint(rect(0, 0, SCENE_W, SCENE_H), (x, y) => roofKeyAt(theme, x, y));
     for (const planter of PLANTERS) drawPlanter(surface, theme, planter);
-    drawPoolBasin(surface, theme);
+    if (pool) drawPoolBasin(surface, theme);
   });
 }
 
-export function drawRoof(surface: Surface, phase: Phase): void {
-  surface.blit(roofStatic(phase).canvas);
+export function drawRoof(surface: Surface, phase: Phase, pool = true): void {
+  surface.blit(roofStatic(phase, pool).canvas);
 }
 
 /**

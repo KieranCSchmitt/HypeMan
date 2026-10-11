@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "description": "A pixel companion for browser tasks, source-backed notes, and optional learning.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus", "alarms"],
+  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus", "alarms", "declarativeNetRequestWithHostAccess"],
   "optional_permissions": ["debugger"],
   "optional_host_permissions": ["<all_urls>"],
   "host_permissions": ["http://*/*", "https://*/*"],

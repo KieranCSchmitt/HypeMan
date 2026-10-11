@@ -12,6 +12,7 @@
     "start": "tsx apps/gateway/src/index.ts",
     "build": "node scripts/build.mjs",
     "art:export": "node scripts/export-y2k-art.mjs",
+    "art:skins": "node scripts/export-character-skins.mjs",
     "typecheck": "tsc --noEmit",
     "check:docs": "node scripts/check-doc-links.mjs",
     "test": "vitest run",

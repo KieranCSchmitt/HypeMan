@@ -1,5 +1,7 @@
 // Canonical HypeMan settings; the worker validates imported local records.
 export const SETTINGS_KEY = "hypeman.settings";
+export const AVATAR_SKINS = ["hypeman", "glitch", "rally", "orbit", "breeze", "spark"] as const;
+export type AvatarSkin = (typeof AVATAR_SKINS)[number];
 export interface Settings {
   version: 2;
   serverUrl: string;
@@ -11,6 +13,7 @@ export interface Settings {
   trustedInput: boolean;
   hiddenOnHosts: string[];
   reducedMotion: "auto" | "on" | "off";
+  avatarSkin: AvatarSkin;
   videoCompanion: "ask" | "on" | "off";
   onboarded: boolean;
 }
@@ -25,6 +28,7 @@ export const DEFAULT_SETTINGS: Settings = {
   trustedInput: false,
   hiddenOnHosts: [],
   reducedMotion: "auto",
+  avatarSkin: "hypeman",
   videoCompanion: "ask",
   onboarded: false,
 };
@@ -32,6 +36,7 @@ export function parseSettings(value: unknown): Settings {
   const settings = { ...DEFAULT_SETTINGS, hiddenOnHosts: [] as string[] };
   if (!value || typeof value !== "object" || Array.isArray(value)) return settings;
   const raw = value as Record<string, unknown>;
+  if (AVATAR_SKINS.includes(raw.avatarSkin as AvatarSkin)) settings.avatarSkin = raw.avatarSkin as AvatarSkin;
   for (const key of [
     "proactiveEnabled",
     "learningEnabled",

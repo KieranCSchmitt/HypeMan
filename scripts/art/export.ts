@@ -293,7 +293,7 @@ export async function exportAssets(fonts: Record<string, string>) {
     drawRoof(roof, phase);
     drawCrtShell(roof, phase);
     world.glow = THEMES[phase].glow;
-    drawStringLights(lights, world);
+    drawStringLights(lights, world, phase);
     drawGraffiti(decor, world);
     drawCrt(decor, world);
     drawBoombox(decor, world);

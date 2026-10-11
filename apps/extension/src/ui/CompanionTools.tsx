@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { currentLearningStep, emptyLearningGraph, learningEstimate, type AgentReply, type Health, type LearningGraph, type LearningPlan, type Settings, type SourceNote, type RecallHit } from "@core";
+import { AVATAR_SKINS, currentLearningStep, emptyLearningGraph, learningEstimate, type AgentReply, type Health, type LearningGraph, type LearningPlan, type Settings, type SourceNote, type RecallHit } from "@core";
 import { request } from "../bridge";
 import { Empty, NoteCard, Notice, TaskCard, Toggle, ToolButton } from "./common";
 import { exportWorkspace, host, message, relativeTime, setScreenshotAccess, useSettings, useWorkspace } from "./hooks";
@@ -100,7 +100,8 @@ export function CompanionTools({ section, onError, embedded = false }: { section
       const next: Partial<Settings> = {};
       for (const [key, value] of Object.entries(raw)) {
         if (["screenshotEnabled", "trustedInput"].includes(key) && value === true) { setPermission(key === "trustedInput" ? "input" : "capture"); continue; }
-        if (!["reducedMotion", "videoCompanion", "proactiveEnabled", "learningEnabled", "tabContextEnabled", "screenshotEnabled", "trustedInput"].includes(key)) throw new Error("That preference is unavailable here.");
+        if (!["avatarSkin", "reducedMotion", "videoCompanion", "proactiveEnabled", "learningEnabled", "tabContextEnabled", "screenshotEnabled", "trustedInput"].includes(key)) throw new Error("That preference is unavailable here.");
+        if (key === "avatarSkin" && !AVATAR_SKINS.includes(value as Settings["avatarSkin"])) throw new Error("Choose HypeMan, Glitch, Rally, Orbit, Breeze, or Spark.");
         Object.assign(next, { [key]: value });
       }
       if (Object.keys(next).length) await patch(next);
@@ -140,6 +141,7 @@ export function CompanionTools({ section, onError, embedded = false }: { section
       <Toggle label="Automatic help" description="Explain selections and offer contextual help." checked={settings.proactiveEnabled} onChange={(value) => edit({ proactiveEnabled: value })} />
       <Toggle label="Learning" description="Keep practice evidence on this device." checked={settings.learningEnabled} onChange={(value) => edit({ learningEnabled: value })} />
       <label className="field">Motion<select aria-label="Motion" value={settings.reducedMotion} onChange={(event) => edit({ reducedMotion: event.target.value as Settings["reducedMotion"] })}><option value="auto">System preference</option><option value="on">Reduced motion</option><option value="off">Full animation</option></select></label>
+      <label className="field">HypeMan skin<select aria-label="HypeMan skin" value={settings.avatarSkin} onChange={(event) => edit({ avatarSkin: event.target.value as Settings["avatarSkin"] })}><option value="hypeman">HypeMan</option><option value="glitch">Glitch</option><option value="rally">Rally</option><option value="orbit">Orbit</option><option value="breeze">Breeze</option><option value="spark">Spark</option></select></label>
       <label className="field">Video<select aria-label="Video companion" value={settings.videoCompanion} onChange={(event) => edit({ videoCompanion: event.target.value as Settings["videoCompanion"] })}><option value="ask">On request</option><option value="on">Automatic</option><option value="off">Off</option></select></label>
       <div className="tool-toolbar"><button className="button" onClick={() => void exportWorkspace(workspace).then(() => setNotice("Backup downloaded")).catch(fail)}>Export</button><button className="button" onClick={() => void restoreWorkspaceBackup().then((result) => { if (result) { setNotice("Backup restored"); return refresh(); } }).catch(fail)}>Restore</button><button className="button" onClick={() => workbench.openTool("connection")}>Account</button><button className="button" onClick={() => workbench.openTool("phone")}>Phone</button></div>
       {permission && <div className="confirmation" role="group" aria-label="Browser permission"><p>Allow {permission === "capture" ? "screenshots" : "browser actions"}?</p><button data-essential="permission" className="button" onClick={() => void grant()}>Allow</button><button data-essential="permission" className="button" onClick={() => setPermission(null)}>Cancel</button></div>}

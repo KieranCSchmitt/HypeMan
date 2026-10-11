@@ -25,6 +25,16 @@ HypeMan lives on ordinary webpages. Activate the avatar, describe what you need,
 
 Projects advance when HypeMan can verify the visible outcome or you explicitly confirm the step. Passwords, payment fields, and verification codes stay in your hands.
 
+## New-tab rooftop controls
+
+The rooftop fits the window and display density, including fullscreen and wide monitors. Its scenery repeats horizontally, clouds move across the viewport, and the animated fountain replaces the road water.
+
+- **Skins:** the compact upper-right button opens previews of HypeMan, Glitch, Rally, Orbit, Breeze, and Spark. Selecting a skin saves it across the rooftop and companion; Escape closes the menu.
+- **TV:** activate the switches beside the TV glass to turn the HypeMan demo on or off. The video starts muted, loops continuously, and stays fitted inside the glass as the window resizes. Playback remains in the new tab, with no clickable YouTube links or external navigation. Streaming requires an internet connection; turning the TV off unloads the player.
+- **Boombox:** click the boombox or its Play/Pause music button to play the bundled FLAC. Music resumes from the paused position and loops; it does not autoplay.
+
+After rebuilding, reload HypeMan in `chrome://extensions` and refresh the new tab. The TV uses a narrowly scoped request-header rule to identify this extension to YouTube for the demo embed.
+
 ## Actual extension screenshots
 
 These captures show a real MDN page, a live ChatGPT reply, source-linked notes, direct whiteboard editing, and saved conversations. Follow the [judging walkthrough](docs/JUDGING.md) to try the local tools and optional live AI yourself. [Screenshot details](docs/SHOWCASE.md) identify what each capture demonstrates.
@@ -91,4 +101,4 @@ npm run e2e:hints      # Automatic assistance and privacy controls
 
 Browser checks load the real MV3 extension with an isolated profile and deterministic gateway. Mocked authentication does not sign in to a real account or consume plan usage. Live model quality, ChatGPT eligibility, and actual Photon delivery need account-dependent checks; see [verification](docs/VERIFICATION.md#live-checks).
 
-[Judging walkthrough](docs/JUDGING.md) · [Setup and reference](docs/SETUP.md) · [Implemented features and limits](docs/FEATURES.md) · [Verification guide](docs/VERIFICATION.md) · [Screenshot details](docs/SHOWCASE.md) · [Attribution](ATTRIBUTION.md) · [Artwork sources](scripts/art/README.md)
+[Judging walkthrough](docs/JUDGING.md) · [Setup and reference](docs/SETUP.md) · [Implemented features and limits](docs/FEATURES.md) · [Verification guide](docs/VERIFICATION.md) · [Screenshot details](docs/SHOWCASE.md) · [Artwork sources and font credits](scripts/art/README.md)
