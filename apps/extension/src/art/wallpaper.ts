@@ -2,7 +2,7 @@ import atlas from "../../public/assets/y2k/hypeman-atlas.json";
 import { LAYOUT, SCENE_H, SCENE_W, type Rect } from "../../../../scripts/art/scene/constants";
 import { AmbientBubbles, Effects } from "../../../../scripts/art/scene/fx";
 import { drawFar, drawNear, drawPool, drawRoof, drawSky, BLIMP_CROSSING_MS } from "../../../../scripts/art/scene/layers";
-import { drawBoombox, drawCrt, drawCrtShell, drawGraffiti, drawJumbotron, drawPigeons, drawPropOutline, drawStringLights, pigeonsAreBack, type World } from "../../../../scripts/art/scene/props";
+import { drawBoombox, drawCrt, drawCrtShell, drawGraffiti, drawJumbotron, drawPigeons, drawPortrait, drawPropOutline, drawStringLights, pigeonsAreBack, type World } from "../../../../scripts/art/scene/props";
 import { Surface, clearTextCache, dissolve } from "../../../../scripts/art/scene/surface";
 import { DayClock, PHASES, THEMES, type Phase } from "../../../../scripts/art/scene/timeOfDay";
 
@@ -44,7 +44,7 @@ export class Wallpaper {
     im: { text: "", caret: 0, focused: false, log: [] },
     crt: { channel: 2, status: "", steps: [], changedAt: -9999, typedAt: 0 },
     jumbotron: { h24: true, dateUntil: 0 }, boombox: { playing: false },
-    pigeons: { scatteredAt: null }, graffiti: { shimmerAt: null },
+    pigeons: { scatteredAt: null }, graffiti: { shimmerAt: null }, portrait: { shownAt: null },
   };
   private reduced: boolean;
   private disposed = false;
@@ -226,7 +226,7 @@ export class Wallpaper {
         this.clock.force(phase, this.still ? 0 : 700); this.world.jumbotron.h24 = !this.world.jumbotron.h24;
         break;
       }
-      case "graffiti": this.world.graffiti.shimmerAt = this.world.t; if (!this.still) this.effects.burst(60, 136, this.world.t, 8); break;
+      case "graffiti": this.world.graffiti.shimmerAt = this.world.t; this.world.portrait.shownAt ??= this.world.t; if (!this.still) this.effects.burst(60, 136, this.world.t, 8); break;
       case "crt": this.world.crt.channel = this.world.crt.channel === 2 ? 1 : 2; break;
       case "pigeons": if (pigeonsAreBack(this.world)) this.world.pigeons.scatteredAt = this.world.t; break;
       case "boombox": this.world.boombox.playing = !this.world.boombox.playing; if (!this.still && this.world.boombox.playing) this.effects.burst(438, 236, this.world.t, 6); break;
@@ -259,8 +259,9 @@ export class Wallpaper {
     this.backdrop((s, p) => { drawRoof(s, p); drawCrtShell(s, p); }, 0);
     drawPool(this.scene, this.phase, t, this.still);
     if (!this.still) this.bubbles.draw(this.scene, t, THEMES[this.phase].bubble);
-    const world = this.still ? { ...this.world, t: 0, pigeons: { scatteredAt: null }, graffiti: { shimmerAt: null } } : this.world;
-    drawStringLights(this.scene, world); drawGraffiti(this.scene, world); drawCrt(this.scene, world);
+    // With motion reduced the clock is frozen, so a revealed portrait is shown whole instead of dissolving in.
+    const world = this.still ? { ...this.world, t: 0, pigeons: { scatteredAt: null }, graffiti: { shimmerAt: null }, portrait: { shownAt: this.world.portrait.shownAt === null ? null : -Infinity } } : this.world;
+    drawStringLights(this.scene, world); drawGraffiti(this.scene, world); drawPortrait(this.scene, world); drawCrt(this.scene, world);
     drawPigeons(this.scene, world); drawBoombox(this.scene, world); drawJumbotron(this.scene, world);
     this.drawAvatar();
     if (!this.still) this.effects.draw(this.scene, t);

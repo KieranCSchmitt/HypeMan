@@ -269,3 +269,40 @@ export const TAG_LETTERS: Record<string, readonly string[]> = {
   A: sprite('.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'),
   N: sprite('#...#', '##..#', '###.#', '#.###', '#..##', '#...#', '#...#'),
 };
+
+/**
+ * The paste-up that appears on the wall under the tag: a supplied photo
+ * reduced to 23x28 and matched to the palette, one key per pixel like every
+ * other sprite here. Chrome greys carry the beanie and hood, the warm
+ * accents the face, and the sky blues the pack strap.
+ */
+export const PORTRAIT = sprite(
+  'WhhcWWtMMMDMMMSDSwwTffd',
+  'tthWtMMDSDMMDDDDDSwtfdJ',
+  'wwWMDfJJJffDDDDDDDMtfjJ',
+  'wwMfjDDDDdJjfDDDfDDtfJJ',
+  'wWdDMMMWWtMDJdfDfffMDjJ',
+  'hSMMMMOTTTTOdJjffDfDoJJ',
+  'wMMMMMtwHHWMfKJdfffffxd',
+  'WMMMMMthttcMfdJJffffDxx',
+  'tttMMMMtMMMDfdjJdffffsx',
+  'MWtMMMDDDDDdfddJJfffffd',
+  'MWtMDDffffdfdddJJffffSS',
+  'MWMDDSSSosDxxfdjJdffffo',
+  'ttSxsSOSssSSSSsjJjffffd',
+  'tMfssSHOSSOOOOSsJJdfdfd',
+  'wMxOOOTHOOHHHOSsJJdfddf',
+  'wtSHHtTHOOOOHOSsJjddfdf',
+  'fMSTTTTHSSOOOSSSxjddddd',
+  'jDoTHHHOSSOOOOSSjdddddD',
+  'jjdOHHTOSSSsOHSSJjjdddf',
+  'JjjoHHSHOSSOOOOSJddfJdf',
+  'JjdxHHtTSSOOHOOoJdddJfd',
+  'JJJdxtTTHOOHHOSxjfdjJff',
+  'JJJJjxTTtHHHOSsJddjjjff',
+  'JJJJJJtTTTHOSoJdfdKddff',
+  'JJJJJddTHHOOSxJJfJjddfU',
+  'SJJJJJJJsOOOsJjjdJdddDB',
+  'wSJJJJdddxHSjjdjjjddfUB',
+  'wTxjJJjffjSxjdfdJjjdDBM',
+);

@@ -30,6 +30,10 @@ The active Y2K identity uses the updated artwork supplied by the user in `HypeMa
 
 Only the supplied art definitions are reused; HypeMan application, orchestration, and audio code are not bundled. See [art provenance and export instructions](scripts/art/README.md).
 
+## Portrait
+
+The paste-up that appears under the graffiti (`PORTRAIT` in `scripts/art/scene/sprites.ts`) is a 23×28 conversion of a photo supplied by the user, matched to the scene palette. Preserve the user's ownership and any applicable notices.
+
 ## Music
 
 The boombox loop at `apps/extension/public/assets/audio/boombox.flac` was supplied by the user and is packaged unmodified. Preserve the user's ownership and any applicable notices.

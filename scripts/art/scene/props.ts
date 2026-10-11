@@ -6,9 +6,9 @@
 import type { HypeState } from '../hypeman/atlas';
 import { GLASS, type PaletteKey } from '../hypeman/palette';
 import { IM, LAYOUT, PIGEON_AWAY_MS, SCENE_H, SCENE_W, rect, type Rect } from './constants';
-import { BOLT, PIGEON, TAG_LETTERS } from './sprites';
+import { BOLT, PIGEON, PORTRAIT, TAG_LETTERS } from './sprites';
 import { roofKeyAt } from './layers';
-import { FONTS, Surface, glossKeyAt, hash, matrixOutline, memoSurface, outlineCanvas, textWidth, type FontId, type Gloss } from './surface';
+import { BAYER8, FONTS, Surface, glossKeyAt, hash, matrixOutline, memoSurface, outlineCanvas, textWidth, type FontId, type Gloss } from './surface';
 import { THEMES, type Phase } from './timeOfDay';
 
 export type PropId =
@@ -45,6 +45,8 @@ export interface World {
   boombox: { playing: boolean };
   pigeons: { scatteredAt: number | null };
   graffiti: { shimmerAt: number | null };
+  /** Null until the tag is first activated; the paste-up under it appears from then on. */
+  portrait: { shownAt: number | null };
 }
 
 export function wrapText(text: string, columns: number): string[] {
@@ -336,6 +338,36 @@ export function drawGraffiti(s: Surface, world: World): void {
     paintTag(tagStill, art, null);
   }
   s.blit(tagStill.canvas, x, y);
+}
+
+// --- portrait paste-up ----------------------------------------------------------------------
+
+export const PORTRAIT_FADE_MS = 900;
+/** Outline included. Bare tiles left of the rabbit ears, flush with the start of the tag. */
+export const PORTRAIT_BOX = rect(11, 150, PORTRAIT[0].length + 2, PORTRAIT.length + 2);
+
+/**
+ * The portrait pasted on the wall under the tag. Activating the tag brings it
+ * in through the same ordered dither the phase changes use, so no pixel is
+ * ever a blend. It is outlined and shadowed like the tag above it.
+ */
+export function drawPortrait(s: Surface, world: World): void {
+  const { shownAt } = world.portrait;
+  if (shownAt === null) return;
+  const level = Math.min(64, Math.floor(((world.t - shownAt) / PORTRAIT_FADE_MS) * 64));
+  if (level <= 0) return;
+  const { x, y, w, h } = PORTRAIT_BOX;
+  const inside = (px: number, py: number) =>
+    px >= 0 && py >= 0 && px < w && py < h && !((px === 0 || px === w - 1) && (py === 0 || py === h - 1));
+  // One bake per dither level, each a handful of pixels fuller than the last.
+  const art = memoSurface(`portrait:${level}`, w + 2, h + 2, (m) => {
+    m.paint(rect(0, 0, w + 2, h + 2), (px, py) => {
+      if (BAYER8[py & 7][px & 7] >= level) return null;
+      if (!inside(px, py)) return inside(px - 2, py - 2) ? 'K' : null;
+      return px === 0 || py === 0 || px === w - 1 || py === h - 1 ? 'K' : PORTRAIT[py - 1][px - 1];
+    });
+  });
+  s.blit(art.canvas, x, y);
 }
 
 // --- CRT TV ---------------------------------------------------------------------------------

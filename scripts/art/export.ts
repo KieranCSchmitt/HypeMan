@@ -270,6 +270,7 @@ export async function exportAssets(fonts: Record<string, string>) {
     boombox: { playing: false },
     pigeons: { scatteredAt: null },
     graffiti: { shimmerAt: null },
+    portrait: { shownAt: null },
   };
   for (const [name, draw, box] of [
     ["crt", drawCrt, [2, 168, 122, 88]],
