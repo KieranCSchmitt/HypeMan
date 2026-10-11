@@ -1,6 +1,6 @@
 # HypeMan
 
-[![Verification](https://github.com/tgreaves72/HypeMan/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/tgreaves72/HypeMan/actions/workflows/verify.yml)
+[![Verification](https://github.com/KieranCSchmitt/HypeMan/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/KieranCSchmitt/HypeMan/actions/workflows/verify.yml)
 
 **Big goals. Tiny pixel companion.**
 

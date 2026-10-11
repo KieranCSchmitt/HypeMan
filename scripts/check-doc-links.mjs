@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
-const privateAsset = /(?:^|\/)(?:hypeman-demo\.(?:mp4|srt|vtt)|demo-poster\.jpg)$/i;
+const privateAsset = /(?:^|\/)(?:hypeman-demo|demo-poster)\.[^/]+$/i;
 
 async function markdownFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -94,7 +94,7 @@ for (const file of files.sort()) {
 }
 
 // The index is read only. Ignored, local production files are allowed; published film assets are not.
-const tracked = spawnSync("git", ["ls-files", "--cached", "-z", "--", "docs/media/"], { cwd: root, encoding: "utf8" });
+const tracked = spawnSync("git", ["ls-files", "--cached", "-z"], { cwd: root, encoding: "utf8" });
 if (tracked.status === 0) {
   for (const path of tracked.stdout.split("\0").filter(Boolean)) {
     if (privateAsset.test(path)) errors.push(`${path}: launch-film assets must not be tracked or staged`);

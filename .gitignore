@@ -19,8 +19,8 @@ tests/screenshots/
 test-results/
 
 # Local production files: never publish the launch film or its companion assets.
-docs/media/hypeman-demo.*
-docs/media/demo-poster.jpg
+hypeman-demo.*
+demo-poster.*
 scripts/render-showcase.mjs
 scripts/showcase-sound-events.json
 scripts/showcase-sounds.py
