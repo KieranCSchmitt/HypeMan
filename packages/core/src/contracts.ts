@@ -1,4 +1,5 @@
 import type { BrowserTask, SourceNote } from "./workspace";
+import type { ToolAction, SelectedContent } from "./tools";
 export interface Rect {
   x: number;
   y: number;
@@ -50,6 +51,7 @@ export type SketchShape =
   | { type: "circle"; x: number; y: number; radius: number }
   | { type: "label"; x: number; y: number; text: string };
 export type Action =
+  | ToolAction
   | { type: "say"; text: string }
   | { type: "point"; target: string; quote?: string }
   | { type: "click"; target: string; trusted?: boolean }
@@ -88,6 +90,9 @@ export interface HistoryEntry {
   at: number;
 }
 export interface AgentRequest {
+  surface?: "conversation";
+  conversationId?: string;
+  toolContext?: { activeTool?: string | null; selected?: SelectedContent | null };
   requestId: string;
   goal: string;
   message: string;
@@ -153,6 +158,7 @@ export interface ChatGPTStatus {
   model?: string;
 }
 export interface SessionHandoff {
+  conversationId?: string;
   fromUrl?: string;
   action?: Action;
   taskId?: string | null;
@@ -160,12 +166,6 @@ export interface SessionHandoff {
   history: HistoryEntry[];
   step: number;
   at?: number;
-}
-export interface CharacterAsset {
-  id: string;
-  name: string;
-  image: string;
-  createdAt: number;
 }
 export interface RuntimeEvent {
   type: string;

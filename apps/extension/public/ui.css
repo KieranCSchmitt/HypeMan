@@ -160,7 +160,7 @@ button svg {
   align-items: center;
   gap: 10px;
   font:
-    36px/1 VT323,
+    36px/1 Tiny5,
     monospace;
   letter-spacing: -1.5px;
   white-space: nowrap;
@@ -351,7 +351,7 @@ button svg {
 }
 .empty-mark {
   display: block;
-  font: 36px VT323;
+  font: 36px Tiny5;
   color: #9492b8;
   margin-bottom: 16px;
 }
@@ -361,10 +361,6 @@ button svg {
   background-repeat: no-repeat;
   image-rendering: pixelated;
   vertical-align: middle;
-}
-.custom-pet {
-  object-fit: contain;
-  image-rendering: pixelated;
 }
 .fine-print {
   font-size: 11px;
@@ -405,7 +401,7 @@ button svg {
   background: #f5f7ff;
 }
 .pixel-star {
-  font-family: VT323;
+  font-family: Tiny5;
   color: #9492b8;
 }
 .simple-header {
@@ -511,7 +507,7 @@ button svg {
   min-width: 130px;
 }
 .clock strong {
-  font-family: VT323, monospace;
+  font-family: Tiny5, monospace;
   display: block;
   font-size: 31px;
   letter-spacing: -1px;
@@ -777,7 +773,7 @@ button svg {
 }
 .newtab-footer > span {
   margin-right: auto;
-  font-family: VT323;
+  font-family: Tiny5;
   font-size: 15px;
 }
 .newtab-footer .text-button {
@@ -825,7 +821,7 @@ button svg {
   color: #686280;
 }
 .sidebar nav button > span {
-  font-family: VT323;
+  font-family: Tiny5;
   font-size: 22px;
   width: 20px;
   text-align: center;
@@ -900,7 +896,7 @@ button svg {
   padding: 10px 0 20px;
 }
 .stats strong {
-  font: 38px/1.2 VT323;
+  font: 38px/1.2 Tiny5;
   color: #3a2e6b;
   font-weight: 400;
 }
@@ -1228,7 +1224,7 @@ button svg {
 }
 .tools-strip > a > span,
 .tools-strip > button > span {
-  font: 28px VT323;
+  font: 28px Tiny5;
   color: #9492b8;
   margin: 0 0 10px;
 }
@@ -1257,7 +1253,7 @@ button svg {
   fill: #6544ad;
 }
 .concept-graph .graph-center {
-  font: 25px VT323;
+  font: 25px Tiny5;
   fill: #6544ad;
 }
 .concept-graph g:focus {
@@ -1281,7 +1277,7 @@ button svg {
   padding: 10px 0;
   border-top: 1px solid #e6e6ee;
 }
-/* Connection, tools and character workshop. */
+/* Connection and tools. */
 .setup-page,
 .tool-page {
   min-height: 100vh;
@@ -1316,7 +1312,7 @@ button svg {
   display: flex;
   align-items: center;
   gap: 18px;
-  font: 23px VT323;
+  font: 23px Tiny5;
   color: #9492b8;
   margin-bottom: 19px;
 }
@@ -1375,20 +1371,6 @@ button svg {
   color: #6544ad;
   background: #e6e6ee;
 }
-.voice-test {
-  padding-top: 24px;
-}
-.voice-test strong {
-  font-size: 13px;
-}
-.voice-test p {
-  font-size: 11px;
-  line-height: 1.9;
-  margin: 10px 0 15px;
-}
-.voice-test .button {
-  font-size: 12px;
-}
 .setup-finish .button {
   margin: 7px 8px 0 0;
 }
@@ -1407,162 +1389,6 @@ button svg {
 .tool-heading p {
   font-size: 13px;
   line-height: 1.8;
-}
-.customize-grid {
-  display: grid;
-  grid-template-columns: 1fr 1.1fr;
-  gap: 25px;
-}
-.customize-grid .surface p {
-  font-size: 12px;
-  line-height: 1.8;
-}
-.upload-area {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  border: 1px dashed #bfc3dc;
-  border-radius: 10px;
-  background: #f5f7ff;
-  padding: 28px;
-  margin: 20px 0;
-  position: relative;
-  cursor: pointer;
-  text-align: center;
-}
-.upload-area input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  cursor: pointer;
-}
-.upload-area strong {
-  font-size: 12px;
-  font-weight: 500;
-  color: #6544ad;
-}
-.upload-area small {
-  font-size: 10px;
-  color: #9492b8;
-}
-.upload-area:focus-within {
-  outline: 2px solid #9492b8;
-  outline-offset: 3px;
-}
-.check-line {
-  font-size: 12px;
-  color: #686280;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 17px 0;
-}
-.check-line input {
-  accent-color: #6544ad;
-}
-.slider-field {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  font-size: 11px;
-  color: #686280;
-  gap: 8px;
-  margin-top: 17px;
-}
-.slider-field input {
-  grid-column: 1/-1;
-  width: 100%;
-  padding: 0;
-  accent-color: #6544ad;
-  height: 18px;
-}
-.slider-field output {
-  font: 15px VT323;
-  color: #6544ad;
-}
-.preview-surface {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-}
-.character-preview {
-  width: 100%;
-  min-height: 320px;
-  display: grid;
-  place-items: center;
-  margin: 14px 0 28px;
-  background-color: #e6e6ee;
-  background-image:
-    linear-gradient(45deg, #e6e6ee 25%, transparent 25%),
-    linear-gradient(-45deg, #e6e6ee 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #e6e6ee 75%),
-    linear-gradient(-45deg, transparent 75%, #e6e6ee 75%);
-  background-size: 30px 30px;
-  background-position:
-    0 0,
-    0 15px,
-    15px -15px,
-    -15px 0;
-  border-radius: 10px;
-}
-.character-preview canvas {
-  width: 256px;
-  height: auto;
-  image-rendering: pixelated;
-  object-fit: contain;
-  max-width: 100%;
-}
-.preview-surface .row {
-  justify-content: center;
-  flex-wrap: wrap;
-}
-.preview-surface .fine-print {
-  max-width: 340px;
-}
-.palette {
-  display: flex;
-  gap: 7px;
-  margin: 15px 0;
-}
-.palette span {
-  width: 25px;
-  height: 25px;
-  border-radius: 5px;
-  border: 1px solid #0a0a1211;
-}
-.character-shelf {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-}
-.character-shelf button {
-  border: 1px solid #d6d8e8;
-  border-radius: 10px;
-  background: #f5f7ff;
-  padding: 10px 20px 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 170px;
-}
-.character-shelf button.selected {
-  border-color: #6544ad;
-  background: #e6e6ee;
-}
-.character-shelf img {
-  image-rendering: pixelated;
-  object-fit: contain;
-}
-.character-shelf strong {
-  font-size: 13px;
-  font-weight: 500;
-}
-.character-shelf small {
-  font-size: 9px;
-  margin-top: 5px;
 }
 .board-layout {
   display: grid;
@@ -1771,7 +1597,7 @@ button svg {
   background: #e6e6ee;
 }
 .chapter-list span {
-  font: 15px VT323;
+  font: 15px Tiny5;
   color: #9492b8;
 }
 .chapter-list b {
@@ -1794,7 +1620,7 @@ button svg {
   width: 100%;
 }
 .transcript time {
-  font: 14px VT323;
+  font: 14px Tiny5;
   color: #9492b8;
   min-width: 35px;
   padding-top: 3px;
@@ -2835,26 +2661,6 @@ button svg {
   .board-coach {
     max-width: none;
   }
-  .customize-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 15px;
-  }
-  .customize-grid .surface {
-    padding: 22px;
-  }
-  .character-preview {
-    min-height: 230px;
-  }
-  .character-preview canvas {
-    width: 192px;
-    height: auto;
-  }
-  .character-preview .hypeman-pet {
-    transform: scale(0.8);
-  }
-  .customize-grid .button {
-    font-size: 11px;
-  }
   .simple-header {
     padding: 23px 25px;
   }
@@ -3140,30 +2946,6 @@ button svg {
   }
   .tool-heading p {
     font-size: 12px;
-  }
-  .customize-grid {
-    grid-template-columns: 1fr;
-  }
-  .character-preview {
-    min-height: 270px;
-  }
-  .character-preview canvas {
-    width: 256px;
-    height: auto;
-  }
-  .character-preview .hypeman-pet {
-    transform: none;
-  }
-  .character-shelf {
-    gap: 12px;
-  }
-  .character-shelf button {
-    min-width: 130px;
-    padding: 8px 13px 15px;
-  }
-  .character-shelf img {
-    width: 96px;
-    height: 128px;
   }
   .drawing-toolbar > .row {
     margin-left: 0;

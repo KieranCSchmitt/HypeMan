@@ -176,8 +176,8 @@ try {
   });
 
   const home = await ctx.newPage();
-  await home.goto(`chrome-extension://${extensionId}/newtab.html`);
-  await home.getByRole("button", { name: "Ask HypeMan", exact: true }).waitFor();
+  await home.goto(`chrome-extension://${extensionId}/newtab.html#chat`);
+  await home.getByRole("textbox", { name: "What do you need?", exact: true }).waitFor();
   await rpc(home, {
     type: "settings.patch",
     patch: {
@@ -190,23 +190,20 @@ try {
   await home.screenshot({ path: "tests/screenshots/rooftop.png", fullPage: true });
   const health = await rpc(home, { type: "health" });
   assert.equal(health.demoMode, true);
-  assert.equal("voice" in health.capabilities, false);
-  await home.getByRole("button", { name: "Quick answer mode", exact: true }).click();
-  await home
-    .getByRole("textbox", { name: "Quick answer", exact: true })
-    .fill("What can HypeMan do?");
-  await home.getByRole("button", { name: "Quick answer", exact: true }).click();
-  await home.locator(".answer").waitFor();
-  check("Rooftop, pairing health, distinct quick answers without project creation");
+  await home.getByRole("textbox", { name: "What do you need?", exact: true }).fill("What can HypeMan do?");
+  await home.getByRole("button", { name: "Send message", exact: true }).click();
+  await home.locator(".conversation-messages .chat-message.assistant").first().waitFor();
+  await home.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  assert.equal((await rpc(home, { type: "workspace.get" })).tasks.length, 0);
+  check("Shared conversation and pairing health answer ordinary questions without project creation");
   for (const fixture of ctx.pages())
     if (fixture !== home) await fixture.close();
-  await home.getByRole("button", { name: "Ask HypeMan mode", exact: true }).click();
   await home
     .locator("#task-goal")
     .fill(
       `Find a beginner workshop under $75, compare two options, prepare registration, and request confirmation before submission. Wait for me between milestones. Start at ${base}/demo/workshops/`,
     );
-  await home.getByRole("button", { name: "Ask HypeMan", exact: true }).click();
+  await home.getByRole("button", { name: "Send message", exact: true }).click();
   const taskPage = await waitFor(
     () => Promise.resolve(ctx.pages().find((p) => p.url().includes("/demo/workshops/"))),
     "workshop tab",
@@ -220,9 +217,10 @@ try {
   assert.deepEqual(project.steps.map((step) => step.status), ["doing", "todo", "todo"]);
   assert.equal((await rpc(home, { type: "workspace.get" })).notes.length, 0);
   const chat = async (text) => {
-    const field = taskPage.getByLabel("Message your companion");
+    const field = taskPage.getByLabel("What do you need?");
     if (!(await field.isVisible()))
       await taskPage.getByRole("button", { name: /Open HypeMan\. Drag/ }).click();
+    await taskPage.getByRole("button", { name: "Send message", exact: true }).waitFor();
     await field.fill(text);
     await taskPage.getByRole("button", { name: "Send message", exact: true }).click();
   };
@@ -260,13 +258,13 @@ try {
   assert.equal(
     demoTrace.filter(
       ({ url, decision }) =>
-        new URL(url).pathname === "/demo/workshops/" && decision.action.type === "click",
+        url && new URL(url).pathname === "/demo/workshops/" && decision.action.type === "click",
     ).length,
     1,
     "The comparison link must be clicked once while its destination is loading.",
   );
   await taskPage.waitForFunction(() =>
-    ["Press Start 2P", "VT323"].every((family) =>
+    ["Press Start 2P", "Tiny5"].every((family) =>
       Array.from(document.fonts).some((face) => face.family === family && face.status === "loaded"),
     ),
   );
@@ -278,18 +276,18 @@ try {
   );
   assert.equal(await taskPage.locator("#registration-success").isVisible(), false);
   await taskPage.screenshot({ path: "tests/screenshots/confirmation.png", fullPage: true });
-  await taskPage.getByRole("button", { name: "Cancel action", exact: true }).click();
+  await taskPage.getByRole("alertdialog", { name: "Confirm browser action" }).getByRole("button", { name: "Cancel", exact: true }).click();
   assert.equal(await taskPage.locator("#registration-success").isVisible(), false);
   check(
     "Delayed link navigation continues once, source-backed comparison and prepared fields require confirmation",
   );
   // A new explicit instruction is necessary after declining the pending action.
   await taskPage
-    .getByLabel("Message your companion")
+    .getByLabel("What do you need?")
     .fill("Prepare registration and request confirmation before submitting");
   await taskPage.getByRole("button", { name: "Send message", exact: true }).click();
   await taskPage.getByRole("alertdialog", { name: "Confirm browser action" }).waitFor();
-  await taskPage.getByRole("button", { name: "Yes, continue", exact: true }).click();
+  await taskPage.getByRole("alertdialog", { name: "Confirm browser action" }).getByRole("button", { name: "Allow", exact: true }).click();
   await taskPage.locator("#registration-success").waitFor();
   const finished = await waitFor(async () => {
     const s = await rpc(home, { type: "workspace.get" });
@@ -307,13 +305,9 @@ try {
   const control = await ctx.newPage();
   await control.goto(`chrome-extension://${extensionId}/newtab.html#notes`);
   await control.locator(".note-card").first().waitFor();
-  await control
-    .locator(".note-card")
-    .first()
-    .getByRole("button", { name: "Edit", exact: true })
-    .click();
-  await control.getByLabel("Your note").fill("Pottery Basics: $60, beginner, materials included.");
-  await control.getByRole("button", { name: "Save note", exact: true }).click();
+  const directNote = control.locator(".note-card .direct-note-editor").first();
+  await directNote.fill("Pottery Basics: $60, beginner, materials included.");
+  await directNote.press("Tab");
   await waitFor(async () => {
     const s = await rpc(home, { type: "workspace.get" });
     return s.notes.some(
@@ -321,10 +315,13 @@ try {
     );
   }, "note edit");
   const downloadPromise = control.waitForEvent("download");
-  await control.getByRole("button", { name: "Export workspace", exact: false }).click();
+  await control.getByRole("textbox", { name: "What do you need?", exact: true }).fill("export workspace");
+  await control.getByRole("button", { name: "Send message", exact: true }).click();
   const download = await downloadPromise;
   assert.match(await readFile(await download.path(), "utf8"), /Pottery Basics/);
-  await control.goto(`chrome-extension://${extensionId}/newtab.html#activity`);
+  await control.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  await control.getByRole("textbox", { name: "What do you need?", exact: true }).fill("open activity");
+  await control.getByRole("button", { name: "Send message", exact: true }).click();
   await control.locator(".inline-action-list article").first().waitFor();
   await control.screenshot({ path: "tests/screenshots/control.png", fullPage: true });
   check(
@@ -382,43 +379,32 @@ try {
   // Live settings update the content UI without a page reload.
   await rpc(home, {
     type: "settings.patch",
-    patch: { characterName: "Moss", reducedMotion: "on", learningEnabled: true },
+    patch: { reducedMotion: "on", learningEnabled: true },
   });
-  await taskPage.getByRole("button", { name: /Open Moss\. Drag/ }).click();
-  await waitFor(
-    () =>
-      taskPage
-        .locator(".companion-header strong")
-        .textContent()
-        .then((v) => v?.includes("Moss")),
-    "live companion name",
-  );
-  check("Live name, learning and reduced-motion settings propagate");
   const learn = await ctx.newPage();
   await learn.goto(`${base}/demo/learning/`);
-  await learn.getByRole("button", { name: /Open Moss\. Drag/ }).click();
+  await learn.getByRole("button", { name: /Open HypeMan\. Drag/ }).click();
   assert.equal(await learn.locator(".companion-tools").count(), 0);
   assert.equal(await learn.locator(".companion-task").count(), 0);
-  assert.equal(await learn.getByRole("button", { name: /microphone|speech|voice/i }).count(), 0);
-  const dock = await learn.locator(".companion-panel").boundingBox();
-  assert.ok(dock.width <= 340 && dock.height < 250);
-  await learn
-    .locator(".companion-panel")
-    .screenshot({ path: "tests/screenshots/minimal-dock.png" });
-  check("Compact icon dock hides tools and task details with no speech controls");
-  await learn.getByLabel("Message your companion").fill("Make a learning plan for this page");
+  assert.equal(await learn.getByRole("button", { name: /More tools|Practice|Whiteboard|Quick answer mode/ }).count(), 0);
+  const dock = await learn.locator(".conversation-pane").boundingBox();
+  assert.ok(dock.width <= 1440 && dock.height <= 1000);
+  await learn.locator(".conversation-pane").screenshot({ path: "tests/screenshots/minimal-dock.png" });
+  check("Shared conversation has no mode switches or tool launchers, with essential controls retained");
+  await learn.getByLabel("What do you need?").fill("Make a learning plan for this page");
   await learn.getByRole("button", { name: "Send message", exact: true }).click();
   await waitFor(async () => {
     const g = await rpc(home, { type: "graph.get" });
     return g.plans.length > 0;
   }, "learning plan");
-  await learn.getByRole("button", { name: "More tools", exact: true }).click();
-  await learn.getByRole("button", { name: "Practice", exact: true }).click();
-  await learn.locator(".panel-learning").getByRole("button", { name: "A little hint", exact: true }).click();
-  await learn.waitForTimeout(200);
-  await learn.getByLabel("Message your companion").fill("Sketch an analogous equation");
+  await learn.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  await learn.getByLabel("What do you need?").fill("a hint");
   await learn.getByRole("button", { name: "Send message", exact: true }).click();
-  await learn.locator(".panel-sketch").waitFor();
+  await learn.locator(".inline-toolbox-learning").waitFor();
+  await learn.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  await learn.getByLabel("What do you need?").fill("Sketch an analogous equation");
+  await learn.getByRole("button", { name: "Send message", exact: true }).click();
+  await learn.locator(".shared-board").waitFor();
   check("Optional learning plans, graduated hint entry and chalkboard sketch");
   await learn.close();
   const board = await ctx.newPage();
@@ -430,39 +416,37 @@ try {
   await board.mouse.down();
   await board.mouse.move(box.x + 180, box.y + 130, { steps: 12 });
   await board.mouse.up();
-  await board.getByRole("button", { name: "Undo", exact: true }).click();
-  await board.getByRole("button", { name: "Redo", exact: true }).click();
-  await board.getByRole("button", { name: "Ask about this drawing", exact: true }).click();
-  await board.getByRole("button", { name: "Check my work", exact: false }).click();
+  const boardChat = async (text) => {
+    await board.getByRole("button", { name: "Send message", exact: true }).waitFor();
+    await board.getByRole("textbox", { name: "What do you need?", exact: true }).fill(text);
+    await board.getByRole("button", { name: "Send message", exact: true }).click();
+  };
+  await boardChat("undo");
+  await waitFor(async () => await board.locator(".board-objects [role=option]").count() === 0, "whiteboard undo");
+  await boardChat("redo");
+  await waitFor(async () => await board.locator(".board-objects [role=option]").count() === 1, "whiteboard redo");
+  await boardChat("check my work");
   await board.locator(".ink-feedback").waitFor();
   await board.screenshot({ path: "tests/screenshots/board.png", fullPage: true });
   check("Drawing board stroke, undo/redo and labeled fixture feedback");
   await board.close();
   const video = await ctx.newPage();
   await video.goto(`chrome-extension://${extensionId}/video.html`);
+  await video.getByRole("tab", { name: "Transcript", exact: true }).click();
+  await video.getByRole("button", { name: "Edit transcript", exact: true }).click();
   await video
-    .getByLabel("Or paste a transcript")
+    .getByLabel("Video transcript")
     .fill(
       "Apply the same operation to both sides of an equation. Then explain why equality stays true.",
     );
-  await video.getByRole("button", { name: "Find the thread", exact: false }).click();
+  await video.getByRole("textbox", { name: "What do you need?", exact: true }).fill("summarize this video");
+  await video.getByRole("button", { name: "Send message", exact: true }).click();
+  await video.getByRole("tab", { name: "Summary", exact: true }).click();
   await video.locator(".video-summary").waitFor();
+  await video.getByRole("tab", { name: "Chapters", exact: true }).click();
   assert.ok((await video.locator(".chapter-list button").count()) > 0);
   check("Caption-backed video chapters and contextual notes");
   await video.close();
-  const character = await ctx.newPage();
-  await character.goto(`chrome-extension://${extensionId}/customize.html`);
-  await character
-    .locator("input[type=file]")
-    .setInputFiles(resolve("apps/extension/public/assets/icons/icon128.png"));
-  await character.getByLabel("Companion name", { exact: true }).fill("Clover");
-  await character.getByRole("button", { name: "Save & use companion", exact: false }).click();
-  await character.locator(".character-shelf").waitFor();
-  await character.reload();
-  await character.locator(".character-shelf").waitFor();
-  assert.equal((await rpc(home, { type: "settings.get" })).characterName, "Clover");
-  check("Local custom character processing, saving and reloading");
-  await character.close();
 
   await runSpecialists({ ctx, home, rpc, base, extensionId, check });
   await rpc(home, { type: "settings.patch", patch: { learningEnabled: false } });
@@ -579,13 +563,15 @@ try {
   ({ ctx, sw, extensionId } = await launch());
   context = ctx;
   const resumed = await ctx.newPage();
-  await resumed.goto(`chrome-extension://${extensionId}/newtab.html`);
-  await resumed.getByRole("button", { name: "Continue project", exact: true }).waitFor();
+  await resumed.goto(`chrome-extension://${extensionId}/newtab.html#chat`);
+  await resumed.getByRole("textbox", { name: "What do you need?", exact: true }).fill("open projects");
+  await resumed.getByRole("button", { name: "Send message", exact: true }).click();
+  await resumed.locator(".task-card").filter({ hasText: "A project to resume after restart" }).waitFor();
   const recovered = await rpc(resumed, { type: "workspace.get" });
   assert.equal(recovered.activeTaskId, null);
   assert.equal(recovered.tasks.at(-1).status, "paused");
   assert.equal(recovered.tasks.at(-1).tabId, null);
-  check("Browser restart restores a paused resume icon and requires explicit continuation");
+  check("Browser restart restores a paused project and requires explicit conversational continuation");
   console.log(`\n${checks} deterministic browser scenarios passed.`);
 } catch (error) {
   if (context) {

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Providers } from "./providers";
 import { loadConfig } from "./config";
-import { vision } from "./vision";
 import type { ChatGPTAuth } from "./chatgpt-auth";
 import type { ChatGPTStatus } from "@core";
 import { GatewayError } from "./errors";
@@ -12,45 +11,6 @@ const response = (content: unknown) =>
     }),
     { headers: { "content-type": "application/json" } },
   );
-describe("provider adapters", () => {
-  it("does not convert uncertain handwriting into an error accusation or chalk correction", async () => {
-    const providers = {
-      vision: vi.fn(async () => ({
-        lines: [],
-        status: "unclear",
-        line: 2,
-        box: { x: 0.1, y: 0.1, width: 0.3, height: 0.2 },
-        hint: "Hold the page steady.",
-        note: ["unverified correction"],
-      })),
-    } as unknown as Providers;
-    const result = await vision(
-      "/api/ink",
-      { image: "data:image/png;base64,YQ==" },
-      providers,
-      loadConfig({}),
-      new AbortController().signal,
-    );
-    expect(result).toMatchObject({ status: "unclear", line: null, box: null, note: [] });
-  });
-  it("rejects an invalid notebook response instead of presenting fabricated lines", async () => {
-    const providers = {
-      vision: vi.fn(async () => ({
-        lines: [{ text: "invented", box: { x: 100, y: 20, width: 50, height: 50 } }],
-        uncertain: false,
-      })),
-    } as unknown as Providers;
-    await expect(
-      vision(
-        "/api/notebook",
-        { image: "data:image/png;base64,YQ==" },
-        providers,
-        loadConfig({}),
-        new AbortController().signal,
-      ),
-    ).rejects.toMatchObject({ status: 502 });
-  });
-});
 
 function chatgptSession() {
   const state: ChatGPTStatus = {
@@ -216,7 +176,7 @@ describe("ChatGPT plan provider", () => {
           ),
     ) as typeof fetch;
     const providers = new Providers(
-      loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+      loadConfig({}),
       fetcher,
       auth,
     );
@@ -264,7 +224,7 @@ describe("ChatGPT plan provider", () => {
     );
     const fetcher = vi.fn(async () => response({ unexpected: true })) as typeof fetch;
     const providers = new Providers(
-      loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+      loadConfig({}),
       fetcher,
       session.auth,
     );
@@ -324,7 +284,7 @@ describe("ChatGPT plan provider", () => {
     const session = chatgptSession();
     session.setModel("no-longer-available");
     const providers = new Providers(
-      loadConfig({ LLM_MODEL: "not-in-catalog" }),
+      loadConfig({ CHATGPT_MODEL: "not-in-catalog" }),
       vi.fn(async () => modelCatalog()) as typeof fetch,
       session.auth,
     );
@@ -367,7 +327,7 @@ describe("ChatGPT plan provider", () => {
           ),
     ) as typeof fetch;
     const providers = new Providers(
-      loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+      loadConfig({}),
       fetcher,
       session.auth,
     );
@@ -422,7 +382,7 @@ describe("ChatGPT plan provider", () => {
         String(url).endsWith("/models") ? modelCatalog() : output,
       ) as typeof fetch;
       const providers = new Providers(
-        loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+        loadConfig({}),
         fetcher,
         session.auth,
       );
@@ -443,7 +403,7 @@ describe("ChatGPT plan provider", () => {
             }),
       ) as typeof fetch;
       const providers = new Providers(
-        loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+        loadConfig({}),
         fetcher,
         session.auth,
       );
@@ -491,7 +451,7 @@ describe("ChatGPT plan provider", () => {
       });
     }) as typeof fetch;
     const providers = new Providers(
-      loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+      loadConfig({}),
       fetcher,
       session.auth,
     );
@@ -509,7 +469,7 @@ describe("ChatGPT plan provider", () => {
     const fetcher = vi.fn() as unknown as typeof fetch;
     const control = new AbortController();
     const work = new Providers(
-      loadConfig({ OPENAI_API_KEY: "unused-api-key" }),
+      loadConfig({}),
       fetcher,
       session.auth,
     ).json("JSON", {}, control.signal);
@@ -520,18 +480,9 @@ describe("ChatGPT plan provider", () => {
 });
 
 describe("ChatGPT-only connection", () => {
-  it("requires sign-in without probing local models or using old provider keys", async () => {
+  it("requires sign-in before contacting AI services", async () => {
     const fetcher = vi.fn() as unknown as typeof fetch;
-    const config = loadConfig({
-      OPENAI_API_KEY: "ignored-api-key",
-      LLM_API_KEY: "ignored-alias",
-      GEMINI_API_KEY: "ignored-vision-key",
-      OLLAMA_ENABLED: "1",
-      OLLAMA_BASE_URL: "http://127.0.0.1:11434",
-    });
-    expect(config).not.toHaveProperty("openaiKey");
-    expect(config).not.toHaveProperty("geminiKey");
-    expect(config).not.toHaveProperty("ollamaUrl");
+    const config = loadConfig({});
     const providers = new Providers(config, fetcher);
     expect(providers.hasTextProvider).toBe(false);
     expect(await providers.status()).toMatchObject({
@@ -553,12 +504,12 @@ describe("ChatGPT-only connection", () => {
     ).rejects.toMatchObject({ status: 401, code: "chatgpt_auth_required" });
     expect(fetcher).not.toHaveBeenCalled();
   });
-  it("uses the same ChatGPT connection for notebook and drawing images, with task context first", async () => {
+  it("uses the ChatGPT connection for drawing images, with task context first", async () => {
     const { auth } = chatgptSession();
     const fetcher = vi.fn(async (url: unknown) =>
       String(url).endsWith("/models")
         ? modelCatalog()
-        : sseResponse(completed({ lines: [], uncertain: true })),
+        : sseResponse(completed({ readback: [], legibility: "unreadable", observations: [], issues: [], nextStep: "Check the image." })),
     ) as typeof fetch;
     const providers = new Providers(loadConfig({}), fetcher, auth);
     const image = "data:image/png;base64,YQ==";
@@ -571,7 +522,7 @@ describe("ChatGPT-only connection", () => {
         new AbortController().signal,
         context,
       ),
-    ).toEqual({ lines: [], uncertain: true });
+    ).toEqual({ readback: [], legibility: "unreadable", observations: [], issues: [], nextStep: "Check the image." });
     const calls = (fetcher as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.map(([url]) => String(url))).toEqual([
       "https://api.openai.com/v1/models",

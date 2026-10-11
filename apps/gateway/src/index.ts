@@ -4,6 +4,7 @@ import { createReadStream, existsSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentReply, AgentRequest, Health, TaskAssessment, TaskAssessmentRequest } from "@core";
+import { unavailableMessagingStatus } from "@core";
 import { loadConfig, type GatewayConfig } from "./config";
 import {
   allowedHost,
@@ -20,8 +21,11 @@ import { decide } from "./agent";
 import { learning } from "./learning";
 import { vision } from "./vision";
 import { video } from "./video";
+import { analyzeDocument } from "./documents";
 import { lookup } from "./lookup";
 import { assessTask, groundedAssessment } from "./task-assessment";
+import { PhotonAdapter } from "./photon";
+import { MessagingService } from "./messaging";
 const here = dirname(fileURLToPath(import.meta.url));
 const publicDirectory = resolve(here, "../public");
 const MIME: Record<string, string> = {
@@ -124,6 +128,7 @@ export interface GatewayOptions {
   assessTask?: (input: TaskAssessmentRequest, signal: AbortSignal) => Promise<TaskAssessment>;
   fetcher?: typeof fetch;
   chatgpt?: ChatGPTAuth;
+  messaging?: MessagingService;
 }
 export function createGateway(config: GatewayConfig, options: GatewayOptions) {
   if (!options.token) throw new Error("Local connection token is required.");
@@ -131,6 +136,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
     providers = new Providers(config, options.fetcher, chatgpt),
     active = new Map<string, AbortController>();
   const stopRequests = () => {
+    options.messaging?.cancelAI();
     for (const controller of active.values())
       controller.abort(new DOMException("ChatGPT account changed", "AbortError"));
   };
@@ -145,9 +151,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
       authRequired: true,
       capabilities: {
         agent,
-        character: agent,
         ink: agent,
-        notebook: agent,
         transcripts: {
           available: true,
           mode: config.transcriptKey ? "live" : "local",
@@ -156,6 +160,11 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
             : "Native page captions only; SUPADATA_API_KEY enables service transcripts.",
         },
         learning: agent,
+        messaging: {
+          available: !!options.messaging?.status().connected,
+          mode: options.messaging?.status().connected ? "live" : "unavailable",
+          reason: "Optional Photon phone companion; pairing and delivery details require local authentication.",
+        },
       },
     };
   };
@@ -217,23 +226,15 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
           "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'",
         );
         response.end(`<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>HypeMan · ChatGPT</title><style>
-          @font-face{font-family:"Press Start 2P";src:url("/fonts/PressStart2P.ttf") format("truetype");font-display:swap}@font-face{font-family:VT323;src:url("/fonts/VT323.ttf") format("truetype");font-display:swap}
+          @font-face{font-family:"Press Start 2P";src:url("/fonts/PressStart2P.ttf") format("truetype");font-display:swap}@font-face{font-family:Tiny5;src:url("/fonts/Tiny5.ttf") format("truetype");font-display:swap}
           *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;font:15px/1.6 Arial,sans-serif;color:#1b1f3b;background:radial-gradient(ellipse at 50% 20%,#49376f,transparent 60%),repeating-linear-gradient(0deg,transparent 0 31px,#ffffff05 32px),#15172e}
           main{width:min(100%,440px);padding:5px;border:1px solid #eef4ff;border-right-color:#575c79;border-bottom-color:#575c79;border-radius:5px;background:linear-gradient(135deg,#eef3ff,#aeb7cb);box-shadow:0 18px 65px #0007,0 0 30px #00e5ff20}
-          header{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:2px;background:linear-gradient(#8c78ed,#493380);color:white;text-shadow:1px 1px #242344}header b{font:12px/1.5 "Press Start 2P",monospace;letter-spacing:0}header span{margin-left:auto;color:#d5fdff;font:19px/1 VT323,monospace}
+          header{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:2px;background:linear-gradient(#8c78ed,#493380);color:white;text-shadow:1px 1px #242344}header b{font:12px/1.5 "Press Start 2P",monospace;letter-spacing:0}header span{margin-left:auto;color:#d5fdff;font:19px/1 Tiny5,monospace}
           section{margin:5px 0 0;padding:24px;border:1px solid #8c92ab;background:#f5f7ff}p{margin:0 0 14px}p:last-child{margin:0;color:#6b6d85;font-size:13px}
         </style><body><main><header><b>HypeMan</b><span>ChatGPT</span></header><section><p>${message}</p><p>You can close this tab.</p></section></main></body></html>`);
         return;
       }
       if (!url.pathname.startsWith("/api/")) {
-        if (request.method === "GET" && url.pathname === "/") {
-          response.writeHead(302, { location: "/demo/workshops/" }).end();
-          return;
-        }
-        if (request.method === "GET" && url.pathname === "/notebook") {
-          response.writeHead(302, { location: "/notebook.html" }).end();
-          return;
-        }
         if (request.method === "GET" && staticFile(request, response, url.pathname)) return;
         throw new GatewayError(404, "Not found.");
       }
@@ -254,6 +255,20 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
         throw new GatewayError(401, "Reconnect HypeMan to its local server.", "pairing_required");
       if (request.method !== "POST") throw new GatewayError(405, "Use POST.");
       const payload = await body(request);
+      if (url.pathname.startsWith("/api/messaging/")) {
+        const action = url.pathname.slice("/api/messaging/".length);
+        if (!options.messaging) {
+          if (action === "status") {
+            if (!payload || typeof payload !== "object" || Array.isArray(payload) || Object.keys(payload).length)
+              throw new GatewayError(400, "Invalid messaging status request.");
+            json(response, 200, unavailableMessagingStatus());
+            return;
+          }
+          throw new GatewayError(503, "Phone companion is unavailable in this gateway.", "messaging_unavailable");
+        }
+        json(response, 200, await options.messaging.route(action, payload));
+        return;
+      }
       if (url.pathname.startsWith("/api/chatgpt/")) {
         const action = url.pathname.slice("/api/chatgpt/".length);
         const keys: Record<string, string[]> = {
@@ -361,10 +376,12 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
         }
         if (url.pathname.startsWith("/api/learn/"))
           return learning(url.pathname, input, providers, config, signal);
-        if (["/api/ink", "/api/notebook", "/api/character"].includes(url.pathname))
-          return vision(url.pathname, input, providers, config, signal);
+        if (url.pathname === "/api/ink")
+          return vision(input, providers, config, signal);
         if (url.pathname === "/api/video")
           return video(input, providers, config, signal, options.fetcher);
+        if (url.pathname === "/api/document")
+          return analyzeDocument(input, providers, signal, config.demo);
         if (url.pathname === "/api/lookup")
           return lookup(String(input.query), config, signal, options.fetcher);
         throw new GatewayError(404, "Unknown API route.");
@@ -425,6 +442,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
     close: async () => {
       chatgpt?.cancel();
       for (const controller of active.values()) controller.abort();
+      await options.messaging?.close();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
     },
@@ -433,16 +451,27 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
 export async function startGateway() {
   const config = loadConfig(),
     token = loadPairingToken();
+  const chatgpt = !config.demo ? new ChatGPTAuth() : undefined;
+  const providers = new Providers(config, undefined, chatgpt);
+  const messaging = config.demo ? undefined : new MessagingService({
+    transport: new PhotonAdapter(config),
+    providers,
+    demo: config.demo,
+  });
   const gateway = createGateway(config, {
     token,
-    ...(!config.demo ? { chatgpt: new ChatGPTAuth() } : {}),
+    chatgpt,
+    messaging,
   });
   const port = await gateway.listen();
+  // A missing/slow Photon connection must never delay Chrome or ChatGPT startup.
+  void messaging?.start().catch(() => {
+    console.error("Photon phone companion could not start. Check its status in HypeMan Settings.");
+  });
   console.info(
     `HypeMan ${config.demo ? "DEMO — labeled fixtures" : "LIVE"} gateway: http://127.0.0.1:${port}`,
   );
-  console.info("HypeMan connects automatically. Open the extension to continue with ChatGPT.");
-  console.info(`Workshop: http://127.0.0.1:${port}/demo/workshops/`);
+  console.info("HypeMan connects automatically. Use the avatar on an ordinary Chrome webpage to continue.");
   const stop = () => {
     void gateway.close().then(() => process.exit(0));
   };

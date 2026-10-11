@@ -258,7 +258,7 @@ describe("evidence-backed learning", () => {
         concept: "Fractions",
         kind: "attempt",
         correct: true,
-        at: 1000 + index * 7 * 60 * 60 * 1000,
+        at: 1000 + index * 25 * 60 * 60 * 1000,
         evidence: "I divided both parts by two.",
       });
     graph = recordLearning(graph, {
@@ -266,7 +266,7 @@ describe("evidence-backed learning", () => {
       concept: "Fractions",
       kind: "explanation",
       correct: true,
-      at: 60_000_000,
+      at: graph.nodes[0].lastPractice + 1000,
       evidence: "Equal parts describe the same whole.",
     });
     const node = graph.nodes[0];
@@ -279,10 +279,90 @@ describe("evidence-backed learning", () => {
     expect(learningEstimate(node, node.lastPractice + 100 * 86400000).due).toBe(true);
     expect(graph.nodes[0].evidence).toContain("Equal parts describe the same whole.");
   });
-  it("reads recognizable legacy graph nodes while constraining corrupt counters", () => {
+  it.each([
+    [12 * 60 * 60 * 1000, 0],
+    [24 * 60 * 60 * 1000 - 1, 0],
+    [24 * 60 * 60 * 1000, 1],
+    [24 * 60 * 60 * 1000 + 1, 1],
+  ])("counts a successful retrieval after %i milliseconds away as %i recalls", (gap, recalls) => {
+    const first = recordLearning(emptyLearningGraph(), {
+      id: "first",
+      concept: "Fractions",
+      kind: "attempt",
+      correct: true,
+      at: 1000,
+    });
+    const returned = recordLearning(first, {
+      id: "return",
+      concept: "Fractions",
+      kind: "attempt",
+      correct: true,
+      at: 1000 + gap,
+    });
+    expect(first.nodes[0].recalls).toBe(0);
+    expect(returned.nodes[0]).toMatchObject({ attempts: 2, correct: 2, recalls });
+  });
+  it("does not count a failed return or its immediate correction as a daily retrieval", () => {
+    let graph = recordLearning(emptyLearningGraph(), {
+      id: "first",
+      concept: "Fractions",
+      kind: "attempt",
+      correct: true,
+      at: 1000,
+    });
+    graph = recordLearning(graph, {
+      id: "failed-return",
+      concept: "Fractions",
+      kind: "attempt",
+      correct: false,
+      at: 1000 + 24 * 60 * 60 * 1000,
+    });
+    graph = recordLearning(graph, {
+      id: "corrected",
+      concept: "Fractions",
+      kind: "attempt",
+      correct: true,
+      at: 2000 + 24 * 60 * 60 * 1000,
+    });
+    expect(graph.nodes[0]).toMatchObject({ attempts: 3, correct: 2, recalls: 0 });
+  });
+  it("preserves a canonical HypeMan graph and its retention estimate after loading", () => {
+    const graph = recordLearning(emptyLearningGraph(), {
+      id: "saved-attempt",
+      concept: "Fractions",
+      kind: "attempt",
+      correct: true,
+      at: 1000,
+      evidence: "I divided both parts by two.",
+    });
+    Object.assign(graph.nodes[0], { attempts: 4, correct: 3, recalls: 2, explanations: 1 });
+    graph.plans.push({
+      id: "saved-plan",
+      goal: "Practice fractions",
+      steps: [{ title: "Compare equal parts", concept: "Fractions", done: true }],
+      createdAt: 1000,
+    });
+    const restored = parseLearningGraph(JSON.parse(JSON.stringify(graph)));
+    expect(restored).toEqual(graph);
+    expect(learningEstimate(restored.nodes[0], 1000 + 24 * 60 * 60 * 1000))
+      .toEqual(learningEstimate(graph.nodes[0], 1000 + 24 * 60 * 60 * 1000));
+    expect(recordLearning(restored, {
+      id: "saved-attempt", concept: "Fractions", kind: "attempt", correct: true, at: 1000,
+    })).toEqual(graph);
+  });
+  it.each([
+    { nodes: [] },
+    { version: 2, nodes: [] },
+    { version: "1", nodes: [] },
+    { version: 1, nodes: { fractions: { label: "Fractions", attempts: 2 } } },
+  ])("rejects an unsupported learning snapshot: %j", (snapshot) => {
+    expect(parseLearningGraph(snapshot)).toEqual(emptyLearningGraph());
+  });
+  it("constrains corrupt counters in a HypeMan version 1 snapshot", () => {
     const graph = parseLearningGraph({
-      nodes: {
-        old: {
+      version: 1,
+      nodes: [
+        {
           label: "Fractions",
           exposures: 100,
           attempts: 2,
@@ -290,7 +370,7 @@ describe("evidence-backed learning", () => {
           recalls: Infinity,
           evidence: ["Seen in a source", null],
         },
-      },
+      ],
     });
     expect(graph.nodes[0]).toMatchObject({
       label: "Fractions",
@@ -364,27 +444,33 @@ describe("wire and preference validation", () => {
       hiddenOnHosts: ["EXAMPLE.COM", "example.com", "javascript:bad"],
       learningEnabled: "true",
       reducedMotion: "on",
-      ttsEnabled: true,
+      unexpected: true,
     });
-    expect(settings).not.toHaveProperty("ttsEnabled");
+    expect(settings).not.toHaveProperty("unexpected");
     expect(settings.serverUrl).toBe("http://localhost:8787");
     expect(settings.learningEnabled).toBe(false);
     expect(settings.hiddenOnHosts).toEqual(["example.com"]);
     expect(isPaused(settings, "https://example.com/page")).toBe(true);
     expect(settings.reducedMotion).toBe("on");
   });
-  it("defaults invalid mascot choices while preserving saved custom characters", () => {
-    expect(parseSettings(undefined).character).toBe("hypeman");
-    expect(parseSettings({ character: "hypeman", characterName: "HypeMan" }).characterName).toBe(
-      "HypeMan",
-    );
-    expect(parseSettings({ character: "unknown-mascot", characterName: "Moss" })).toMatchObject({
-      character: "hypeman",
-      characterName: "Moss",
-    });
-    expect(parseSettings({ character: "custom:my-avatar" }).character).toBe("custom:my-avatar");
-    expect(
-      parseSettings({ character: "custom:my-avatar", characterName: "Nova" }).characterName,
-    ).toBe("Nova");
+
+});
+
+describe("conversation tool contract", () => {
+  it("allows named local tool operations without arbitrary execution", () => {
+    expect(parseAction({ type: "tool", tool: "board", operation: "add", args: { objects: [{ kind: "equation", text: "x=2", x: 30, y: 60 }] } })?.type).toBe("tool");
+    expect(parseAction({ type: "tool", tool: "browser", operation: "evaluate", args: { code: "alert(1)" } })).toBeNull();
+    expect(parseAction({ type: "tool", tool: "phone", operation: "sendTo", args: { recipient: "someone" } })).toBeNull();
+    expect(parseAction({ type: "tool", tool: "board", operation: "add", args: { text: "x".repeat(60001) } })).toBeNull();
+  });
+  it("preserves conversation and PDF note provenance without fake URLs", () => {
+    const state = parseWorkspace({ version: 1, notes: [
+      { id: "n1", text: "A useful explanation", url: "", origin: { kind: "conversation", conversationId: "chat-1" } },
+      { id: "n2", text: "Document excerpt", excerpt: "Exact passage", url: "", origin: { kind: "document", conversationId: "chat-1", documentId: "pdf-1", page: 3 } },
+      { id: "bad", text: "No source", url: "" },
+    ] });
+    expect(state.notes.map((note) => note.id)).toEqual(["n1", "n2"]);
+    expect(state.notes[1]?.origin?.page).toBe(3);
+    expect(state.notes.every((note) => note.url === "")).toBe(true);
   });
 });

@@ -2,7 +2,7 @@
 export function loadCompanionFonts(): void {
   for (const [family, file] of [
     ["Press Start 2P", "PressStart2P.ttf"],
-    ["VT323", "VT323.ttf"],
+    ["Tiny5", "Tiny5.ttf"],
   ]) {
     void fetch(chrome.runtime.getURL(`assets/fonts/${file}`))
       .then((response) => {

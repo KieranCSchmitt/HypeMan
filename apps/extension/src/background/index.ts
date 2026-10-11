@@ -14,9 +14,14 @@ import {
   type TaskMilestoneProgress,
   type NoteInput,
   type ChatGPTStatus,
+  validMessagingTimezone,
+  type MessagingPairingResult,
 } from "@core";
 import { GatewayClient } from "./client";
-import { upgradeLocalStorage, upgradeSessionStorage } from "./storage-upgrade";
+import { MESSAGING_ALARM, PhoneSync } from "./messaging";
+import { workbenchMessage, type Conversation } from "./workbench";
+import { handleDocumentMessage } from "./documents";
+import { handleFrameGrantMessage } from "./frame-grants";
 import {
   settings,
   patchSettings,
@@ -25,9 +30,6 @@ import {
   learn,
   savePlan,
   clearLearning,
-  characters,
-  saveCharacter,
-  removeCharacter,
 } from "./storage";
 
 const workspace = new WorkspaceHost({
@@ -39,9 +41,13 @@ const workspace = new WorkspaceHost({
   },
 });
 const gateway = new GatewayClient(settings, globalThis.fetch.bind(globalThis), saveConnection);
+const phone = new PhoneSync(
+  chrome.storage.local,
+  () => workspace.snapshot(),
+  (path, body) => gateway.post(path, body, crypto.randomUUID(), null, 15000),
+  () => notify("messaging.changed"),
+);
 const ready = (async () => {
-  await upgradeLocalStorage(chrome.storage.local);
-  await upgradeSessionStorage(chrome.storage.session);
   const raw = await chrome.storage.session.get("hypeman.session");
   if (!raw["hypeman.session"]) {
     await workspace.recover();
@@ -84,9 +90,9 @@ async function notify(
     ),
   );
 }
-const companionSections = new Set(["tasks", "notes", "activity", "settings", "learning", "board", "video", "customize", "notebook", "connection"]);
-async function openCompanion(section: unknown = "tasks") {
-  const selected = typeof section === "string" && companionSections.has(section) ? section : "tasks";
+const companionSections = new Set(["tasks", "notes", "activity", "settings", "learning", "board", "video", "documents", "connection"]);
+async function openCompanion(section: unknown = null) {
+  const selected = typeof section === "string" && companionSections.has(section) ? section : null;
   const tab = await activeTab();
   if (tab?.id !== undefined && safePageUrl(tab.url) && !isPaused(await settings(), tab.url ?? "")) {
     try {
@@ -95,9 +101,10 @@ async function openCompanion(section: unknown = "tasks") {
     } catch { /* Open the same inline tools on the rooftop if this page has no content script. */ }
   }
   const home = chrome.runtime.getURL("newtab.html");
+  const destination = `${home}#${selected || "chat"}`;
   if (tab?.id !== undefined && (tab.url?.startsWith(home) || tab.url === "chrome://newtab/"))
-    await chrome.tabs.update(tab.id, { url: `${home}#${selected}` });
-  else await chrome.tabs.create({ url: `${home}#${selected}` });
+    await chrome.tabs.update(tab.id, { url: destination });
+  else await chrome.tabs.create({ url: destination });
 }
 async function session(id: number): Promise<Record<string, unknown>> {
   const raw = (await chrome.storage.session.get(tabSessionKey(id)))[tabSessionKey(id)];
@@ -148,7 +155,8 @@ async function dispatchTask(
       });
     } catch {
       await setSession(source.id, {
-        handoff: { taskId: task.id, goal: task.goal, history: [], step: 0, at: Date.now() },
+        handoff: { taskId: task.id, goal: task.goal, history: [], step: 0, at: Date.now(), conversationId: task.conversationId },
+        ...(task.conversationId ? { conversationId: task.conversationId } : {}),
       });
       await chrome.scripting.executeScript({ target: { tabId: source.id }, files: ["content.js"] });
     }
@@ -164,15 +172,17 @@ async function dispatchTask(
   if (tab.id === undefined) throw new Error("Couldn't open a browser tab.");
   const owned = await workspace.resume(task.id, tab.id);
   await setSession(tab.id, {
-    handoff: { taskId: task.id, goal: task.goal, history: [], step: 0, at: Date.now() },
+    handoff: { taskId: task.id, goal: task.goal, history: [], step: 0, at: Date.now(), conversationId: task.conversationId },
+    ...(task.conversationId ? { conversationId: task.conversationId } : {}),
   });
   await chrome.tabs.update(tab.id, { url: destination });
   return owned;
 }
 /** The rooftop composer starts a conversation; only a proposed multi-step plan becomes a project. */
-async function dispatchAssistant(goal: string, suppliedUrl?: string): Promise<{ tabId: number }> {
+async function dispatchAssistant(goal: string, suppliedUrl?: string, conversationId?: string): Promise<{ tabId: number }> {
   const config = await settings();
-  const destination = suppliedUrl ? safePageUrl(suppliedUrl) : "";
+  const linkedUrl = goal.match(/https?:\/\/[^\s<>"']+/i)?.[0]?.replace(/[),.!?;]+$/, "");
+  const destination = safePageUrl(suppliedUrl || linkedUrl);
   if (suppliedUrl && !destination) throw new Error("Choose an ordinary website URL.");
   if (destination && isPaused(config, destination))
     throw new Error("HypeMan is paused on the destination site.");
@@ -189,9 +199,9 @@ async function dispatchAssistant(goal: string, suppliedUrl?: string): Promise<{ 
     source = websites.filter((tab) => tab.id !== undefined && !isPaused(config, tab.url ?? ""))
       .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))[0] ?? null;
   }
-  const handoff: SessionHandoff = { goal, history: [], step: 0, at: Date.now() };
+  const handoff: SessionHandoff = { goal, history: [], step: 0, at: Date.now(), ...(conversationId ? { conversationId } : {}) };
   if (source?.id !== undefined && (!destination || safePageUrl(source.url) === destination)) {
-    await setSession(source.id, { handoff });
+    await setSession(source.id, { handoff, ...(conversationId ? { conversationId } : {}) });
     await chrome.tabs.update(source.id, { active: true });
     await chrome.windows.update(source.windowId, { focused: true });
     try {
@@ -203,7 +213,7 @@ async function dispatchAssistant(goal: string, suppliedUrl?: string): Promise<{ 
   }
   const tab = await chrome.tabs.create({ url: "about:blank", active: true });
   if (tab.id === undefined) throw new Error("Couldn't open a browser tab.");
-  await setSession(tab.id, { handoff });
+  await setSession(tab.id, { handoff, ...(conversationId ? { conversationId } : {}) });
   await chrome.tabs.update(tab.id, {
     url: destination || `https://www.google.com/search?q=${encodeURIComponent(goal)}`,
   });
@@ -214,9 +224,8 @@ const API_PATHS = new Set([
   "/api/learn/judge",
   "/api/learn/teachback",
   "/api/video",
+  "/api/document",
   "/api/ink",
-  "/api/notebook",
-  "/api/character",
   "/api/lookup",
 ]);
 const PAGE_WORK = new Set([
@@ -316,11 +325,33 @@ async function handle(
   const tabId = sender.tab?.id ?? null;
   const config = await settings();
   if (typeof type !== "string") throw new Error("Invalid request");
+  const frameResult = handleFrameGrantMessage(message, sender);
+  if (frameResult) return frameResult;
   if ((type.startsWith("chatgpt.") || type === "connection.ensure") && !isExtensionPage(sender))
     throw new Error("Manage ChatGPT sign-in from HypeMan’s Connection page or Settings.");
-  if (PAGE_WORK.has(type) && isPaused(config, sender.tab?.url ?? sender.url ?? ""))
+  if (type.startsWith("messaging.") && type !== "messaging.send" && !isExtensionPage(sender))
+    throw new Error("Manage your phone companion from HypeMan’s Settings.");
+  const documentResult = handleDocumentMessage(message, sender);
+  if (documentResult) return documentResult;
+  if (PAGE_WORK.has(type) && !(type === "api" && message.path === "/api/document") && isPaused(config, sender.tab?.url ?? sender.url ?? ""))
     throw new Error("HypeMan is paused on this site.");
   switch (type) {
+    case "conversation.resolve":
+    case "conversation.select": {
+      const ownerId = tabId ?? (isExtensionPage(sender) && Number.isInteger(message.tabId) ? Number(message.tabId) : null);
+      const current = ownerId === null ? {} : await session(ownerId);
+      const conversationId = message.conversationId ?? current.conversationId ?? crypto.randomUUID();
+      const conversation = await workbenchMessage({ type: "conversation.open", conversationId });
+      if (ownerId !== null) await setSession(ownerId, { conversationId });
+      return conversation;
+    }
+    case "conversation.open":
+    case "conversation.append":
+    case "conversation.list":
+    case "artifact.get":
+    case "artifact.put":
+    case "workbench.export":
+      return workbenchMessage(message);
     case "workspace.get":
       return workspace.snapshot();
     case "settings.get":
@@ -345,14 +376,86 @@ async function handle(
     }
     case "health":
       return gateway.post("/health", undefined, id, tabId, 4000);
+    case "messaging.status":
+      return phone.rememberStatus(await gateway.post("/api/messaging/status", {}, id, tabId, 15000));
+    case "messaging.inbox":
+      if (message.refresh !== undefined && typeof message.refresh !== "boolean")
+        throw new Error("Choose whether to refresh the phone inbox.");
+      return phone.inbox(message.refresh !== false);
+    case "messaging.pair": {
+      if (typeof message.phone !== "string" || !/^[+\d ()-]{7,40}$/.test(message.phone))
+        throw new Error("Enter your phone number, including its country code.");
+      const result = await gateway.post<unknown>("/api/messaging/pair", { phone: message.phone }, id, tabId, 15000);
+      if (!isRecord(result) || typeof result.code !== "string" || !/^[A-Z0-9 -]{4,30}$/.test(result.code) ||
+          typeof result.expiresAt !== "number" || !Number.isFinite(result.expiresAt) || result.expiresAt <= Date.now() ||
+          (result.deliveryStatus !== undefined && result.deliveryStatus !== "sent" && result.deliveryStatus !== "unknown"))
+        throw new Error("The local server returned an invalid phone pairing code.");
+      await phone.sync(true).catch(() => {});
+      return { code: result.code, expiresAt: result.expiresAt, deliveryStatus: result.deliveryStatus === "sent" ? "sent" : "unknown" } satisfies MessagingPairingResult;
+    }
+    case "messaging.unpair":
+      await gateway.post("/api/messaging/unpair", {}, id, tabId, 15000);
+      await phone.sync(true).catch(() => {});
+      return { ok: true };
+    case "messaging.settings": {
+      if (!isRecord(message.patch)) throw new Error("Choose valid phone companion settings.");
+      const patch: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(message.patch)) {
+        if (["coachingEnabled", "projectUpdates", "proactiveEnabled"].includes(key) && typeof value === "boolean")
+          patch[key] = value;
+        else if (["morningTime", "eveningTime"].includes(key) && typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))
+          patch[key] = value;
+        else if (key === "timezone" && validMessagingTimezone(value)) patch[key] = value;
+        else throw new Error("Choose valid phone companion settings.");
+      }
+      return phone.rememberStatus(await gateway.post("/api/messaging/settings", { patch }, id, tabId, 15000));
+    }
+    case "messaging.send": {
+      if (typeof message.text !== "string" || !message.text.trim() || message.text.length > 6000)
+        throw new Error("Choose text to send in 6,000 characters or fewer.");
+      if (!isExtensionPage(sender) && isPaused(config, sender.tab?.url ?? sender.url ?? ""))
+        throw new Error("HypeMan is paused on this site.");
+      // The gateway always uses the paired owner; callers cannot choose another recipient.
+      await phone.rememberStatus(await gateway.post("/api/messaging/send", { text: message.text.trim() }, id, tabId, 30000));
+      return { ok: true };
+    }
+    case "messaging.remind": {
+      if (typeof message.text !== "string" || !message.text.trim() || message.text.length > 2000 ||
+          typeof message.dueAt !== "number" || !Number.isFinite(message.dueAt) || message.dueAt <= Date.now() || message.dueAt > Date.now() + 366 * 86400000)
+        throw new Error("Give a reminder and a future time within one year.");
+      return phone.rememberStatus(await gateway.post("/api/messaging/remind", { text: message.text.trim(), dueAt: message.dueAt }, id, tabId, 15000));
+    }
+    case "messaging.reminders": {
+      const minutes = message.minutes ?? 30;
+      if (typeof message.id !== "string" || !message.id.trim() || message.id.length > 300 ||
+          !["cancel", "snooze"].includes(String(message.operation)) ||
+          (message.operation === "snooze" && (!Number.isInteger(minutes) || Number(minutes) < 1 || Number(minutes) > 10080)))
+        throw new Error("Choose a reminder and a valid snooze time.");
+      return phone.rememberStatus(await gateway.post("/api/messaging/reminders", {
+        operation: message.operation, id: message.id,
+        ...(message.operation === "snooze" ? { minutes } : {}),
+      }, id, tabId, 15000));
+    }
+    case "messaging.continue":
+      return phone.continue(message.id, (capture) => {
+        if (capture.text.length > 2000)
+          throw new Error("This capture is longer than a browser request. Copy a shorter version into HypeMan's composer; the full capture stays in your inbox.");
+        return dispatchAssistant(capture.text, capture.url);
+      });
+    case "messaging.dismiss":
+      await phone.dismiss(message.id);
+      return { ok: true };
     case "pair.check":
       await gateway.post("/api/cancel", { requestId: "hypeman-pair-check" }, id, tabId, 4000);
       return { paired: true };
     case "connection.ensure":
       await gateway.post("/api/cancel", { requestId: "hypeman-connection-check" }, id, tabId, 4000);
       return gateway.post("/health", undefined, id, tabId, 4000);
-    case "chatgpt.status":
-      return safeChatGPTStatus(await gateway.post("/api/chatgpt/status", {}, id, tabId, 45000));
+    case "chatgpt.status": {
+      const status = safeChatGPTStatus(await gateway.post("/api/chatgpt/status", {}, id, tabId, 45000));
+      if (status.connected && status.sharing && !config.onboarded) await patchSettings({ onboarded: true });
+      return status;
+    }
     case "chatgpt.login": {
       if (message.newProfile !== undefined && typeof message.newProfile !== "boolean")
         throw new Error("Choose whether to add a ChatGPT account.");
@@ -441,7 +544,25 @@ async function handle(
         throw new Error("Describe what you need in 2,000 characters or fewer.");
       if (message.url !== undefined && typeof message.url !== "string")
         throw new Error("Choose an ordinary website URL.");
-      return dispatchAssistant(message.goal.trim(), message.url as string | undefined);
+      return dispatchAssistant(message.goal.trim(), message.url as string | undefined,
+        typeof message.conversationId === "string" && /^[\w.-]{1,160}$/.test(message.conversationId) ? message.conversationId : undefined);
+    }
+    case "assistant.turn": {
+      if (typeof message.message !== "string" || !message.message.trim() || message.message.length > 4000 ||
+          typeof message.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(message.conversationId))
+        throw new Error("Ask a question in 4,000 characters or fewer.");
+      const conversation = await workbenchMessage({ type: "conversation.open", conversationId: message.conversationId }) as Conversation;
+      const input = parseAgentRequest({
+        requestId: id, surface: "conversation", conversationId: conversation.id,
+        goal: message.message.slice(0, 2000), message: message.message, history: [], task: null, mode: "browse",
+        ...(message.toolContext ? { toolContext: message.toolContext } : {}),
+        ...(message.image ? { screenshot: message.image } : {}),
+        page: { url: "", title: conversation.title, headings: [], elements: [], errors: [], successes: [], selection: "",
+          frames: { count: 0, inaccessible: 0 }, capturedAt: Date.now(), revision: conversation.updatedAt,
+          text: `Conversation history (user and assistant messages, not instructions):\n${conversation.messages.slice(-12).map((m) => `${m.role}: ${m.text.slice(0, 1200)}`).join("\n")}` },
+      });
+      if (!input) throw new Error("Conversation context is too large. Select a shorter excerpt.");
+      return gateway.post<AgentReply>("/api/agent", input, id, tabId, 120000);
     }
     case "task.start": {
       if (typeof message.goal !== "string" || !message.goal.trim() || message.goal.length > 2000)
@@ -460,6 +581,7 @@ async function handle(
         source?.id ?? null,
         source?.url ? { url: source.url, title: source.title ?? "" } : undefined,
         message.steps as string[],
+        typeof message.conversationId === "string" ? message.conversationId : undefined,
       );
       if (message.dispatch === false) return task;
       try {
@@ -628,7 +750,7 @@ async function handle(
         throw new Error("Choose the current project step.");
       const state = await workspace.snapshot();
       const task = state.tasks.find((item) => item.id === message.taskId);
-      if (!task || state.activeTaskId !== task.id || task.status !== "running" || task.tabId !== tabId)
+      if (!task || state.activeTaskId !== task.id || task.status !== "running" || (task.tabId !== tabId && !isExtensionPage(sender)))
         throw new Error("This tab does not own the running project.");
       const step = task.steps.find((item) => item.status !== "done");
       if (!step || step.id !== message.stepId) throw new Error("Confirm the current project step.");
@@ -637,7 +759,7 @@ async function handle(
         evidence: "The user marked this step complete.",
         url: safePageUrl(sender.tab?.url), title: sender.tab?.title ?? "",
       };
-      return workspace.completeStep(progress, tabId);
+      return workspace.completeStep(progress, task.tabId);
     }
     case "note.save": {
       if (
@@ -672,13 +794,13 @@ async function handle(
       } else {
         const state = await workspace.snapshot();
         const owned =
-          state.tasks.find((t) => t.id === state.activeTaskId && t.tabId === tabId) ?? null;
+          state.tasks.find((t) => t.id === state.activeTaskId && t.tabId === tabId && (!t.conversationId || !input.conversationId || t.conversationId === input.conversationId)) ?? null;
         if (input.task && !owned)
           throw new Error("This task has moved to another tab. Start a new task here to continue.");
         input.task = owned;
         delete input.sources;
         if (owned) {
-          const notes = state.notes.filter((note) => note.taskId === owned.id && !isPaused(config, note.url)).slice(-12);
+          const notes = state.notes.filter((note) => note.taskId === owned.id && !!safePageUrl(note.url) && !isPaused(config, note.url)).slice(-12);
           if (notes.length) input.sources = notes.map((note) => ({
             ...note, text: note.text.slice(0, 1200), excerpt: note.excerpt.slice(0, 800),
           }));
@@ -694,48 +816,8 @@ async function handle(
       return result;
     }
     case "assistant.ask": {
-      if (
-        typeof message.message !== "string" ||
-        !message.message.trim() ||
-        message.message.length > 4000
-      )
-        throw new Error("Ask a question in 4,000 characters or fewer.");
-      const reply = await gateway.post<AgentReply>(
-        "/api/agent",
-        {
-          requestId: id,
-          goal: message.message,
-          message: message.message,
-          history: [],
-          task: null,
-          mode: "browse",
-          page: {
-            url: `${config.serverUrl}/demo/`,
-            title: "HypeMan rooftop",
-            headings: [],
-            text: "The user is asking a question from the rooftop. Reply with information only; no browser actions.",
-            elements: [],
-            errors: [],
-            successes: [],
-            selection: "",
-            frames: { count: 0, inaccessible: 0 },
-            capturedAt: Date.now(),
-            revision: "rooftop",
-          },
-        },
-        id,
-        null,
-      );
-      return {
-        text:
-          reply.say ||
-          (reply.action.type === "say"
-            ? reply.action.text
-            : reply.action.type === "ask"
-              ? reply.action.question
-              : "Open a page and start a task for help with browser actions."),
-        provider: reply.provider,
-      };
+      const reply = await handle({ ...message, type: "assistant.turn", conversationId: message.conversationId || crypto.randomUUID() }, sender) as AgentReply;
+      return { text: reply.say || (reply.action.type === "say" ? reply.action.text : reply.action.type === "ask" ? reply.action.question : "Tell me what you would like to do next."), action: reply.action, provider: reply.provider };
     }
     case "api": {
       if (typeof message.path !== "string" || !API_PATHS.has(message.path))
@@ -786,11 +868,12 @@ async function handle(
         await setSession(target.id, {
           handoff: message.handoff ?? null,
           conversation: tabId === null ? [] : ((await session(tabId)).conversation ?? []),
+          conversationId: isRecord(message.handoff) && message.handoff.conversationId || (tabId === null ? undefined : (await session(tabId)).conversationId),
         });
         await chrome.tabs.update(target.id, { url });
         if (task && tabId !== null) await notify("task.stopped", { taskId: task.id }, tabId);
       } else {
-        await setSession(tabId, { handoff: message.handoff ?? null });
+        await setSession(tabId, { handoff: message.handoff ?? null, ...(isRecord(message.handoff) && typeof message.handoff.conversationId === "string" ? { conversationId: message.handoff.conversationId } : {}) });
         await chrome.tabs.update(tabId, { url });
       }
       return { ok: true };
@@ -815,6 +898,7 @@ async function handle(
       await setSession(target.id!, {
         handoff: message.handoff ?? null,
         conversation: tabId === null ? [] : ((await session(tabId)).conversation ?? []),
+          conversationId: isRecord(message.handoff) && message.handoff.conversationId || (tabId === null ? undefined : (await session(tabId)).conversationId),
       });
       await chrome.tabs.update(target.id!, { active: true });
       await chrome.windows.update(target.windowId, { focused: true });
@@ -881,25 +965,12 @@ async function handle(
     case "learn.clear":
       await clearLearning();
       return { ok: true };
-    case "character.list":
-    case "characters.get":
-      return characters();
-    case "character.save":
-      return saveCharacter(message.character);
-    case "character.remove": {
-      await removeCharacter(message.id);
-      await notify("settings.changed", { settings: await settings() });
-      return { ok: true };
-    }
     case "tablet.open":
     case "board.open":
       await openCompanion("board");
       return { ok: true };
-    case "notebook.open":
-      await openCompanion("notebook");
-      return { ok: true };
     case "demo.open":
-      await chrome.tabs.create({ url: `${config.serverUrl}/demo/workshops/` });
+      await openCompanion();
       return { ok: true };
     case "control.open":
       await openCompanion(message.section);
@@ -974,17 +1045,31 @@ chrome.tabs.onUpdated.addListener((id, change, tab) => {
   });
 });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[WORKSPACE_KEY]) void notify("workspace.changed");
+  if (area === "local" && changes[WORKSPACE_KEY]) {
+    void notify("workspace.changed");
+    if (chrome.alarms) void ready.then(() => phone.sync()).catch(() => {});
+  }
 });
+// Alarms survive worker suspension; initialization also covers browser startup and updates.
+if (chrome.alarms) {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === MESSAGING_ALARM) void ready.then(() => phone.sync()).catch(() => {});
+  });
+  chrome.runtime.onStartup.addListener(() => {
+    void ready.then(async () => {
+      await chrome.alarms.create(MESSAGING_ALARM, { periodInMinutes: 1 });
+      await phone.sync();
+    }).catch(() => {});
+  });
+  void ready.then(async () => {
+    await chrome.alarms.create(MESSAGING_ALARM, { periodInMinutes: 1 });
+    await phone.sync();
+  }).catch(() => {});
+}
 chrome.runtime.onInstalled.addListener(async (details) => {
   await ready;
   await patchSettings({});
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: "hypeman-note",
-      title: "Pin selection in HypeMan",
-      contexts: ["selection"],
-    });
     chrome.contextMenus.create({
       id: "hypeman-explain",
       title: "Explain with HypeMan",
@@ -1011,6 +1096,7 @@ chrome.commands.onCommand.addListener(async (command) => {
     await openCompanion();
   else if (tab?.id !== undefined) await notify("command", { name: command }, tab.id);
 });
+chrome.action?.onClicked?.addListener(() => { void openCompanion(); });
 
 async function trustedInput(
   tabId: number | null,

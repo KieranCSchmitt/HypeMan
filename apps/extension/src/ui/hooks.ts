@@ -96,7 +96,7 @@ export function relativeTime(at: number) {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 export function openPage(page: string) {
-  if (["board", "video", "customize", "notebook", "notes", "settings", "tasks"].includes(page)) {
+  if (["board", "video", "documents", "notes", "settings", "tasks"].includes(page)) {
     void request({ type: "control.open", section: page });
     return;
   }

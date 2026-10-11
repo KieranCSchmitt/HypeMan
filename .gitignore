@@ -9,6 +9,8 @@ chatgpt-auth.json
 chatgpt-auth.json.*
 chatgpt-host.json
 chatgpt-host.json.*
+messaging.json
+messaging.json.*
 *.log
 .DS_Store
 coverage/

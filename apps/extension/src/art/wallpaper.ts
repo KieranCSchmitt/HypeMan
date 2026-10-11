@@ -11,8 +11,8 @@ export type WallpaperActivity = "idle" | "thinking" | "celebrate" | "confused";
 export const WALLPAPER_ACTIONS: { id: WallpaperAction; label: string; rect: Rect }[] = [
   { id: "sky", label: "Launch an airship", rect: { x: 128, y: 0, w: 352, h: 92 } },
   { id: "clock", label: "Change time of day", rect: { ...LAYOUT.jumbotron, h: 40 } },
-  { id: "graffiti", label: "Customize HypeMan", rect: LAYOUT.graffiti },
-  { id: "crt", label: "Open saved notes", rect: LAYOUT.crt },
+  { id: "graffiti", label: "Shimmer the graffiti", rect: LAYOUT.graffiti },
+  { id: "crt", label: "Change the TV channel", rect: LAYOUT.crt },
   { id: "pigeons", label: "Scatter the pigeons", rect: { ...LAYOUT.pigeons, y: 171, h: 22 } },
   { id: "hypeman", label: "Open HypeMan", rect: { x: LAYOUT.homeX - 24, y: LAYOUT.walkY - 64, w: 48, h: 64 } },
   { id: "boombox", label: "Toggle HypeMan’s dance", rect: LAYOUT.boombox },
@@ -22,7 +22,7 @@ type Animation = keyof typeof atlas.animations;
 type Viewport = { x: number; y: number; scale: number; scaleY: number };
 type Options = { reduced: boolean; spriteURL: string; onLayout: (viewport: Viewport, avatar: Rect) => void; onAction?: (action: WallpaperAction) => void };
 
-/** New orchestration around the supplied artwork. No audio, network, or UI panels. */
+/** Draws and animates the rooftop artwork. */
 export class Wallpaper {
   private readonly ink: CanvasRenderingContext2D;
   private readonly scene = new Surface(SCENE_W, SCENE_H);
@@ -31,16 +31,13 @@ export class Wallpaper {
   private readonly to = new Surface(SCENE_W, SCENE_H);
   private readonly mask = new Surface(SCENE_W, SCENE_H);
   private readonly sprite = new Image();
-  private customSprite: HTMLImageElement | null = null;
-  private customLoad: HTMLImageElement | null = null;
-  private spriteVersion = 0;
   private readonly clock = new DayClock();
   private readonly bubbles = new AmbientBubbles(SCENE_W, SCENE_H, 7);
   private readonly effects = new Effects();
   private readonly motion = matchMedia("(prefers-reduced-motion: reduce)");
   private readonly observer: ResizeObserver;
   private readonly world: World = {
-    t: 0, now: new Date(), glow: 0, micLive: false, soundOn: false, avatarState: "idle",
+    t: 0, now: new Date(), glow: 0, avatarState: "idle",
     im: { text: "", caret: 0, focused: false, log: [] },
     crt: { channel: 2, status: "", steps: [], changedAt: -9999, typedAt: 0 },
     jumbotron: { h24: true, dateUntil: 0 }, boombox: { playing: false },
@@ -105,25 +102,6 @@ export class Wallpaper {
     }
     this.draw();
   }
-  /** Characters are local data URLs. Never resolve arbitrary stored URLs over the network. */
-  setCustomSprite(dataURL: string | null): void {
-    const version = ++this.spriteVersion;
-    if (this.customLoad) this.customLoad.onload = this.customLoad.onerror = null;
-    this.customLoad = null;
-    this.customSprite = null;
-    this.draw();
-    if (!dataURL || dataURL.length > 2_000_000 || !/^data:image\/(?:png|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(dataURL)) return;
-    const image = new Image();
-    this.customLoad = image;
-    image.onload = () => {
-      if (this.disposed || this.spriteVersion !== version) return;
-      this.customLoad = null;
-      if (image.naturalWidth > 0 && image.naturalHeight > 0 && image.naturalWidth <= 2048 && image.naturalHeight <= 2048) this.customSprite = image;
-      this.draw();
-    };
-    image.onerror = () => { if (this.spriteVersion === version) this.customLoad = null; };
-    image.src = dataURL;
-  }
   destroy(): void {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
@@ -133,8 +111,6 @@ export class Wallpaper {
     this.motion.removeEventListener("change", this.motionChanged);
     document.fonts.removeEventListener("loadingdone", this.fontsChanged);
     this.sprite.onload = null;
-    if (this.customLoad) this.customLoad.onload = this.customLoad.onerror = null;
-    this.customLoad = this.customSprite = null;
     this.effects.clear();
   }
   private fontsChanged = (): void => { clearTextCache(); this.draw(); };
@@ -200,7 +176,9 @@ export class Wallpaper {
   walk(direction: -1 | 1): void { this.walkTo(this.x + direction * 32); }
   walkAt(clientX: number, clientY: number): void {
     const p = this.nativePoint(clientX, clientY);
-    if (p.y > LAYOUT.floorTop) this.walkTo(p.x);
+    const scene = WALLPAPER_ACTIONS.find(({ id, rect }) => id !== "hypeman" && id !== "sky" && p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h);
+    if (scene) this.activate(scene.id, p);
+    else if (p.y > LAYOUT.floorTop) this.walkTo(p.x);
     else if (p.y < LAYOUT.rightWall.y) this.activate("sky", p);
   }
   private walkTo(x: number): void {
@@ -270,14 +248,6 @@ export class Wallpaper {
     this.present();
   }
   private drawAvatar(): void {
-    if (this.customSprite) {
-      const image = this.customSprite;
-      const scale = Math.min(48 / image.naturalWidth, 58 / image.naturalHeight);
-      const width = Math.max(1, Math.round(image.naturalWidth * scale));
-      const height = Math.max(1, Math.round(image.naturalHeight * scale));
-      this.scene.ctx.drawImage(image, Math.round(this.x - width / 2), LAYOUT.walkY - height, width, height);
-      return;
-    }
     if (!this.sprite.complete || !this.sprite.naturalWidth) return;
     const moving = this.target !== null;
     const resting = this.activity === "thinking" || this.activity === "confused" ? this.activity : "idle";

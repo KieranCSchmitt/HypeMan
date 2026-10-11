@@ -69,13 +69,13 @@ async function rpc(message) {
   }, message);
 }
 async function panel(page) {
-  if (!await page.locator(".companion-panel").count())
+  if (!await page.locator(".conversation-pane").isVisible())
     await page.getByRole("button", { name: /Open HypeMan\. Drag to move/ }).click();
-  return page.locator(".companion-panel");
+  return page.locator(".conversation-pane");
 }
 async function send(page, message) {
   const chat = await panel(page);
-  await chat.getByRole("textbox", { name: "Message your companion", exact: true }).fill(message);
+  await chat.getByRole("textbox", { name: "What do you need?", exact: true }).fill(message);
   await chat.getByRole("button", { name: "Send message", exact: true }).click();
 }
 try {
@@ -89,7 +89,7 @@ try {
   context.setDefaultTimeout(15_000);
   const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
   home = await context.newPage();
-  await home.goto(`chrome-extension://${new URL(worker.url()).host}/newtab.html`);
+  await home.goto(`chrome-extension://${new URL(worker.url()).host}/newtab.html#chat`);
   await home.locator("#task-goal").waitFor();
   await rpc({ type: "settings.patch", patch: { serverUrl: gatewayUrl, serverToken: token, onboarded: true,
     reducedMotion: "on", learningEnabled: true, proactiveEnabled: false, tabContextEnabled: false } });

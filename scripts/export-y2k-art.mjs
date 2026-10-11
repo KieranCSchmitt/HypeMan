@@ -20,7 +20,7 @@ try {
   const fonts = {};
   for (const [family, file] of [
     ["Press Start 2P", "PressStart2P.ttf"],
-    ["VT323", "VT323.ttf"],
+    ["Tiny5", "Tiny5.ttf"],
   ])
     fonts[family] = (
       await readFile(resolve(root, "apps/extension/public/assets/fonts", file))

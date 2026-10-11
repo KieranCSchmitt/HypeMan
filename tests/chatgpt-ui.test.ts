@@ -2,9 +2,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { ChatGPTStatus, Health } from "@core";
+import { DEFAULT_SETTINGS, type ChatGPTStatus, type Health } from "@core";
 import { ChatGPTConnection } from "../apps/extension/src/ui/ChatGPTConnection";
-import { request } from "../apps/extension/src/bridge";
+import { request, readSettings, writeSettings } from "../apps/extension/src/bridge";
+import { WorkbenchContext, type ToolHandler } from "../apps/extension/src/ui/WorkbenchContext";
+const handlers = new Map<string, ToolHandler>();
+const register = (tool: string, handler: ToolHandler) => { handlers.set(tool, handler); return () => { if (handlers.get(tool) === handler) handlers.delete(tool); }; };
 
 vi.mock("../apps/extension/src/bridge", () => ({
   request: vi.fn(),
@@ -23,6 +26,10 @@ const health: Health = {
 };
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  handlers.clear();
+  vi.mocked(readSettings).mockResolvedValue(DEFAULT_SETTINGS);
+  vi.mocked(writeSettings).mockImplementation(async (patch) => ({ ...DEFAULT_SETTINGS, ...patch }));
+  vi.stubGlobal("chrome", { runtime: { getURL: (path: string) => `chrome-extension://hypeman/${path}` }, storage: { onChanged: { addListener: vi.fn(), removeListener: vi.fn() } }, tabs: { create: vi.fn().mockResolvedValue({}) } });
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   container = document.createElement("div");
   document.body.append(container);
@@ -52,9 +59,10 @@ afterEach(async () => {
 });
 async function render(props: Partial<Parameters<typeof ChatGPTConnection>[0]> = {}) {
   await act(async () =>
-    root.render(createElement(ChatGPTConnection, { connectionKey: "local", ...props })),
+    root.render(createElement(WorkbenchContext.Provider, { value: { conversationId: "connection-test", selected: null, selectContent: () => {}, register, openTool: () => {}, send: async () => {}, executeTool: async (tool, operation, args = {}) => handlers.get(tool)!(operation, args) } }, createElement(ChatGPTConnection, { connectionKey: "local", ...props }))),
   );
 }
+async function invoke(operation: string, args: Record<string, unknown> = {}) { await act(async () => { await handlers.get("connection")!(operation, args); }); }
 function button(label: string) {
   const found = [...container.querySelectorAll("button")].find(
     (item) => item.textContent === label,
@@ -113,7 +121,7 @@ describe("ChatGPT connection UI", () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     await act(async () => vi.advanceTimersByTimeAsync(3000));
     expect(request).toHaveBeenCalledTimes(3);
-    await act(async () => button("Cancel sign-in").click());
+    await act(async () => button("Cancel").click());
     expect(request).toHaveBeenCalledWith({ type: "chatgpt.cancel" });
     expect(button("Continue with ChatGPT").disabled).toBe(false);
   });
@@ -126,9 +134,9 @@ describe("ChatGPT connection UI", () => {
       error: "Permission declined. Sign in again to allow ChatGPT access.",
     };
     await render();
-    expect(container.textContent).toContain("ChatGPT access needs attention");
+    expect(container.textContent).toContain("Reconnect your account");
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Permission declined");
-    expect(container.textContent).not.toContain("Using ChatGPT plan");
+    expect(container.textContent).not.toContain("Using your ChatGPT plan");
     await act(async () => button("Continue with ChatGPT").click());
     expect(request).toHaveBeenCalledWith({ type: "chatgpt.login", profileId: "personal" });
   });
@@ -142,7 +150,7 @@ describe("ChatGPT connection UI", () => {
     };
     await render();
     expect(button("Continue with ChatGPT").disabled).toBe(false);
-    expect(container.textContent).not.toContain("Using ChatGPT plan");
+    expect(container.textContent).not.toContain("Using your ChatGPT plan");
   });
   it("shows distinct saved accounts, plan usage, and the active model", async () => {
     status = {
@@ -173,9 +181,10 @@ describe("ChatGPT connection UI", () => {
       model: "model-b",
     };
     await render();
-    expect(container.textContent).toContain("Using ChatGPT plan");
-    expect(container.querySelector("details")?.open).toBe(false);
-    expect(container.querySelector('a[href="https://chatgpt.com/settings/usage"]')).not.toBeNull();
+    expect(container.querySelector('.connection-state [role="status"]')?.textContent).toBe("Connected");
+    expect(button("Disconnect").disabled).toBe(false);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="View usage"]')!.click());
+    expect(chrome.tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/settings/usage" });
     const [accounts, models] = [...container.querySelectorAll("select")];
     expect(accounts!.getAttribute("aria-label")).toBe("ChatGPT account");
     expect(models!.getAttribute("aria-label")).toBe("ChatGPT model");
@@ -186,7 +195,11 @@ describe("ChatGPT connection UI", () => {
       models!.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(request).toHaveBeenCalledWith({ type: "chatgpt.model", model: "model-a" });
-    expect(button("Add account")).toBeDefined();
-    expect(button("Sign out")).toBeDefined();
+    await invoke("login", { newProfile: true });
+    expect(button("Continue with ChatGPT")).toBeDefined();
+    await act(async () => button("Continue with ChatGPT").click());
+    expect(request).toHaveBeenCalledWith({ type: "chatgpt.login", newProfile: true });
+    await invoke("logout");
+    expect(request).toHaveBeenCalledWith({ type: "chatgpt.logout" });
   });
 });

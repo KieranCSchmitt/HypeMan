@@ -104,7 +104,7 @@ async function launch() {
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
   const extensionId = new URL(worker.url()).host;
   home = await context.newPage();
-  await home.goto(`chrome-extension://${extensionId}/newtab.html`);
+  await home.goto(`chrome-extension://${extensionId}/newtab.html#chat`);
   await home.locator("#task-goal").waitFor();
   for (const page of context.pages()) if (page !== home) await page.close();
 }
@@ -124,22 +124,23 @@ async function openWebsite(url) {
   await article.getByRole("button", { name: /Open HypeMan\. Drag to move/ }).waitFor();
 }
 async function panel() {
-  if (!await article.locator(".companion-panel").count())
+  if (!await article.locator(".conversation-pane").isVisible())
     await article.getByRole("button", { name: /Open HypeMan\. Drag to move/ }).click();
-  return article.locator(".companion-panel");
+  return article.locator(".conversation-pane");
 }
 async function chat(text) {
   const companion = await panel();
-  await companion.getByRole("textbox", { name: "Message your companion", exact: true }).fill(text);
+  await companion.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  await companion.getByRole("textbox", { name: "What do you need?", exact: true }).fill(text);
   await companion.getByRole("button", { name: "Send message", exact: true }).click();
 }
 async function closeTools() {
-  const close = article.getByRole("button", { name: "Close tools", exact: true });
+  const close = article.locator('.workspace-tasks').getByRole("button", { name: "Close Projects window", exact: true });
   if (await close.isVisible()) await close.click();
 }
 async function projects() {
-  await (await panel()).getByRole("button", { name: /^(?:Tasks|Projects)$/, exact: true }).click();
-  await article.getByRole("dialog").filter({ has: article.locator(".task-card") }).waitFor();
+  await chat("open projects");
+  await article.locator(".inline-toolbox-tasks .task-card").first().waitFor();
 }
 async function mutateOutcome(text) {
   await article.evaluate((text) => { document.querySelector("#outcome").textContent = text; }, text);
@@ -184,7 +185,9 @@ try {
   await waitFor(() => assessments.some(({ input }) => input.task.id === task.id), "initial read-only progress observation");
   check("An explicit multi-step project creates specific milestones and waits for collaboration");
 
-  await article.getByRole("button", { name: "Compare options", exact: true }).click();
+  // A direct keyboard action leaves the avatar conversation and active project
+  // open while operating webpage content beneath the floating conversation.
+  await article.getByRole("button", { name: "Compare options", exact: true }).press("Enter");
   await waitFor(async () => (await project(task.id)).steps[0].status === "done", "manual page outcome advances the first milestone");
   const afterComparison = await project(task.id);
   assert.deepEqual(afterComparison.steps.map((step) => step.status), ["done", "doing", "todo"]);
@@ -195,10 +198,12 @@ try {
   check("Visible evidence from a user's page interaction completes exactly the current step");
 
   const decisionsBeforeNavigation = decisions.length;
-  await article.getByRole("link", { name: "Review comparison details", exact: true }).click();
+  await article.getByRole("link", { name: "Review comparison details", exact: true }).press("Enter");
   await article.waitForURL(`${firstSite}/next`);
-  await (await panel()).getByRole("progressbar", { name: "Task progress", exact: true }).waitFor();
-  assert.equal(await article.getByRole("progressbar", { name: "Task progress", exact: true }).getAttribute("aria-valuenow"), "1");
+  await projects();
+  const restoredCard = article.locator(".task-card").filter({ hasText: task.goal });
+  await restoredCard.locator("summary").click();
+  assert.equal(await restoredCard.locator(".steps li.done").count(), 1);
   assert.equal((await project(task.id)).steps[1].status, "doing");
   assert.equal(decisions.length, decisionsBeforeNavigation);
   check("Ordinary same-tab navigation restores the current project without replaying actions");
@@ -207,10 +212,11 @@ try {
   await openWebsite(secondSite);
   await projects();
   const decisionsBeforeFollow = decisions.length;
-  await article.getByRole("button", { name: "Continue project here", exact: true }).click();
+  await article.locator(".task-card").filter({ hasText: task.goal }).click();
+  await chat("continue this project");
   await closeTools();
   await waitFor(async () => (await project(task.id)).tabId !== afterComparison.tabId, "ownership moves to the selected website");
-  await (await panel()).getByRole("progressbar", { name: "Task progress", exact: true }).waitFor();
+  assert.equal((await project(task.id)).status, "running");
   assert.equal(article.url(), `${secondSite}/`);
   assert.equal(decisions.length, decisionsBeforeFollow);
   assert.equal(await article.evaluate(() => window.publications), 0);
@@ -249,13 +255,13 @@ try {
   assert.equal(await article.evaluate(() => window.publications), 0);
   check("Saying done collaboratively completes the current step without inference or submission");
 
-  await (await panel()).getByRole("button", { name: "Mark current step complete", exact: true }).click();
+  await chat("done");
   await waitFor(async () => (await project(task.id)).status === "completed", "final project milestone");
   const completed = await project(task.id), completedState = await state();
   assert.ok(completed.steps.every((step) => step.status === "done" && step.completion));
   assert.equal(completedState.activeTaskId, null);
   assert.equal(completedState.events.filter((event) => event.action === "milestone").length, 3);
-  check("The single completion icon finishes only the final milestone and preserves all evidence");
+  check("The next completion acknowledgement finishes only the final milestone and preserves all evidence");
 
   await chat("Project: compare workshops, then prepare another draft and review the result after restart. Wait for me to do the steps.");
   const restartTask = await waitFor(async () => (await state()).tasks.find((item) => item.status === "running"), "project to recover after restart");
@@ -274,8 +280,8 @@ try {
   assert.equal(decisions.length, beforeRestart.decisions);
   assert.equal(assessments.length, beforeRestart.assessments);
   await projects();
-  await article.locator(".task-card").filter({ hasText: restartTask.goal })
-    .getByRole("button", { name: "Continue task", exact: true }).click();
+  await article.locator(".task-card").filter({ hasText: restartTask.goal }).click();
+  await chat("continue this project");
   await closeTools();
   await waitFor(async () => (await project(restartTask.id)).status === "running", "explicit resume on this website");
   check("Browser restart retains project history and requires an explicit resume before observing again");
@@ -294,7 +300,9 @@ try {
   check("Paused sites send no page decisions or progress assessments after clicks and DOM changes");
 
   await mkdir("tests/screenshots", { recursive: true });
-  await home.getByRole("button", { name: /^(?:Tasks|Projects)$/, exact: true }).click();
+  await home.getByRole("textbox", { name: "What do you need?", exact: true }).fill("open projects");
+  await home.getByRole("button", { name: "Send message", exact: true }).click();
+  await home.locator(".inline-toolbox-tasks .task-card").first().waitFor();
   await home.screenshot({ path: "tests/screenshots/hypeman-projects.png", fullPage: true });
   console.log(`\n${checks} project browser scenarios passed.`);
 } catch (error) {

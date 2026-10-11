@@ -20,9 +20,7 @@ export type PropId =
   | 'hypeman'
   | 'boombox'
   | 'send'
-  | 'show'
-  | 'sound'
-  | 'mic';
+  | 'show';
 
 export interface ChatLine {
   who: 'you' | 'hype';
@@ -36,8 +34,6 @@ export interface World {
   now: Date;
   /** 0 by day, 1 at night: how hard lights glow. */
   glow: number;
-  micLive: boolean;
-  soundOn: boolean;
   avatarState: HypeState;
   im: { text: string; caret: number; focused: boolean; log: ChatLine[] };
   crt: { channel: 0 | 1 | 2; status: string; steps: string[]; changedAt: number; typedAt: number };
@@ -395,7 +391,7 @@ function drawTerminal(s: Surface, world: World): void {
   }
 
   lines.forEach((line, row) => {
-    s.text(line, CRT_SCREEN.x + 1, CRT_SCREEN.y + row * CRT_LINE - 1, 'vt', row === 0 ? 'L' : 'G');
+    s.text(line, CRT_SCREEN.x + 1, CRT_SCREEN.y + row * CRT_LINE - 1, 'compact', row === 0 ? 'L' : 'G');
   });
   if (Math.floor(world.t / 500) % 2 === 0) {
     const row = lines.length - 1;
@@ -602,8 +598,8 @@ export function drawBoombox(s: Surface, world: World): void {
 
 // --- messenger window ---------------------------------------------------------------------------------
 
-export const IM_FIELD_COLUMNS = Math.floor((IM.field.w - 8) / FONTS.vt.advance);
-const IM_LOG_COLUMNS = Math.floor((IM.log.w - 6) / FONTS.vt.advance);
+export const IM_FIELD_COLUMNS = Math.floor((IM.field.w - 8) / FONTS.compact.advance);
+const IM_LOG_COLUMNS = Math.floor((IM.log.w - 6) / FONTS.compact.advance);
 
 /** The window frame, title bar, buttons and empty fields. Drawn once. */
 function messengerChrome(): Surface {
@@ -661,10 +657,9 @@ export function drawMessenger(s: Surface, world: World): void {
   const { window: win, log, field } = IM;
   s.blit(messengerChrome().canvas, win.x - 1, win.y - 1);
 
-  // Presence dot: green while the mic is live.
-  const live = world.micLive && Math.floor(world.t / 400) % 4 !== 3;
-  s.rect(win.x + 6, win.y + 6, 4, 4, live ? 'G' : 'D');
-  s.px(win.x + 6, win.y + 6, live ? 'w' : 'M');
+  // Presence dot highlights the active conversation.
+  s.rect(win.x + 6, win.y + 6, 4, 4, world.im.focused ? 'G' : 'D');
+  s.px(win.x + 6, win.y + 6, world.im.focused ? 'w' : 'M');
 
   // The newest lines win: a long reply takes both rows, two short ones share them.
   const rows = world.im.log.slice(-2).flatMap((line) => {
@@ -673,23 +668,23 @@ export function drawMessenger(s: Surface, world: World): void {
   });
   rows.slice(-2).forEach((row, i) => {
     const ly = log.y + 1 + i * 15;
-    s.text(row.text, log.x + 3, ly, 'vt', 'K');
-    if (row.who) s.text(row.who, log.x + 3, ly, 'vt', row.from === 'you' ? 'U' : 'A');
+    s.text(row.text, log.x + 3, ly, 'compact', 'K');
+    if (row.who) s.text(row.who, log.x + 3, ly, 'compact', row.from === 'you' ? 'U' : 'A');
   });
-  if (!rows.length) s.text('hype: yo! say the word.', log.x + 3, log.y + 1, 'vt', 'M');
+  if (!rows.length) s.text('hype: yo! say the word.', log.x + 3, log.y + 1, 'compact', 'M');
 
   // Message field with its block cursor.
   const tx = field.x + 4;
   const ty = field.y + 3;
   const { text, caret, focused } = world.im;
   const first = Math.max(0, caret - (IM_FIELD_COLUMNS - 1));
-  if (text) s.text(text.slice(first, first + IM_FIELD_COLUMNS), tx, ty, 'vt', 'K');
-  else s.text('what are we working on?', tx, ty, 'vt', 'M');
+  if (text) s.text(text.slice(first, first + IM_FIELD_COLUMNS), tx, ty, 'compact', 'K');
+  else s.text('what are we working on?', tx, ty, 'compact', 'M');
   if (Math.floor(world.t / 530) % 2 === 0) {
-    const cx = tx + (caret - first) * FONTS.vt.advance;
+    const cx = tx + (caret - first) * FONTS.compact.advance;
     s.rect(cx, ty + 2, 7, 12, focused ? 'U' : 'D');
     const under = text[caret];
-    if (under && under !== ' ') s.text(under, cx, ty, 'vt', 'w');
+    if (under && under !== ' ') s.text(under, cx, ty, 'compact', 'w');
   }
 
   drawBolt(s);
@@ -713,12 +708,8 @@ function drawButton(s: Surface, r: Rect, label: string, led: 'on' | 'off' | null
   s.blit(face.canvas, r.x - 1, r.y - 1);
 }
 
-export function drawButtons(s: Surface, world: World, pressed: PropId | null): void {
-  const { show, sound, mic } = LAYOUT.buttons;
-  drawButton(s, show, 'HIDE', null, pressed === 'show');
-  drawButton(s, sound, 'SOUND', world.soundOn ? 'on' : 'off', pressed === 'sound');
-  const micLed = world.micLive && Math.floor(world.t / 400) % 4 !== 3;
-  drawButton(s, mic, 'MIC', micLed ? 'on' : 'off', pressed === 'mic');
+export function drawButtons(s: Surface, pressed: PropId | null): void {
+  drawButton(s, LAYOUT.buttons.show, 'HIDE', null, pressed === 'show');
 }
 
 // --- hit areas, labels and tooltips --------------------------------------------------------------------
@@ -745,11 +736,9 @@ export function sceneProps(world: World, hypemanRect: Rect): PropInfo[] {
     { id: 'crt', rect: LAYOUT.crt, label: `CRT television, showing the ${channel} channel. Activate to change channel.`, tip: `ch${world.crt.channel + 1}: ${channel}` },
     { id: 'pigeons', rect: LAYOUT.pigeons, label: pigeonsAreBack(world) ? 'Pigeons on the ledge. Activate to scatter them.' : 'The pigeons have flown off. They come back in a few seconds.', tip: pigeonsAreBack(world) ? 'shoo!' : 'brb' },
     { id: 'hypeman', rect: hypemanRect, label: 'HypeMan. Left and right arrow keys walk him along the rooftop. Enter or Space hypes him up.', tip: 'drag me / 2x click' },
-    { id: 'boombox', rect: LAYOUT.boombox, label: `Boombox. Music is ${world.boombox.playing ? 'on' : 'off'}. Activate to turn it ${world.boombox.playing ? 'off' : 'on'}.`, tip: world.boombox.playing ? 'stop the music' : 'play something', pressed: world.boombox.playing },
+    { id: 'boombox', rect: LAYOUT.boombox, label: `Boombox. HypeMan’s dance is ${world.boombox.playing ? 'on' : 'off'}. Activate to turn it ${world.boombox.playing ? 'off' : 'on'}.`, tip: world.boombox.playing ? 'stop dancing' : 'dance along', pressed: world.boombox.playing },
     { id: 'send', rect: IM.send, label: 'Send message', tip: 'send it' },
     { id: 'show', rect: LAYOUT.buttons.show, label: 'Hide the rooftop scene', tip: 'tuck the roof away' },
-    { id: 'sound', rect: LAYOUT.buttons.sound, label: `Sound is ${world.soundOn ? 'on' : 'off'}`, tip: world.soundOn ? 'mute' : 'unmute', pressed: world.soundOn },
-    { id: 'mic', rect: LAYOUT.buttons.mic, label: `Microphone is ${world.micLive ? 'live' : 'off'}`, tip: world.micLive ? 'mic is live' : 'go live', pressed: world.micLive },
   ];
 }
 
@@ -779,8 +768,6 @@ export function drawPropOutline(s: Surface, id: PropId, world: World): void {
     case 'send':
       return s.blit(matrixOutline(BOLT), IM.send.x + ((IM.send.w - BOLT[0].length) >> 1) - 1, IM.send.y + ((IM.send.h - BOLT.length) >> 1) - 1);
     case 'show':
-    case 'sound':
-    case 'mic':
       return box(LAYOUT.buttons[id]);
     default:
       return;

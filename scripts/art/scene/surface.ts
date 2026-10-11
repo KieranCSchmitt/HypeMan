@@ -198,16 +198,16 @@ export function matrixOutline(matrix: readonly string[], flip = false): HTMLCanv
 
 // --- pixel-exact text ----------------------------------------------------------
 
-export type FontId = 'ps8' | 'ps16' | 'vt';
+export type FontId = 'ps8' | 'ps16' | 'compact';
 
 /**
- * The only sizes at which the two web fonts land on whole pixels: Press
- * Start 2P is drawn on an 8px grid and VT323 on a 20px one (8px advance).
+ * Scene text uses fixed cells. The compact face fits each glyph to an 8px
+ * cell so CRT columns and the caret stay aligned with the pixel grid.
  */
 export const FONTS: Record<FontId, { css: string; height: number; baseline: number; advance: number }> = {
   ps8: { css: '8px "Press Start 2P", monospace', height: 8, baseline: 8, advance: 8 },
   ps16: { css: '16px "Press Start 2P", monospace', height: 16, baseline: 16, advance: 16 },
-  vt: { css: '20px "VT323", monospace', height: 16, baseline: 12, advance: 8 },
+  compact: { css: '16px "Tiny5", monospace', height: 16, baseline: 12, advance: 8 },
 };
 
 const textCache = new Map<string, HTMLCanvasElement>();
@@ -254,7 +254,12 @@ function textCanvas(text: string, font: FontId, key: string): HTMLCanvasElement 
     ctx.font = spec.css;
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#000';
-    ctx.fillText(text, 0, spec.baseline);
+    if (font === 'compact') {
+      [...text].forEach((letter, column) => {
+        const width = Math.min(spec.advance, ctx.measureText(letter).width);
+        ctx.fillText(letter, column * spec.advance + (spec.advance - width) / 2, spec.baseline, spec.advance);
+      });
+    } else ctx.fillText(text, 0, spec.baseline);
     const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const [r, g, b] = RGB_BY_KEY[key];
     for (let i = 0; i < image.data.length; i += 4) {

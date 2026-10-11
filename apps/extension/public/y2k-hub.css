@@ -273,3 +273,41 @@
 .popup-extras[open] > summary { margin-bottom: 5px; }
 .popup-minimal .popup-task { padding: 8px; margin: 7px 0; border: 1px solid #aaa7c34d; border-radius: 9px; background: #ffffff40; box-shadow: none; }
 .popup-minimal .popup-task p { font: 11px/1.5 system-ui, sans-serif; margin: 0; }
+
+/* Phone tools live with the existing companion preferences and projects. */
+.phone-messaging { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line, #c4c9ff30); }
+.phone-messaging h2, .phone-inbox h3, .phone-reminders h3 { display: flex; align-items: center; gap: 7px; font: 600 14px/1.5 system-ui, sans-serif; letter-spacing: 0; margin: 0 0 8px; }
+.phone-messaging h2 svg { width: 17px; height: 17px; }
+.phone-messaging .row, .phone-inbox .row { flex-wrap: wrap; }
+.phone-help, .phone-status-details { font-size: 12px; line-height: 1.5; color: var(--muted, #a7aec9); }
+.phone-help { margin: 7px 0 10px; }
+.phone-status-details { display: grid; gap: 4px; margin: 12px 0; }
+.phone-connection, .phone-count { font-size: 11px; color: var(--muted, #a7aec9); border: 1px solid var(--line, #c4c9ff30); border-radius: 3px; padding: 2px 6px; }
+.phone-connection.available { color: #248770; }
+.phone-pair-form, .phone-preferences { margin: 12px 0; }
+.phone-messaging .field { display: grid; gap: 4px; font-size: 12px; margin: 9px 0; }
+.phone-messaging input:not([type=checkbox]) { width: 100%; min-width: 0; padding: 8px; box-sizing: border-box; }
+.phone-pair-code { background: #788fba12; border: 1px solid var(--line, #c4c9ff30); border-radius: 3px; padding: 10px; margin: 10px 0; }
+.phone-pair-code p { margin: 0 0 4px; }
+.phone-pair-code strong { white-space: nowrap; font: 600 17px/1.6 ui-monospace, monospace; letter-spacing: 1px; }
+.phone-preferences fieldset { min-width: 0; margin: 0; padding: 10px; border: 1px solid var(--line, #c4c9ff30); border-radius: 3px; }
+.phone-preferences legend { padding: 0 5px; font-size: 12px; font-weight: 600; }
+.phone-toggle { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; padding: 6px 0; }
+.phone-toggle input { flex: none; margin: 3px 0 0; width: 14px; height: 14px; accent-color: #148495; }
+.phone-schedule { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.phone-inbox, .phone-reminders, .phone-commitments, .phone-deliveries { margin: 16px 0; }
+.phone-list { display: grid; gap: 8px; }
+.phone-item { min-width: 0; padding: 10px; border: 1px solid var(--line, #c4c9ff30); border-radius: 3px; background: #8e9bb40a; }
+.phone-item p { margin: 5px 0 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.phone-item .source-link { display: block; overflow-wrap: anywhere; }
+.phone-item .source-link svg { width: 11px; height: 11px; }
+.phone-item time, .phone-item small { font-size: 11px; color: var(--muted, #a7aec9); }
+.phone-actions { gap: 6px; margin-top: 10px; }
+.phone-messaging .button, .phone-inbox .button { font-size: 11px; height: auto; min-height: 30px; padding: 5px 8px; }
+.phone-messaging .button svg, .phone-inbox .button svg { width: 14px; height: 14px; }
+.phone-commitments > summary, .phone-deliveries > summary { cursor: pointer; margin-bottom: 8px; }
+.text-to-phone { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.text-to-phone small, .phone-send-error { font-size: 11px; }
+.phone-send-error { display: block; flex: 1 0 100%; color: #b63459; overflow-wrap: anywhere; }
+.phone-refresh { margin-top: 8px; }
+@media (max-width: 360px) { .phone-schedule { grid-template-columns: 1fr; gap: 0; } }

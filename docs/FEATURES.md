@@ -15,52 +15,56 @@ Checked items describe implemented behavior. Live provider success requires vali
 - [x] Read-only progress checks advance one milestone using an exact current-page quote. Fresh-page verification rejects stale checks; uncertainty leaves the plan unchanged. Users can explicitly confirm the current step, and Continue project here transfers observation between websites.
 - [x] Persisted goal, steps, last page, next instruction, and action evidence. One task owns execution; starting another pauses the previous task.
 - [x] Browser restart restores paused tasks and requires explicit continuation. Back/Forward cache restoration does not replay completed actions.
-- [x] Notes retain text, source URL/title, excerpt, and capture time. Edit, remove, search, and export inside the companion’s Saved notes tray.
+- [x] Notes retain text, source URL/title, excerpt, and capture time. Edit directly with autosave; save, find, delete, undo, and export through conversation. PDF excerpts retain document/page provenance; conversation notes need no webpage URL.
 - [x] Live settings and per-site pause. Paused sites stop observation, page analysis, and actions.
 - [x] Optional automatic learning hints: quietly preload the first rung for a stable visible question, then reveal it after wrong-answer feedback (including plain “Try Again”). Answer edits reuse preparation; changed questions invalidate it. Bounded session cache, single in-flight request, request budget, graduated manual follow-ups, cooldown, and cancellation. Preparation is never learning evidence.
 - [x] Stable page selections receive brief contextual explanations with Automatic hints enabled, even outside Learning mode or during an idle project. Explanations never inherit project context or change its progress. Clear a selection to clear its preview; reselect to reuse the cached explanation. Editable/private fields and inaccessible frames are excluded. All automatic assistance is read-only.
 - [x] Opt-in other-tab titles and URLs, excluding paused hosts and query strings. Explicit screenshot attachment is used once for the next model request and is never persisted.
 - [x] Keyboard controls, visible focus, and live reduced-motion settings.
-- [x] Minimal icon dock: single composer, quick actions, notes, and a collapsed tool tray. Task details and activity appear on demand. Confirmations retain explicit text.
+- [x] One shared conversation composer and requested tools alongside it, with compact controls for direct editing. Browser confirmations and contextual native consent remain explicit.
 - [x] ChatGPT sign-in is the only live AI connection. Sign-out disables AI; failures never fall back to API keys or a local model.
-- [x] Text-only interaction: no microphone, synthesized speech, offscreen audio, or speech permissions.
+- [x] Typed conversation with persistent messages and contextual tools.
 
 Progress is conservative: a click or an agent’s final reply cannot complete a project. Each milestone needs visible source evidence or an explicit user confirmation, recorded separately. Only completing the final milestone completes the project. Complex custom widgets may need user guidance or optional real input.
 
-## Interactive rooftop and inline tools
+## Rooftop and avatar conversation
 
 - [x] Live layered rooftop with four time-of-day phases, pointer parallax, clouds, blimp, lights, water, pigeons, walking HypeMan, and silent dance interactions. Keyboard-accessible scene hotspots and live reduced motion.
-- [x] One prompt with distinct **Ask HypeMan**, **Quick answer**, and **Web search** modes; Enter submits directly.
-- [x] Consistent Y2K styling across the companion, popup, onboarding, inline tool trays, drawing, video, customization, notebook, and demo pages. Extra settings and history unfold on demand.
-- [x] Tasks, notes, recent action history, workspace export, permissions, customization, and optional Learning view unfold from icons inside the companion. Old dashboard links redirect into these inline tools.
-- [x] Health distinguishes demo, live, local, and unavailable services.
-- [x] Local character cutout, pixel preview, saved library, and name customization. Optional provider suggestions return a name and palette.
+- [x] New tabs start as a quiet rooftop, with no persistent composer or tool menu. Activate the little avatar on an ordinary webpage to open conversation and requested tools beside that page. Enter sends; Shift+Enter adds a line; Escape stops or dismisses.
+- [x] Pixel styling across the companion, popup, onboarding, drawing, video, PDF reader, and utility windows. All 11 windows drag, resize from every edge and corner, minimize, maximize, and restore; interiors scroll at small sizes.
+- [x] Projects, notes, action history, workspace export, preferences, phone, accounts, and learning open through chat. Old tool links open the shared conversation host.
+- [x] Health distinguishes demo, live, local, and unavailable services. The gateway root only displays connection guidance; it does not redirect into fixtures.
 
 ## Specialist workspaces
 
 | Feature  | Implemented experience                                                                              | Without paid credentials                                             |
 | -------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
 | Video    | Native controls, page captions, VTT/SRT upload, pasted transcript, timestamped notes/chapters       | Local caption notes and labeled demo responses                       |
-| Sketches | Companion chalkboard text and simple shapes                                                         | Deterministic demonstration sketches                                 |
-| Drawing  | Mouse/touch/stylus canvas, undo/redo, eraser, PNG export, requested coaching                        | Labeled scripted feedback in demo; live OCR requires ChatGPT sign-in |
-| Notebook | In-page photo/camera overlay, editable transcription, uncertainty, explicit capture/read, stop on hidden/closed overlay | Labeled scripted notebook in demo; no live transcription is claimed  |
+| Whiteboard | Shared persisted strokes, shapes, text, editable KaTeX equations, assistant transactions, keyboard undo/redo, direct manipulation, composite PNG export and review | Local editing/export; labeled review demo |
+| PDFs | PDF.js preview, incremental text, 25 MiB chunked upload into extension IndexedDB, local passwords, highlighted passages, page citations, explicit scanned-page analysis and original-file export | Local viewing/selection without account or observation permission; labeled demo analysis |
 | Learning | Optional plans, hints, page-feedback evidence, teach-back review, concept graph                     | ChatGPT feedback; demo feedback never establishes mastery            |
 
 Task notes and learner diagnostics are separate. Teach-back records an explanation; assessed evidence is accepted only when grounded in that explanation. Demo assessment does not establish mastery. The graph presents practice history, not a grade.
 
 ## Scope and limits
 
-- Local single-user Chrome MV3 release; no accounts, cloud sync, shared workspace, or store publication.
+- Local single-user Chrome MV3 release with ChatGPT account selection and optional phone synchronization; no shared workspace or store publication.
 - Top-frame HTTP/HTTPS support. Inaccessible frames and Chrome-protected pages cannot be operated.
 - Caption-based video understanding. HypeMan does not infer unheard narration from frames; live missing captions are reported as unavailable.
-- Missing credentials and invalid provider output produce explicit failures. Handwriting/notebook fixtures are used only in explicit demo mode.
+- Missing credentials and invalid provider output produce explicit failures. Explicit `/demo/*` pages and deterministic provider responses are development fixtures for automated tests; there is no product playground entry.
 - Live AI requires eligible ChatGPT plan permission. Images require a supported account model; unavailable features fail explicitly.
-- The worker imports recognizable local settings, tasks, notes, learner evidence, and characters into HypeMan storage through validators. Current records take priority; unrelated or malformed records are left untouched.
-- Site pause is hostname-wide. Paper camera stays in an isolated extension frame over the page and stops when closed or hidden.
+- Settings, projects, notes, and learning evidence use validated HypeMan storage records. Unrelated extension data is left untouched. Recall credit requires a successful return after a full day away from a concept.
+- Site pause is hostname-wide for webpage work. PDF viewing and document-only help remain independent of it.
 - Optional screenshot/other-tab context and debugger input are capability switches, not an idle remote monitoring service.
 
 ## Verification
 
 Unit/integration coverage includes persisted-record validation, serialized task storage, deduplication, action policy, stale targets, malformed decisions, cancellation, paused-site silence, lifecycle restoration, trusted transport, video intents, and grounded teach-back. The deterministic browser suite covers registration, notes/export, live settings, specialist fixtures, and restart continuation.
 
-OCR accuracy, transcript-service availability, and live model completion need credential-dependent checks. A fixture response does not validate them.
+Scanned-page reading accuracy, transcript-service availability, and live model completion need credential-dependent checks. A fixture response does not validate them.
+
+## Persistence and controls
+
+Conversations and artifacts are durable extension-owned records. Conversation IDs follow browser navigation and project handoff. The whiteboard uses revisions and stable IDs to reject stale edits. PDF files transfer through bounded chunks, and only an authorized extension reader can access their bytes. Frame capability tokens stay outside DOM URLs and expire. Closing a tool preserves its work; cancellation cannot reopen dismissed content. Hidden local videos pause.
+
+Compact toolbars provide drawing, file, note, project, account, and media actions. Chat keeps Send/Stop and attachments without repeating selected message text. Editable preferences save automatically. Local commands for stop, notes, saved work, preferences, export, connection recovery, and tool opening work independently of inference.

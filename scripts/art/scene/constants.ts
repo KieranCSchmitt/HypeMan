@@ -2,7 +2,7 @@
 export const SCENE_W = 480;
 export const SCENE_H = 270;
 
-/** The collapsed dock: just HypeMan and room for his speech bubble. */
+/** The collapsed dock: just HypeMan and room for his conversation bubble. */
 export const DOCK_W = 224;
 export const DOCK_H = 112;
 
@@ -43,8 +43,6 @@ export const LAYOUT = {
 
   buttons: {
     show: rect(4, 255, 44, 13),
-    sound: rect(51, 255, 52, 13),
-    mic: rect(106, 255, 36, 13),
   },
 } as const;
 

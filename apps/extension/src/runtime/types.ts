@@ -1,4 +1,4 @@
-import type { Action, BrowserTask, RuntimeEvent, Settings, VideoState } from "@core";
+import type { Action, BrowserTask, RuntimeEvent, Settings, VideoState, ToolAction, SelectedContent, TranscriptSegment } from "@core";
 export interface RuntimeApi {
   request<T = unknown>(
     message: { type: string; [key: string]: unknown },
@@ -13,6 +13,7 @@ export interface RuntimeMessage {
   at: number;
 }
 export interface CompanionSnapshot {
+  conversationId?: string;
   phase: "idle" | "thinking" | "acting" | "confirming" | "paused" | "error";
   status: string;
   messages: RuntimeMessage[];
@@ -33,6 +34,11 @@ export interface CompanionSnapshot {
   screenshotAttached: boolean;
 }
 export interface CompanionRuntime {
+  setConversationId?(id: string): void;
+  setToolHandler?(handler: ((action: ToolAction) => Promise<string | void>) | null): void;
+  setSelectedContent?(selected: SelectedContent | null): void;
+  attachImage?(image: string | null): void;
+  attachVideoCaptions?(segments: TranscriptSegment[] | null): void;
   start(): Promise<void>;
   send(message: string): Promise<void>;
   confirm(answer: boolean): void;

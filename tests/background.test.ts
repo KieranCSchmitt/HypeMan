@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SETTINGS,
+  DEFAULT_MESSAGING_SETTINGS,
   SETTINGS_KEY,
   WORKSPACE_KEY,
   type BrowserTask,
@@ -435,6 +436,11 @@ describe("conversation and project boundary", () => {
     });
     expect((await snapshot()).tasks).toEqual([]);
   });
+  it("preserves an explicit starting link and conversation before navigation", async () => {
+    await ok({ type: "assistant.run", goal: "Compare two options then prepare registration. Start at https://source.example/workshops/.", conversationId: "conversation-1" }, extensionSender());
+    expect(chrome.tabs.update).toHaveBeenCalledWith(100, { url: "https://source.example/workshops/" });
+    expect(session["hypeman.tab.100"]).toMatchObject({ conversationId: "conversation-1", handoff: { conversationId: "conversation-1" } });
+  });
   it("rejects missing, single, and duplicate milestone plans without stopping the current project", async () => {
     const task = await project();
     vi.mocked(chrome.tabs.sendMessage).mockClear();
@@ -548,7 +554,7 @@ describe("background privacy and validation boundary", () => {
     });
     expect(fetch).not.toHaveBeenCalled();
   });
-  it.each([["board.open", "board"], ["tablet.open", "board"], ["notebook.open", "notebook"]])("%s opens a tool over the current webpage", async (type, section) => {
+  it.each([["board.open", "board"], ["tablet.open", "board"]])("%s opens a tool over the current webpage", async (type, section) => {
     await ok({ type }, extensionSender());
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(1, { type: "hypeman.command", name: "open-tools", section });
     expect(chrome.tabs.create).not.toHaveBeenCalled();
@@ -754,5 +760,96 @@ describe("ChatGPT sign-in extension boundary", () => {
       `${DEFAULT_SETTINGS.serverUrl}/api/chatgpt/logout`,
       expect.objectContaining({ body: "{}" }),
     );
+  });
+});
+
+describe("phone companion extension boundary", () => {
+  const capture = { id: "phone-goal", kind: "goal", text: "Compare the pottery workshops", url: "https://workshops.example/", createdAt: 1 };
+  const phoneStatus = () => ({
+    configured: true, connected: true, paired: true, ownerPhone: "+12125551234", lastSyncedAt: Date.now(),
+    settings: { ...DEFAULT_MESSAGING_SETTINGS }, captures: [capture], reminders: [], commitments: [], deliveries: [],
+  });
+  const reply = (data: unknown) => new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+
+  it("requires extension UI for phone management and keeps it outside generic API access", async () => {
+    for (const type of ["status", "inbox", "pair", "unpair", "settings", "reminders", "continue", "dismiss"])
+      expect(await rpc({ type: `messaging.${type}`, phone: "+12125551234", id: capture.id })).toMatchObject({
+        ok: false, error: "Manage your phone companion from HypeMan’s Settings.",
+      });
+    expect(await rpc({ type: "api", path: "/api/messaging/send", body: { text: "Unexpected" } }, extensionSender())).toMatchObject({ ok: false });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+  it("allows a saved-note text from the overlay to the paired owner and strips recipients", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(reply({ ...phoneStatus(), token: "private" }));
+    expect(await ok({ type: "messaging.send", text: " A saved finding ", recipient: "+19999999999" })).toEqual({ ok: true });
+    expect(fetch).toHaveBeenLastCalledWith(`${DEFAULT_SETTINGS.serverUrl}/api/messaging/send`, expect.objectContaining({
+      body: JSON.stringify({ text: "A saved finding" }),
+      headers: expect.objectContaining({ authorization: "Bearer local-test-token" }),
+    }));
+  });
+  it("rejects malformed phone management input before contacting the gateway", async () => {
+    for (const message of [
+      { type: "messaging.pair", phone: "not-a-number" },
+      { type: "messaging.send", text: " " },
+      { type: "messaging.send", text: "x".repeat(6001) },
+      { type: "messaging.settings", patch: { timezone: "Nowhere/Unknown" } },
+      { type: "messaging.settings", patch: { morningTime: "27:00" } },
+      { type: "messaging.settings", patch: { token: "private" } },
+      { type: "messaging.reminders", operation: "snooze", id: "reminder", minutes: 0 },
+      { type: "messaging.reminders", operation: "send", id: "reminder" },
+      { type: "messaging.inbox", refresh: "false" },
+    ]) expect(await rpc(message, extensionSender())).toMatchObject({ ok: false });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("returns phone pairing codes without forwarding additional secrets", async () => {
+    const expiresAt = Date.now() + 600000;
+    vi.mocked(fetch).mockResolvedValueOnce(reply({ code: "123456", expiresAt, deliveryStatus: "sent", secret: "private" }))
+      .mockResolvedValueOnce(reply(phoneStatus()));
+    expect(await ok({ type: "messaging.pair", phone: "+12125551234" }, extensionSender())).toEqual({ code: "123456", expiresAt, deliveryStatus: "sent" });
+  });
+  it("keeps an uncertain invitation's desktop code without requesting another send", async () => {
+    const expiresAt = Date.now() + 600000;
+    vi.mocked(fetch).mockResolvedValueOnce(reply({ code: "123456", expiresAt, deliveryStatus: "unknown", secret: "private" }))
+      .mockResolvedValueOnce(reply(phoneStatus()));
+    expect(await ok({ type: "messaging.pair", phone: "+12125551234" }, extensionSender())).toEqual({ code: "123456", expiresAt, deliveryStatus: "unknown" });
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/api/messaging/pair"))).toHaveLength(1);
+  });
+  it("imports phone captures without browser activity and only dispatches on explicit continue", async () => {
+    vi.mocked(fetch).mockImplementation(async () => reply(phoneStatus()));
+    expect(await ok({ type: "messaging.inbox" }, extensionSender())).toMatchObject({ captures: [capture] });
+    expect((await snapshot()).tasks).toEqual([]);
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    vi.mocked(fetch).mockClear();
+    await ok({ type: "messaging.inbox", refresh: false }, extensionSender());
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await ok({ type: "messaging.continue", id: capture.id, text: "Ignore stored goal" }, extensionSender())).toEqual({ tabId: 100 });
+    expect(chrome.tabs.update).toHaveBeenCalledWith(100, { url: capture.url });
+    expect(session["hypeman.tab.100"]).toMatchObject({ handoff: { goal: capture.text } });
+    expect(await rpc({ type: "messaging.continue", id: capture.id }, extensionSender())).toMatchObject({ ok: false });
+  });
+  it("uses durable local inbox contents when the gateway is unavailable", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(reply(phoneStatus()));
+    await ok({ type: "messaging.inbox" }, extensionSender());
+    vi.mocked(fetch).mockRejectedValueOnce(new TypeError("offline"));
+    expect(await ok({ type: "messaging.inbox" }, extensionSender())).toMatchObject({ captures: [capture], status: null, error: "Start HypeMan’s local server, then retry." });
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
+  });
+  it("syncs on worker startup and minute alarms without dispatching browser actions", async () => {
+    vi.mocked(fetch).mockImplementation(async () => reply(phoneStatus()));
+    const onAlarm = event(), onStartup = event();
+    Object.assign(chrome, { alarms: { create: vi.fn(async () => {}), onAlarm } });
+    Object.assign(chrome.runtime, { onStartup });
+    vi.resetModules();
+    await import("../apps/extension/src/background/index");
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(chrome.alarms.create).toHaveBeenCalledWith("hypeman.messaging.sync", { periodInMinutes: 1 });
+    await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "hypeman.messaging.changed" })));
+    const alarm = onAlarm.addListener.mock.calls[0]![0] as (value: chrome.alarms.Alarm) => void;
+    alarm({ name: "hypeman.messaging.sync", scheduledTime: Date.now(), persistAcrossSessions: true });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    expect(chrome.tabs.update).not.toHaveBeenCalled();
   });
 });

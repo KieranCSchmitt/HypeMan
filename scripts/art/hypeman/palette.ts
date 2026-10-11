@@ -2,18 +2,8 @@
  * The HypeMan palette. Every pixel in every sprite matrix and every scene
  * layer is one of these swatches, addressed by a single character.
  *
- * This is the Frutiger Aero revision of the original Y2K palette. Where a
- * retired colour had a direct replacement, the replacement kept its key, so
- * existing art moved over without being re-keyed:
- *   H  hot pink        -> Peach          V  electric violet -> Lavender
- *   L  lime            -> Leaf green     Y  sunshine        -> Sun glow
- *   G  phosphor green  -> Grass green
- * Bubblegum, deep purple and sunset orange are gone and their keys with
- * them ('B' now means Sky mid).
- *
- * One swatch is carried over that the revision does not list:
- *   t  thermal shade   the waffle-knit texture, kept so the thermal's shading
- *                      is unchanged
+ * Teal skies, glass highlights, peach accents, and clothing tones share
+ * stable keys so the character and rooftop use one consistent palette.
  */
 
 export interface Swatch {
@@ -68,7 +58,7 @@ export const TRANSPARENT = '.';
 /**
  * Marker pixels: they paint as an ordinary swatch, and the exporter also
  * records where they sit in each frame so the runtime can find them.
- *   a  the flip phone's antenna tip (overlaid green while the mic is live)
+ *   a  the flip phone's antenna tip
  */
 export const MARKERS: Record<string, { paintsAs: PaletteKey; anchor: string }> = {
   a: { paintsAs: 'D', anchor: 'antenna' },

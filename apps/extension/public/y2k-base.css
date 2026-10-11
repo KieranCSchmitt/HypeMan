@@ -1,42 +1,30 @@
 /* HypeMan OS: shared chrome, controls, and the isolated messenger. */
 @font-face {
-  font-family: VT323;
-  src: url("assets/fonts/VT323.ttf") format("truetype");
+  font-family: Tiny5;
+  src: url("assets/fonts/Tiny5.ttf") format("truetype");
   font-display: swap;
 }
 :root,
 .hypeman-ui {
-  --ink: #1b1f3b;
-  --muted: #62627d;
-  --green: #6544c9;
-  --deep: #3a2e6b;
-  --line: #a7a9be;
-  --paper: #f5f7ff;
-  --cream: #e6e6ee;
-  --gold: #ff5fd2;
-  --cyan: #00e5ff;
-  --pink: #ff5fd2;
-  --violet: #7b5cff;
-  --chrome: #c9cedb;
-  --night: #1b1f3b;
+  --ink: #102638;
+  --muted: #536975;
+  --green: #6d50b0;
+  --deep: #4e327b;
+  --line: #b5c5cf;
+  --paper: #f1f5f5;
+  --cream: #e9eef0;
+  --gold: #e582d0;
+  --cyan: #75e8f4;
+  --pink: #e582d0;
+  --violet: #6d50b0;
+  --chrome: #cbd9e1;
+  --night: #102638;
   color: var(--ink);
-  font-family: Arial, Helvetica, ui-sans-serif, system-ui, sans-serif;
-  font-size: 14px;
-  line-height: 1.45;
+  font: 20px/1.3 Tiny5, monospace;
 }
 html,
 body {
-  background-color: #1b1f3b;
-  background-image:
-    radial-gradient(ellipse at 15% 5%, #7b5cff55, transparent 50%),
-    radial-gradient(ellipse at 95% 90%, #ff5fd22a, transparent 45%),
-    linear-gradient(#9ef0ff08 1px, transparent 1px),
-    linear-gradient(90deg, #9ef0ff08 1px, transparent 1px);
-  background-size:
-    auto,
-    auto,
-    40px 40px,
-    40px 40px;
+  background: #102638;
   color: var(--ink);
   min-height: 100%;
 }
@@ -155,7 +143,7 @@ a:hover {
 }
 .eyebrow {
   font:
-    14px VT323,
+    14px Tiny5,
     monospace;
   color: #6544c9;
   letter-spacing: 1px;
@@ -307,7 +295,7 @@ a:hover {
 }
 .section-heading h2 {
   font:
-    22px VT323,
+    22px Tiny5,
     monospace;
 }
 .status-pill {
@@ -767,7 +755,7 @@ a:hover {
 }
 .companion-composer textarea {
   padding: 6px 5px;
-  font-family: VT323, monospace;
+  font-family: Tiny5, monospace;
   font-size: 19px;
   line-height: 1.5;
   color: #1b1f3b;
@@ -842,7 +830,7 @@ a:hover {
 }
 .dock-view-heading h2 {
   font:
-    21px VT323,
+    21px Tiny5,
     monospace;
   color: #3a2e6b;
   margin: 0;
@@ -869,7 +857,7 @@ a:hover {
 }
 .confirmation strong {
   font:
-    19px VT323,
+    19px Tiny5,
     monospace;
   color: #7e1e65;
 }

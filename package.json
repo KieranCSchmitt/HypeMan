@@ -19,21 +19,28 @@
     "e2e": "node tests/browser.mjs",
     "e2e:auth": "node tests/chatgpt-browser.mjs",
     "e2e:ui": "node tests/newtab-browser.mjs",
+    "e2e:workbench": "node tests/workbench-browser.mjs",
     "e2e:hints": "node tests/automatic-hints-browser.mjs",
     "e2e:projects": "node tests/projects-browser.mjs",
+    "e2e:messaging": "node tests/messaging-browser.mjs",
     "e2e:execution": "node tests/project-execution-browser.mjs",
     "e2e:install": "playwright install chromium",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build",
+    "e2e:pdf": "node tests/documents-browser.mjs"
   },
   "dependencies": {
     "dotenv": "^18.0.1",
     "jose": "^6.2.12",
+    "katex": "^0.19.0",
     "openai": "^7.20.0",
+    "pdfjs-dist": "^6.4.299",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "spectrum-ts": "12.10.1"
   },
   "devDependencies": {
     "@types/chrome": "^0.3.0",
+    "@types/katex": "^0.16.8",
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

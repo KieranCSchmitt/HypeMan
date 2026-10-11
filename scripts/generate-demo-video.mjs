@@ -5,7 +5,7 @@ import { chromium } from "playwright";
 
 // Original, silent HypeMan lesson. FFmpeg is needed only to regenerate this fixture.
 const root = resolve(import.meta.dirname, "..");
-const font = readFileSync(resolve(root, "apps/gateway/public/fonts/VT323.ttf")).toString("base64");
+const font = readFileSync(resolve(root, "apps/gateway/public/fonts/Tiny5.ttf")).toString("base64");
 const browser = await chromium.launch({ headless: true });
 let frames;
 try {

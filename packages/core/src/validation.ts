@@ -8,6 +8,7 @@ import type {
   TaskAssessmentRequest,
 } from "./contracts";
 import { parseWorkspace, safePageUrl } from "./workspace";
+import { parseToolAction } from "./tools";
 export const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const text = (v: unknown, max = 4000): v is string => typeof v === "string" && v.length <= max;
@@ -17,6 +18,7 @@ export function parseAction(value: unknown): Action | null {
   if (!isRecord(value) || !text(value.type, 40)) return null;
   const v = value;
   switch (v.type) {
+    case "tool": return parseToolAction(v);
     case "say":
       return text(v.text) ? { type: v.type, text: v.text } : null;
     case "finish":
@@ -176,6 +178,17 @@ export function parseAction(value: unknown): Action | null {
   }
 }
 export function parseAgentRequest(value: unknown): AgentRequest | null {
+  if (isRecord(value) && value.conversationId !== undefined &&
+      (typeof value.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(value.conversationId))) return null;
+  if (isRecord(value) && value.toolContext !== undefined) {
+    if (!isRecord(value.toolContext) || JSON.stringify(value.toolContext).length > 12000 ||
+        (value.toolContext.activeTool !== undefined && value.toolContext.activeTool !== null && !text(value.toolContext.activeTool, 40))) return null;
+    const selected = value.toolContext.selected;
+    if (selected !== undefined && selected !== null && (!isRecord(selected) || (!text(selected.id, 160) || !selected.id) || !text(selected.kind, 40) ||
+        (selected.text !== undefined && !text(selected.text, 6000)) || (selected.quote !== undefined && !text(selected.quote, 4000)) ||
+        (selected.title !== undefined && !text(selected.title, 500)) || (selected.url !== undefined && !text(selected.url, 4096)) ||
+        (selected.artifactId !== undefined && !text(selected.artifactId, 160)) || (selected.page !== undefined && (!finite(selected.page) || !Number.isInteger(selected.page) || selected.page < 1)))) return null;
+  }
   if (isRecord(value) && value.sources !== undefined && (
     !Array.isArray(value.sources) || value.sources.length > 12 ||
     !value.sources.every((note) => isRecord(note) && text(note.id, 100) && !!note.id.trim() &&
@@ -346,6 +359,9 @@ export function parseAgentRequest(value: unknown): AgentRequest | null {
     : null;
   return {
     requestId: value.requestId,
+    ...(value.surface === "conversation" ? { surface: "conversation" as const } : {}),
+    ...(text(value.conversationId, 160) ? { conversationId: value.conversationId } : {}),
+    ...(isRecord(value.toolContext) && JSON.stringify(value.toolContext).length <= 12000 ? { toolContext: value.toolContext as AgentRequest["toolContext"] } : {}),
     goal: value.goal,
     message: value.message,
     page,

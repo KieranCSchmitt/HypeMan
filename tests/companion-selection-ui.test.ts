@@ -10,6 +10,7 @@ vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn(), subscribe: vi
 vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: () => null }));
 vi.mock("../apps/extension/src/ui/ToolOverlay", () => ({ ToolOverlay: () => null }));
 vi.mock("../apps/extension/src/ui/Video", () => ({ Video: () => null }));
+vi.mock("../apps/extension/src/ui/ConversationWorkbench", () => ({ ConversationWorkbench: ({ runtime }: any) => createElement("section", { className: "conversation-pane" }, runtime.getSnapshot().messages.at(-1)?.text) }));
 
 let root: Root, container: HTMLDivElement;
 let snapshot: CompanionSnapshot;
@@ -49,7 +50,7 @@ async function render() {
   await act(async () => root.render(createElement(Companion, { runtime })));
 }
 function button(label: string) {
-  const found = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
+  const found = container.querySelector<HTMLElement>(".pet-hint-preview");
   expect(found).not.toBeNull(); return found!;
 }
 async function pressWithNativeSelectionDefault(label: string) {
@@ -73,19 +74,19 @@ describe("selection explanation preview", () => {
     await render();
     await pressWithNativeSelectionDefault("Show explanation");
     expect(document.getSelection()!.toString()).toContain("nervous system");
-    expect(container.querySelector(".companion-panel")).not.toBeNull();
-    expect(container.querySelector(".companion-panel")!.textContent).toContain("Nerves carry signals");
+    expect(container.querySelector(".companion-workbench-host:not([hidden])")).not.toBeNull();
+    expect(container.querySelector(".companion-workbench-host:not([hidden])")!.textContent).toContain("Nerves carry signals");
   });
   it("dismisses the preview while retaining the selected text", async () => {
     await render();
-    await pressWithNativeSelectionDefault("Dismiss explanation");
+    await act(async () => container.querySelector(".pet-hint-preview")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(document.getSelection()!.toString()).toContain("nervous system");
     expect(container.querySelector(".pet-hint-preview")).toBeNull();
-    expect(container.querySelector(".companion-panel")).toBeNull();
+    expect(container.querySelector(".companion-workbench-host:not([hidden])")).toBeNull();
   });
   it("also opens with keyboard-style activation without a pointer press", async () => {
     await render();
     await act(async () => button("Show explanation").click());
-    expect(container.querySelector(".companion-panel")).not.toBeNull();
+    expect(container.querySelector(".companion-workbench-host:not([hidden])")).not.toBeNull();
   });
 });

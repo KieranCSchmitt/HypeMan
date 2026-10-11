@@ -1,5 +1,8 @@
 /** Evidence, rather than page visits, drives learning estimates. */
 export const LEARNING_KEY = "hypeman.learning";
+// A successful return after a full day away starts a new retrieval session;
+// repeated practice within that day does not earn additional spacing credit.
+const RETRIEVAL_SESSION_GAP_MS = 24 * 60 * 60 * 1000;
 export interface LearningNode {
   id: string;
   label: string;
@@ -52,14 +55,8 @@ const object = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 export function parseLearningGraph(value: unknown): LearningGraph {
   const g = emptyLearningGraph();
-  if (!object(value)) return g;
-  // Legacy graph snapshots remain readable; exposure is never promoted to demonstrated skill.
-  const rawNodes = Array.isArray(value.nodes)
-    ? value.nodes
-    : object(value.nodes)
-      ? Object.values(value.nodes)
-      : [];
-  for (const raw of rawNodes.slice(-1000)) {
+  if (!object(value) || value.version !== 1 || !Array.isArray(value.nodes)) return g;
+  for (const raw of value.nodes.slice(-1000)) {
     if (!object(raw) || typeof raw.label !== "string" || !raw.label.trim()) continue;
     const label = raw.label.trim().slice(0, 120),
       id = labelId(label);
@@ -142,7 +139,8 @@ export function recordLearning(graph: LearningGraph, event: LearningEvent): Lear
     node.attempts++;
     if (event.correct) {
       node.correct++;
-      if (node.lastPractice && event.at - node.lastPractice >= 6 * 60 * 60 * 1000) node.recalls++;
+      if (node.lastPractice && event.at - node.lastPractice >= RETRIEVAL_SESSION_GAP_MS)
+        node.recalls++;
     }
     node.lastPractice = Math.max(node.lastPractice, event.at);
   }

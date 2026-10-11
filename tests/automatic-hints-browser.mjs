@@ -148,6 +148,7 @@ async function clearSelection() {
     document.dispatchEvent(new Event("selectionchange"));
   });
 }
+function practicePreview() { return article.locator(".pet-hint-preview").filter({ hasText: new RegExp([firstHint, nextHint, secondQuestionHint].map((text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")) }); }
 async function graphHints() {
   const graph = await rpc({ type: "graph.get" });
   return graph.nodes.reduce((sum, node) => sum + node.hints, 0);
@@ -194,7 +195,7 @@ try {
   worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
   const extensionId = new URL(worker.url()).host;
   home = await context.newPage();
-  await home.goto(`chrome-extension://${extensionId}/newtab.html`);
+  await home.goto(`chrome-extension://${extensionId}/newtab.html#chat`);
   await home.getByRole("textbox", { name: "What do you need?", exact: true }).waitFor();
   for (const page of context.pages()) if (page !== home) await page.close();
   // Wait until installation hydration finishes, then use the canonical owner.
@@ -212,12 +213,12 @@ try {
   assert.equal(settings.proactiveEnabled, true);
 
   await openFixture(practiceUrl);
-  assert.equal(await article.locator(".companion-panel").count(), 0);
+  assert.equal(await article.locator(".conversation-pane").isVisible(), false);
   await waitFor(() => decisions.length === 1, "practice hint prepared before the first wrong answer");
   assert.equal(decisions[0].mode, "learn");
   assert.match(decisions[0].message, /rung 1 of 4/i);
   assert.doesNotMatch(decisions[0].page.text, /Try Again/);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   assert.equal(await graphHints(), 0);
   assert.deepEqual(await pageState(), { answer: "", attempts: 0, finalSubmissions: 0 });
   check("A stable visible practice question preloads one read-only hint silently before the learner answers");
@@ -226,14 +227,14 @@ try {
   await article.waitForTimeout(1100);
   assert.equal(decisions.length, 1);
   assert.equal(await graphHints(), 0);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   check("Editing an answer reuses question context without requesting a new hint or revealing a solution");
 
   await submitWrongAnswer();
-  const preview = article.getByRole("button", { name: "Show hint", exact: true });
+  const preview = practicePreview();
   await preview.waitFor();
   assert.equal(decisions.length, 1);
-  assert.equal(await article.locator(".companion-panel").count(), 0);
+  assert.equal(await article.locator(".conversation-pane").isVisible(), false);
   assert.ok((await preview.innerText()).includes(firstHint));
   assert.deepEqual(await pageState(), { answer: "99", attempts: 1, finalSubmissions: 0 });
   assert.equal(article.url(), practiceUrl);
@@ -241,20 +242,21 @@ try {
   check("Wrong-answer feedback reveals the cached hint without a new model request or page action");
 
   await preview.click();
-  const panel = article.locator(".companion-panel");
+  const panel = article.locator(".conversation-workbench");
   await panel.getByText(firstHint, { exact: true }).waitFor();
   assert.equal(await panel.locator(".chat-message.assistant").count(), 1);
-  await panel.getByRole("button", { name: "Next hint", exact: true }).click();
-  await panel.getByText(nextHint, { exact: true }).waitFor();
+  await panel.getByRole("textbox", { name: "What do you need?", exact: true }).fill("another hint");
+  await panel.getByRole("button", { name: "Send message", exact: true }).click();
+  await panel.locator(".chat-message.assistant").getByText(nextHint, { exact: true }).waitFor();
   assert.equal(decisions.length, 2);
   assert.match(decisions[1].message, /rung 2 of 4/i);
   assert.deepEqual(await pageState(), { answer: "99", attempts: 1, finalSubmissions: 0 });
   const workspace = await rpc({ type: "workspace.get" });
   assert.equal(workspace.tasks.length, 0);
   assert.equal(workspace.events.length, 0);
-  check("Show hint opens the real reply; the single Next hint icon advances to rung 2 without solving or starting a task");
+  check("Opening the hint and asking for another advances to rung 2 without solving or starting a task");
 
-  await panel.getByRole("button", { name: "Close companion panel", exact: true }).click();
+  await panel.getByRole("button", { name: "Close HypeMan window", exact: true }).click();
   await assertSilentAfterMutations(2);
   assert.deepEqual(await pageState(), { answer: "99", attempts: 1, finalSubmissions: 0 });
   check("Unrelated mutations and identical feedback do not repeat the automatic request");
@@ -266,7 +268,7 @@ try {
   });
   await waitFor(() => decisions.length === 3, "different question prepared within speculative request budget", 25_000);
   assert.match(decisions[2].page.text, /4x - 3 = 25/);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   await submitWrongAnswer();
   await preview.waitFor();
   assert.ok((await preview.innerText()).includes(secondQuestionHint));
@@ -277,21 +279,21 @@ try {
   await openFixture(`${practiceUrl}?learning=off`);
   await submitWrongAnswer();
   await assertSilentAfterMutations(3);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   check("Turning off Learning mode prevents speculative practice hint requests");
 
   await openFixture(readingUrl);
   await article.waitForTimeout(1100);
   assert.equal(decisions.length, 3);
   await highlightTerm();
-  const explainPreview = article.getByRole("button", { name: "Show explanation", exact: true });
+  const explainPreview = article.locator(".pet-hint-preview").filter({ hasText: explanation });
   await explainPreview.waitFor();
   assert.equal(decisions.length, 4);
   assert.equal(decisions[3].mode, "browse");
   assert.match(decisions[3].page.selection, /Photosynthesis/);
   assert.match(decisions[3].page.text, /convert water and carbon dioxide into sugars/);
   assert.ok((await explainPreview.innerText()).includes(explanation));
-  assert.equal(await article.locator(".companion-panel").count(), 0);
+  assert.equal(await article.locator(".conversation-pane").isVisible(), false);
   check("Highlighting an article term prepares a grounded explanation with Learning mode off");
 
   await clearSelection();
@@ -300,7 +302,7 @@ try {
   await explainPreview.waitFor();
   assert.equal(decisions.length, 4);
   await explainPreview.click();
-  await article.locator(".companion-panel").getByText(explanation, { exact: true }).last().waitFor();
+  await article.locator(".conversation-workbench").getByText(explanation, { exact: true }).last().waitFor();
   assert.equal(decisions.length, 4);
   check("Reselecting the same term and opening its explanation reuse the cached result");
 
@@ -308,12 +310,12 @@ try {
   await openFixture(`${practiceUrl}?automatic=off`);
   await submitWrongAnswer();
   await assertSilentAfterMutations(4);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   await openFixture(`${readingUrl}?automatic=off`);
   await highlightTerm();
   await article.waitForTimeout(1600);
   assert.equal(decisions.length, 4);
-  assert.equal(await article.getByRole("button", { name: "Show explanation", exact: true }).count(), 0);
+  assert.equal(await article.locator(".pet-hint-preview").filter({ hasText: explanation }).count(), 0);
   check("Turning off Automatic hints keeps enabled Learning mode quiet");
 
   await rpc({ type: "settings.patch", patch: {
@@ -323,12 +325,12 @@ try {
   await openFixture(`${practiceUrl}?site=paused`, { paused: true });
   await submitWrongAnswer();
   await assertSilentAfterMutations(4);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   await openFixture(`${readingUrl}?site=paused`, { paused: true });
   await highlightTerm();
   await article.waitForTimeout(1600);
   assert.equal(decisions.length, 4);
-  assert.equal(await article.getByRole("button", { name: "Show explanation", exact: true }).count(), 0);
+  assert.equal(await article.locator(".pet-hint-preview").filter({ hasText: explanation }).count(), 0);
   check("Paused sites remain silent for practice and highlighting even with both settings enabled");
 
   await rpc({ type: "settings.patch", patch: { hiddenOnHosts: [] } });
@@ -336,7 +338,7 @@ try {
   await waitFor(() => decisions.length === 5, "unsafe preload response");
   await submitWrongAnswer();
   await article.waitForTimeout(1600);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   assert.deepEqual(await pageState(), { answer: "99", attempts: 1, finalSubmissions: 0 });
   // Invalid speculative output is not cached. A real trigger may retry it once.
   assert.ok(decisions.length >= 5 && decisions.length <= 6);
@@ -350,7 +352,7 @@ try {
   await highlightTerm("private-term");
   await article.waitForTimeout(1600);
   assert.equal(decisions.length, beforePrivate);
-  assert.equal(await article.getByRole("button", { name: "Show explanation", exact: true }).count(), 0);
+  assert.equal(await article.locator(".pet-hint-preview").filter({ hasText: explanation }).count(), 0);
   check("Highlighting private page content does not send an explanation request");
 
   await mkdir("tests/screenshots", { recursive: true });
@@ -358,7 +360,7 @@ try {
   await rpc({ type: "settings.patch", patch: { hiddenOnHosts: [] } });
   await openFixture(`${practiceUrl}?screenshot=hint`);
   await submitWrongAnswer();
-  await article.getByRole("button", { name: "Show hint", exact: true }).waitFor();
+  await practicePreview().waitFor();
   await article.screenshot({ path: "tests/screenshots/hypeman-automatic-hint.png", fullPage: true });
 
   // A deliberate selection is independent from project orchestration. Start a
@@ -374,26 +376,29 @@ try {
   await article.goto(`${practiceUrl}?project=owned`);
   await article.bringToFront();
   await article.getByRole("button", { name: /Open HypeMan\. Drag to move/ }).click();
-  await article.getByRole("progressbar", { name: "Task progress", exact: true }).waitFor();
-  await article.getByRole("button", { name: "Close companion panel", exact: true }).click();
+  await article.getByRole("textbox", { name: "What do you need?", exact: true }).fill("open projects");
+  await article.getByRole("button", { name: "Send message", exact: true }).click();
+  await article.locator(".task-card").filter({ hasText: project.goal }).waitFor();
+  await article.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  await article.getByRole("textbox", { name: "What do you need?", exact: true }).fill("close tool");
+  await article.getByRole("button", { name: "Send message", exact: true }).click();
+  await article.locator(".inline-toolbox-tasks").waitFor({ state: "hidden" });
   const ownedBefore = await assistanceState(), ownedDecisions = decisions.length;
   await assertSilentAfterMutations(ownedDecisions);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   const nativeSelection = await dragHighlightTerm();
-  const ownedPreview = article.getByRole("button", { name: "Show explanation", exact: true });
-  await ownedPreview.waitFor();
+  const ownedExplanation = article.locator(".conversation-workbench").getByText(explanation, { exact: true }).last();
+  await ownedExplanation.waitFor();
   assert.equal(decisions.length, ownedDecisions + 1);
   assert.equal(decisions.at(-1).task, null);
   assert.deepEqual(decisions.at(-1).history, []);
   assert.deepEqual(decisions.at(-1).page.elements, []);
   assert.equal(decisions.at(-1).page.selection, nativeSelection);
   assert.equal(decisions.at(-1).mode, "browse");
-  await ownedPreview.click();
-  await article.locator(".companion-panel").getByText(explanation, { exact: true }).last().waitFor();
   assert.equal(await article.evaluate(() => window.getSelection()?.toString().trim() ?? ""), nativeSelection);
   assert.deepEqual(await assistanceState(), ownedBefore);
   assert.deepEqual(await pageState(), { answer: "", attempts: 0, finalSubmissions: 0 });
-  check("A native text selection explains during an owned project, keeps its selection when opened, and leaves progress unchanged");
+  check("A native text selection explains in the open conversation during an owned project, preserves its selection, and leaves progress unchanged");
 
   // Preserve the running owner in a background tab. The foreground page has no
   // local task, so this also verifies the worker does not inject another tab's
@@ -405,9 +410,9 @@ try {
   assert.equal(otherBefore.workspace.activeTaskId, project.id);
   assert.equal(otherBefore.workspace.tasks.find((task) => task.id === project.id).status, "running");
   await assertSilentAfterMutations(otherDecisions);
-  assert.equal(await article.getByRole("button", { name: "Show hint", exact: true }).count(), 0);
+  assert.equal(await practicePreview().count(), 0);
   await highlightTerm();
-  const otherPreview = article.getByRole("button", { name: "Show explanation", exact: true });
+  const otherPreview = article.locator(".pet-hint-preview").filter({ hasText: explanation });
   await otherPreview.waitFor();
   assert.equal(decisions.length, otherDecisions + 1);
   assert.equal(decisions.at(-1).task, null);

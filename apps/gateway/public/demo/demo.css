@@ -6,8 +6,8 @@
   font-display: swap;
 }
 @font-face {
-  font-family: "VT323";
-  src: url("/fonts/VT323.ttf") format("truetype");
+  font-family: "Tiny5";
+  src: url("/fonts/Tiny5.ttf") format("truetype");
   font-style: normal;
   font-weight: 400;
   font-display: swap;
@@ -46,7 +46,7 @@ header > a {
   display: flex;
   align-items: center;
   gap: 12px;
-  font: 19px/1.2 "VT323", monospace;
+  font: 19px/1.2 "Tiny5", monospace;
   letter-spacing: 0;
   color: #e9edff;
 }
@@ -102,7 +102,7 @@ p {
   margin: 0 0 25px;
 }
 .eyebrow {
-  font: 16px/1 "VT323", monospace;
+  font: 16px/1 "Tiny5", monospace;
   letter-spacing: 0.1em;
   color: #a9b4db;
 }
@@ -237,7 +237,7 @@ textarea::placeholder {
   border: 1px solid #adbce533;
   border-radius: 20px;
   padding: 5px 10px;
-  font: 15px/1.15 "VT323", monospace;
+  font: 15px/1.15 "Tiny5", monospace;
   letter-spacing: 0.025em;
 }
 header .badge {
@@ -292,7 +292,7 @@ footer {
 footer::before {
   content: "DEMO / FICTIONAL DATA";
   display: inline;
-  font: 14px/1.2 "VT323", monospace;
+  font: 14px/1.2 "Tiny5", monospace;
   letter-spacing: 0.08em;
   color: #7888ad;
   margin-right: 25px;

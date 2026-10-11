@@ -22,6 +22,7 @@ export interface BrowserTask {
   createdAt: number;
   updatedAt: number;
   tabId: number | null;
+  conversationId?: string;
 }
 export interface SourceNote {
   id: string;
@@ -30,6 +31,7 @@ export interface SourceNote {
   url: string;
   title: string;
   taskId?: string;
+  origin?: NoteOrigin;
   createdAt: number;
   updatedAt: number;
 }
@@ -78,6 +80,22 @@ export interface NoteInput {
   url: string;
   title: string;
   taskId?: string;
+  origin?: NoteOrigin;
+}
+export interface NoteOrigin {
+  kind: "conversation" | "document";
+  conversationId: string;
+  documentId?: string;
+  page?: number;
+}
+function noteOrigin(value: unknown): NoteOrigin | undefined {
+  if (!record(value) || !["conversation", "document"].includes(String(value.kind)) ||
+      typeof value.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(value.conversationId)) return;
+  if (value.kind === "document" && (typeof value.documentId !== "string" || !/^[\w.-]{1,160}$/.test(value.documentId))) return;
+  if (value.page !== undefined && (!Number.isInteger(value.page) || Number(value.page) < 1 || Number(value.page) > 100000)) return;
+  return { kind: value.kind as NoteOrigin["kind"], conversationId: value.conversationId,
+    ...(value.kind === "document" ? { documentId: value.documentId as string } : {}),
+    ...(value.page !== undefined ? { page: Number(value.page) } : {}) };
 }
 
 const record = (v: unknown): v is Record<string, unknown> =>
@@ -181,11 +199,12 @@ export function parseWorkspace(value: unknown): CompanionSnapshot {
       createdAt: stamp(raw.createdAt),
       updatedAt: stamp(raw.updatedAt),
       tabId: Number.isInteger(raw.tabId) && Number(raw.tabId) >= 0 ? Number(raw.tabId) : null,
+      ...(typeof raw.conversationId === "string" && /^[\w.-]{1,160}$/.test(raw.conversationId) ? { conversationId: raw.conversationId } : {}),
     });
   }
   clean.tasks = [...new Map(clean.tasks.map((t) => [t.id, t])).values()];
   for (const raw of (Array.isArray(value.notes) ? value.notes : []).slice(-500)) {
-    if (!record(raw) || !str(raw.id, 100) || !str(raw.text, 4000) || !safePageUrl(raw.url))
+    if (!record(raw) || !str(raw.id, 100) || !str(raw.text, 4000) || (!safePageUrl(raw.url) && !noteOrigin(raw.origin)))
       continue;
     clean.notes.push({
       id: str(raw.id, 100),
@@ -194,6 +213,7 @@ export function parseWorkspace(value: unknown): CompanionSnapshot {
       url: safePageUrl(raw.url),
       title: str(raw.title, 300),
       ...(str(raw.taskId, 100) ? { taskId: str(raw.taskId, 100) } : {}),
+      ...(noteOrigin(raw.origin) ? { origin: noteOrigin(raw.origin) } : {}),
       createdAt: stamp(raw.createdAt),
       updatedAt: stamp(raw.updatedAt),
     });
@@ -287,6 +307,7 @@ export class WorkspaceHost {
     tabId: number | null,
     page?: { url: string; title: string },
     plan?: string[],
+    conversationId?: string,
   ): Promise<BrowserTask> {
     goal = str(goal, 2000);
     if (!goal) return Promise.reject(new Error("Describe a task first."));
@@ -311,6 +332,7 @@ export class WorkspaceHost {
         createdAt: this.now(),
         updatedAt: this.now(),
         tabId,
+        ...(conversationId && /^[\w.-]{1,160}$/.test(conversationId) ? { conversationId } : {}),
       };
       s.tasks = [...s.tasks.slice(-99), t];
       s.activeTaskId = t.id;
@@ -421,8 +443,8 @@ export class WorkspaceHost {
     });
   }
   saveNote(input: NoteInput): Promise<SourceNote> {
-    if (!str(input.text, 4000) || !safePageUrl(input.url))
-      return Promise.reject(new Error("A note needs text and an http(s) source."));
+    if (!str(input.text, 4000) || (!safePageUrl(input.url) && !noteOrigin(input.origin)))
+      return Promise.reject(new Error("A note needs text and a webpage, document, or conversation source."));
     return this.transaction((s) => {
       const previous = input.id ? s.notes.find((n) => n.id === input.id) : undefined;
       if (input.id && !previous) throw new Error("Note no longer exists.");
@@ -433,6 +455,7 @@ export class WorkspaceHost {
         url: safePageUrl(input.url),
         title: str(input.title, 300),
         ...(input.taskId ? { taskId: str(input.taskId, 100) } : {}),
+        ...(noteOrigin(input.origin) ? { origin: noteOrigin(input.origin) } : {}),
         createdAt: previous?.createdAt ?? this.now(),
         updatedAt: this.now(),
       };

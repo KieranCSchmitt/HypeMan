@@ -16,6 +16,9 @@ import {
   type TaskAssessment,
   type VideoState,
   type WorkspaceSnapshot,
+  type ToolAction,
+  type SelectedContent,
+  type TranscriptSegment,
 } from "@core";
 import { PageObserver, sameTarget } from "./page";
 import { checkPolicy, actionTarget } from "./policy";
@@ -29,7 +32,8 @@ import { confirmsMilestone, currentMilestone, projectIntent, projectPageKey, pro
 import type { CompanionRuntime, CompanionSnapshot, RuntimeApi } from "./types";
 export type { CompanionRuntime, CompanionSnapshot, RuntimeApi } from "./types";
 const MAX_STEPS = 18;
-const HINT_COOLDOWN = 45_000;
+// Allow time to read the revealed hint before showing another automatic one.
+const hintReadingTime = (text: string) => Math.min(60_000, Math.max(12_000, text.length * 80));
 const wrongAnswer = /\b(incorrect|wrong(?: answer)?|try again|not correct|not quite|not right)\b/i;
 const now = () => Date.now();
 const uid = () => crypto.randomUUID();
@@ -47,6 +51,33 @@ const HINT_RUNGS = [
 
 /** Independent orchestration. UI, background transport, and provider implementations are adapters. */
 class Companion implements CompanionRuntime {
+  private conversationId: string | undefined;
+  private toolHandler: ((action: ToolAction) => Promise<string | void>) | null = null;
+  private selectedContent: SelectedContent | null = null;
+  private uploadedImage: string | null = null;
+  private suppliedCaptions: { id: string; segments: TranscriptSegment[] } | null = null;
+  attachVideoCaptions(segments: TranscriptSegment[] | null) {
+    const video = this.observer.videoState(); if (!video) return;
+    if (segments && (segments.length > 3000 || segments.some((s) => !Number.isFinite(s.start) || !Number.isFinite(s.end) || s.start < 0 || s.end < s.start || typeof s.text !== "string" || s.text.length > 2000))) throw new Error("Use bounded video captions with valid times.");
+    this.suppliedCaptions = segments ? { id: video.id, segments } : null;
+    this.update({ video: { ...video, segments: segments || video.segments, available: !!(segments || video.segments)?.length } });
+  }
+  setConversationId(id: string, preserveTask = false) {
+    if (!/^[\w.-]{1,160}$/.test(id)) return;
+    if (this.conversationId && this.conversationId !== id) {
+      this.stop(!preserveTask); this.history = []; this.pendingNavigation = null; this.cancelProjectObservation();
+      this.update({ messages: [], sketch: null, ...(!preserveTask ? { task: null } : {}) });
+    }
+    this.conversationId = id;
+    if (this.state.conversationId !== id) this.update({ conversationId: id });
+  }
+  setToolHandler(handler: ((action: ToolAction) => Promise<string | void>) | null) { this.toolHandler = handler; }
+  setSelectedContent(selected: SelectedContent | null) { this.selectedContent = selected; }
+  attachImage(image: string | null) {
+    if (image && (image.length > 2_000_000 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image))) throw new Error("Choose an image under 2 MB.");
+    this.uploadedImage = image;
+    this.update({ screenshotAttached: !!image });
+  }
   private observer: PageObserver;
   private highlight: Highlight;
   private state: CompanionSnapshot = {
@@ -84,7 +115,7 @@ class Companion implements CompanionRuntime {
   private preparedKey = "";
   private revealGeneration = 0;
   private hintErrors = new Map<string, string>();
-  private lastHintAt = -Infinity;
+  private hintQuietUntil = 0;
   private hintAttempt = 0;
   private feedbackGeneration = 0;
   private feedbackSignature = "";
@@ -382,7 +413,9 @@ class Companion implements CompanionRuntime {
         !Number.isFinite(entry.at)
       )
         return null;
+    if (typeof input.conversationId === "string") this.setConversationId(input.conversationId, true);
     return {
+      ...(this.conversationId ? { conversationId: this.conversationId } : {}),
       goal: input.goal,
       step: input.step!,
       history: input.history,
@@ -444,7 +477,7 @@ class Companion implements CompanionRuntime {
     const previous = this.state.video?.id === video.id ? this.state.video : null;
     return {
       ...video,
-      segments: previous?.segments?.length ? previous.segments : video.segments,
+      segments: this.suppliedCaptions?.id === video.id ? this.suppliedCaptions.segments : previous?.segments?.length ? previous.segments : video.segments,
       chapters: previous?.chapters?.length ? previous.chapters : video.chapters,
       summary: previous?.summary,
       available: previous?.available ?? !!video.segments?.length,
@@ -465,6 +498,7 @@ class Companion implements CompanionRuntime {
       }
       const page = this.observer.snapshot();
       this.lastPage = page;
+      if (page.video && this.suppliedCaptions?.id === page.video.id) page.video = { ...page.video, segments: this.suppliedCaptions.segments };
       if (this.state.settings.learningEnabled && now() - this.attemptedAt < 12_000) {
         const notice = [...page.successes, ...page.errors].find(
           (text) =>
@@ -645,7 +679,7 @@ class Companion implements CompanionRuntime {
       this.cancelAutomaticHint(true);
       this.practiceKey = context?.key ?? "";
       this.feedbackSignature = "";
-      this.lastHintAt = -Infinity;
+      this.hintQuietUntil = 0;
       if (context) {
         this.hintPage = `${page.url}:${page.headings[0] || page.title}`;
         this.update({ learning: { ...this.state.learning, hintLevel: 0 } });
@@ -664,7 +698,7 @@ class Companion implements CompanionRuntime {
     if (notices.length) {
       const key = JSON.stringify([signature, this.feedbackGeneration, this.hintAttempt]);
       if (this.handledHints.has(key)) return;
-      const remaining = HINT_COOLDOWN - (now() - this.lastHintAt);
+      const remaining = this.hintQuietUntil - now();
       if (remaining > 0) {
         this.scheduleHintObservation(remaining);
         return;
@@ -781,7 +815,7 @@ Give one brief, grounded hint for the current question using only a say action. 
       this.update({ learning: { ...this.state.learning,
         ...(kind === "hint" ? { hintLevel: rung } : {}), autoHint: { id, text, kind } } });
       if (kind === "hint") {
-        this.lastHintAt = now();
+        this.hintQuietUntil = now() + hintReadingTime(text);
         // Speculation is never evidence. Count only a hint actually revealed.
         await this.api.request({ type: "learn.event", event: {
           id: uid(), concept: context.concept, kind: "hint", evidence: text, at: now(),
@@ -848,6 +882,7 @@ Give one brief, grounded hint for the current question using only a say action. 
       const page = this.observer.snapshot();
       this.lastPage = page;
       this.offerTeachBack(text, page);
+      if (page.video && this.suppliedCaptions?.id === page.video.id) page.video = { ...page.video, segments: this.suppliedCaptions.segments };
       if (
         page.video &&
         !videoIntent(text, page.video) &&
@@ -926,8 +961,11 @@ Give one brief, grounded hint for the current question using only a say action. 
           history: this.history.slice(-12),
           task: this.state.task,
           mode: learningMode ? "learn" : "browse",
-          ...(screenshot ? { screenshot } : {}),
+          ...(this.conversationId ? { conversationId: this.conversationId } : {}),
+          ...(this.selectedContent ? { toolContext: { selected: this.selectedContent } } : {}),
+          ...(this.uploadedImage || screenshot ? { screenshot: this.uploadedImage || screenshot! } : {}),
         };
+        if (this.uploadedImage) this.attachImage(null);
         if (screenshot || (this.screenshot && this.screenshot.url !== page.url))
           this.attachScreenshot(null);
         const reply: AgentReply = mediaAction
@@ -938,6 +976,19 @@ Give one brief, grounded hint for the current question using only a say action. 
         const action = parseAction(reply.action);
         if (!action)
           throw new Error("The gateway returned an invalid action. Nothing was executed.");
+        if (action.type === "tool") {
+          if (!this.toolHandler) throw new Error("Open the conversation to use this tool.");
+          const sensitive = (action.tool === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(action.operation)) ||
+            (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) ||
+            (action.tool === "settings" && action.operation === "permissions");
+          if (sensitive && !await this.askConfirmation(`Allow HypeMan to ${action.operation} using ${action.tool}?`, signal)) break;
+          check(signal);
+          const result = await this.toolHandler(action);
+          check(signal);
+          if (reply.say) this.say(reply.say);
+          if (result) this.say(result);
+          break;
+        }
         const targetId = actionTarget(action);
         const target = targetId
           ? page.elements.find((element) => element.id === targetId)
@@ -990,6 +1041,7 @@ Give one brief, grounded hint for the current question using only a say action. 
           }
           const task = await this.api.request<BrowserTask>({
             type: "task.start", goal, steps: action.steps,
+            ...(this.conversationId ? { conversationId: this.conversationId } : {}),
             url: page.url, dispatch: false,
           }, signal);
           check(signal);
@@ -1014,6 +1066,7 @@ Give one brief, grounded hint for the current question using only a say action. 
           at: now(),
         };
         const handoff: SessionHandoff = {
+          ...(this.conversationId ? { conversationId: this.conversationId } : {}),
           taskId: this.state.task?.id,
           goal,
           history: [...this.history.slice(-11), intent],
@@ -1022,6 +1075,7 @@ Give one brief, grounded hint for the current question using only a say action. 
         };
         let result = await execute(action, {
           api: this.api,
+          companionHost: this.shadow.host as HTMLElement,
           observer: this.observer,
           highlight: this.highlight,
           page,
@@ -1168,6 +1222,7 @@ Give one brief, grounded hint for the current question using only a say action. 
       pointer: `Interact with “${name}”`,
       video: "Apply the requested video control",
       sketch: "Show the requested sketch",
+      tool: "Open the requested content",
       plan: "Show the learning plan",
       note: "Save this source note",
       wait: "Wait for the page",

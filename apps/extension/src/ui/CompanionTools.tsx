@@ -1,556 +1,182 @@
-import { useEffect, useState } from "react";
-import { learningEstimate, type Health, type LearningGraph, type Settings } from "@core";
+import { useEffect, useRef, useState } from "react";
+import { learningEstimate, type AgentReply, type Health, type LearningGraph, type LearningPlan, type Settings, type SourceNote } from "@core";
 import { request } from "../bridge";
-import { Empty, NoteCard, Notice, TaskCard } from "./common";
-import {
-  exportWorkspace,
-  host,
-  message,
-  relativeTime,
-  setScreenshotAccess,
-  useSettings,
-  useWorkspace,
-} from "./hooks";
-import { Icon, type IconName } from "./Icon";
+import { Empty, NoteCard, Notice, TaskCard, Toggle, ToolButton } from "./common";
+import { exportWorkspace, host, message, relativeTime, setScreenshotAccess, useSettings, useWorkspace } from "./hooks";
+import { useToolHandler, useWorkbench } from "./WorkbenchContext";
 import { ChatGPTConnection } from "./ChatGPTConnection";
-
+import { Messaging } from "./Messaging";
+import type { IconName } from "./Icon";
 export type CompanionSection = "tasks" | "notes" | "activity" | "settings" | "learning";
 export const companionSections: { section: CompanionSection; icon: IconName; label: string }[] = [
-  { section: "tasks", icon: "task", label: "Tasks" },
-  { section: "notes", icon: "notes", label: "Saved notes" },
-  { section: "activity", icon: "rewind", label: "Recent actions" },
-  { section: "settings", icon: "settings", label: "Settings and permissions" },
-  { section: "learning", icon: "learn", label: "Learning" },
+  { section: "tasks", icon: "task", label: "Projects" }, { section: "notes", icon: "notes", label: "Notes" },
+  { section: "activity", icon: "rewind", label: "Recent actions" }, { section: "settings", icon: "settings", label: "Preferences" },
+  { section: "learning", icon: "learn", label: "Practice" },
 ];
-
-export function CompanionTools({
-  section,
-  onClose,
-  onError,
-  onStartTask,
-  onSectionChange,
-  embedded = false,
-  onOpenTool,
-}: {
-  section: CompanionSection;
-  onClose: () => void;
-  onError?: (error: string) => void;
-  onStartTask?: () => void;
-  onSectionChange?: (section: CompanionSection) => void;
-  embedded?: boolean;
-  onOpenTool?: (section: "customize" | "connection") => void;
-}) {
+export function CompanionTools({ section, onError, embedded = false }: { section: CompanionSection; onClose: () => void; onError?: (error: string) => void; onStartTask?: () => void; onSectionChange?: (section: CompanionSection) => void; embedded?: boolean }) {
   const { workspace, refresh, error, loading } = useWorkspace();
   const { settings, patch, error: settingsError } = useSettings();
-  const [active, setActive] = useState(section);
+  const workbench = useWorkbench();
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
-  const [name, setName] = useState(settings.characterName);
-  const [health, setHealth] = useState<Health | null>(null);
-  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [creating, setCreating] = useState(false), [newText, setNewText] = useState("");
+  const [permission, setPermission] = useState<"capture" | "input" | null>(null);
+  const removed = useRef<SourceNote | null>(null);
   const extensionPage = location.protocol === "chrome-extension:";
-  useEffect(() => setActive(section), [section]);
-  useEffect(() => setName(settings.characterName), [settings.characterName]);
-  const fail = (e: unknown) => {
-    const value = message(e);
-    setNotice(value);
-    onError?.(value);
-  };
-  const edit = (changes: Partial<Settings>) => void patch(changes).catch(fail);
-  const permission = async (enabled: boolean) => {
-    try {
-      if (enabled && !(await chrome.permissions.request({ permissions: ["debugger"] })))
-        throw new Error("Browser input permission was not granted.");
-      await patch({ trustedInput: enabled });
-    } catch (e) {
-      fail(e);
+  const fail = (cause: unknown) => { const value = message(cause); setNotice(value); onError?.(value); };
+  const edit = (changes: Partial<Settings>) => void patch(changes).then(() => setNotice("")).catch(fail);
+  const resolveId = (args: Record<string, unknown>, kind: string) => typeof args.id === "string" ? args.id : workbench.selected?.kind === kind ? workbench.selected.id : "";
+  useToolHandler(section === "tasks" ? "projects" : null, async (operation, args) => {
+    if (operation === "open") return "Select a project and ask to continue, pause, cancel, or text it.";
+    if (operation === "filter") { setFilter(String(args.status || args.filter || "all")); return "Projects filtered."; }
+    const id = resolveId(args, "project") || workspace.activeTaskId;
+    if (!id) throw new Error("Select a project first.");
+    if (operation === "done") { const task = workspace.tasks.find((item) => item.id === id); const step = task?.steps.find((item) => item.status !== "done"); if (!task || !step) throw new Error("That project has no unfinished step."); await request({ type: "task.step.confirm", taskId: task.id, stepId: step.id }); await refresh(); return "Current step marked complete by you."; }
+    if (!["pause", "resume", "cancel"].includes(operation)) throw new Error("That project action is unavailable.");
+    await request({ type: operation === "resume" && !extensionPage ? "task.follow" : `task.${operation}`, id });
+    await refresh(); return operation === "resume" ? "Continuing the project." : operation === "pause" ? "Project paused." : "Project cancelled.";
+  });
+  useToolHandler(section === "notes" ? "notes" : null, async (operation, args) => {
+    if (operation === "open" || operation === "find") { setSearch(String(args.query || args.text || "")); return search ? "Showing matching notes." : "Your notes are ready. Edit them directly."; }
+    if (operation === "undo") { if (!removed.current) throw new Error("There is no deleted note to restore."); const { id: _id, ...restored } = removed.current; await request({ type: "note.save", note: restored }); removed.current = null; await refresh(); return "Note restored."; }
+    const id = resolveId(args, "note");
+    const note = workspace.notes.find((item) => item.id === id);
+    if (operation === "delete") { if (!note) throw new Error("Select the note to delete."); await request({ type: "note.remove", id: note.id }); removed.current = note; await refresh(); return "Note deleted. Say undo to restore it."; }
+    if (operation === "save") {
+      const text = String(args.text || workbench.selected?.text || "").trim();
+      if (!text) throw new Error("Select text or say what to save.");
+      await request({ type: "note.save", note: { ...(note || {}), text, excerpt: String(args.excerpt || workbench.selected?.text || ""), url: String(args.url || workbench.selected?.url || ""), title: String(args.title || workbench.selected?.title || "Conversation note"), origin: { kind: workbench.selected?.artifactId ? "document" : "conversation", conversationId: workbench.conversationId, ...(workbench.selected?.artifactId ? { documentId: workbench.selected.artifactId, page: workbench.selected.page } : {}) } } });
+      await refresh(); return "Note saved.";
     }
+    throw new Error("That note action is unavailable.");
+  });
+  useToolHandler(section === "activity" ? "activity" : null, async () => `${workspace.events.length} actions recorded. Select an action to inspect its source and evidence.`);
+  useToolHandler(section === "settings" ? "settings" : null, async (operation, args) => {
+    if (operation === "open") return "Edit a preference directly, or tell me what to change.";
+    if (operation === "permissions") {
+      if (args.screenshotEnabled === false || args.trustedInput === false) { await patch({ ...(args.screenshotEnabled === false ? { screenshotEnabled: false } : {}), ...(args.trustedInput === false ? { trustedInput: false } : {}) }); return "Access disabled."; }
+      const kind = String(args.permission || args.kind || args.name || (args.trustedInput === true ? "input" : "capture"));
+      if (["capture", "screenshots", "screenshotEnabled", "input", "trustedInput"].includes(kind)) { setPermission(["input", "trustedInput"].includes(kind) ? "input" : "capture"); return "Use Allow access below to open Chrome’s permission prompt."; }
+    }
+    if (operation === "pause-site" || operation === "resume-site") {
+      const hostname = String(args.hostname || args.host || (location.protocol === "chrome-extension:" ? "" : location.hostname));
+      if (!hostname) throw new Error("Name the site to change.");
+      await patch({ hiddenOnHosts: operation === "pause-site" ? [...new Set([...settings.hiddenOnHosts, hostname])] : settings.hiddenOnHosts.filter((item) => item !== hostname) });
+      return operation === "pause-site" ? `Paused on ${hostname}.` : `Resumed on ${hostname}.`;
+    }
+    if (operation === "set") {
+      const raw = args.patch && typeof args.patch === "object" ? args.patch as Record<string, unknown> : args.key || args.name ? { [String(args.key || args.name)]: args.value } : Object.fromEntries(Object.entries(args).filter(([key]) => !["conversationId", "selected"].includes(key)));
+      const next: Partial<Settings> = {};
+      for (const [key, value] of Object.entries(raw)) {
+        if (["screenshotEnabled", "trustedInput"].includes(key) && value === true) { setPermission(key === "trustedInput" ? "input" : "capture"); continue; }
+        if (!["reducedMotion", "videoCompanion", "proactiveEnabled", "learningEnabled", "tabContextEnabled", "screenshotEnabled", "trustedInput"].includes(key)) throw new Error("That preference is unavailable here.");
+        Object.assign(next, { [key]: value });
+      }
+      if (Object.keys(next).length) await patch(next);
+      return permission ? "Review the access request below." : "Preferences saved.";
+    }
+    throw new Error("That settings action is unavailable.");
+  });
+  const tasks = [...workspace.tasks].sort((a, b) => b.updatedAt - a.updatedAt).filter((task) => filter === "all" || filter === "unfinished" && ["running", "paused"].includes(task.status) || task.status === filter);
+  const notes = [...workspace.notes].sort((a, b) => b.updatedAt - a.updatedAt).filter((note) => `${note.text} ${note.excerpt} ${note.title} ${note.url}`.toLowerCase().includes(search.toLowerCase()));
+  const outcomes = [...workspace.events].reverse();
+  const grant = async () => {
+    try {
+      if (permission === "capture") await setScreenshotAccess(true, patch);
+      else { if (!(await chrome.permissions.request({ permissions: ["debugger"] }))) throw new Error("Browser input permission was not granted."); await patch({ trustedInput: true }); }
+      setPermission(null); setNotice("Access enabled.");
+    } catch (cause) { fail(cause); }
+  };
+  const removeNote = async (note: SourceNote) => { await request({ type: "note.remove", id: note.id }); removed.current = note; await refresh(); setNotice("Deleted"); };
+  const create = async () => {
+    if (!newText.trim()) return;
+    try {
+      if (section === "tasks") await workbench.send(newText.trim());
+      else await request({ type: "note.save", note: { text: newText.trim(), title: "Note", excerpt: "", url: "", origin: { kind: "conversation", conversationId: workbench.conversationId } } });
+      setNewText(""); setCreating(false); await refresh();
+    } catch (cause) { fail(cause); }
+  };
+  return <section className={`inline-toolbox inline-toolbox-${section} ${embedded ? "embedded" : ""}`} aria-label={companionSections.find((item) => item.section === section)?.label}><div className="inline-tool-body">
+    <Notice tone="error">{error || settingsError}</Notice><Notice>{notice}</Notice>{loading && <p role="status">Loading…</p>}
+    {section === "tasks" && <><div className="tool-toolbar"><div className="tool-tabs" role="tablist" aria-label="Project status">{[["all", "All"], ["unfinished", "Active"], ["completed", "Done"]].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={filter === value} onClick={() => setFilter(value!)}>{label}</button>)}</div><ToolButton icon="plus" label="New project" onClick={() => setCreating(!creating)} /></div><div className="inline-tool-list tool-content">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} task={task} refresh={refresh} />) : <Empty title="No projects" />}</div></>}
+    {section === "notes" && <><div className="tool-toolbar"><input type="search" className="tool-search" aria-label="Find a note" placeholder="Find a note…" value={search} onChange={(event) => setSearch(event.target.value)} /><ToolButton icon="plus" label="New note" onClick={() => setCreating(!creating)} />{removed.current && <ToolButton icon="undo" label="Restore deleted note" onClick={() => void workbench.executeTool("notes", "undo").then(() => setNotice("")).catch(fail)} />}</div><div className="inline-tool-list tool-content">{notes.length ? notes.map((note) => <NoteCard key={note.id} note={note} refresh={refresh} onDelete={removeNote} />) : <Empty title={search ? "No matches" : "No notes yet"} />}</div></>}
+    {creating && ["tasks", "notes"].includes(section) && <form className="tool-form" onSubmit={(event) => { event.preventDefault(); void create(); }}><textarea aria-label={section === "tasks" ? "Project goal" : "New note"} placeholder={section === "tasks" ? "Project goal…" : "New note…"} value={newText} onChange={(event) => setNewText(event.target.value)} autoFocus rows={2} /><div className="tool-actions"><button className="button primary" type="submit" disabled={!newText.trim()}>{section === "tasks" ? "Start" : "Save"}</button><button className="button" type="button" onClick={() => setCreating(false)}>Cancel</button></div></form>}
+    {section === "activity" && <div className="inline-action-list">{outcomes.length ? outcomes.map((event) => <article key={event.id} className="inline-action" tabIndex={0} onFocus={() => workbench.selectContent({ kind: "action", id: event.id, text: event.summary, url: event.url })}><p>{event.ok ? "✓" : "!"} {event.summary}</p><details><summary>{relativeTime(event.at)} · details</summary><p>{event.action.replaceAll("_", " ")}</p>{event.url && <a href={event.url} target="_blank" rel="noreferrer">{host(event.url)} ↗</a>}</details></article>) : <Empty title="No actions yet">Completed actions and their evidence appear here.</Empty>}</div>}
+    {section === "settings" && <>
+      <Toggle label="Screenshots" description="Chrome asks before granting capture access." checked={settings.screenshotEnabled} onChange={(value) => value ? setPermission("capture") : edit({ screenshotEnabled: false })} />
+      <Toggle label="Other tabs" description="Share other tab titles and links." checked={settings.tabContextEnabled} onChange={(value) => edit({ tabContextEnabled: value })} />
+      <Toggle label="Browser actions" description="Chrome asks before enabling browser input." checked={settings.trustedInput} onChange={(value) => value ? setPermission("input") : edit({ trustedInput: false })} />
+      <Toggle label="Automatic help" description="Explain selections and offer contextual help." checked={settings.proactiveEnabled} onChange={(value) => edit({ proactiveEnabled: value })} />
+      <Toggle label="Learning" description="Keep practice evidence on this device." checked={settings.learningEnabled} onChange={(value) => edit({ learningEnabled: value })} />
+      <label className="field">Motion<select aria-label="Motion" value={settings.reducedMotion} onChange={(event) => edit({ reducedMotion: event.target.value as Settings["reducedMotion"] })}><option value="auto">System preference</option><option value="on">Reduced motion</option><option value="off">Full animation</option></select></label>
+      <label className="field">Video<select aria-label="Video companion" value={settings.videoCompanion} onChange={(event) => edit({ videoCompanion: event.target.value as Settings["videoCompanion"] })}><option value="ask">On request</option><option value="on">Automatic</option><option value="off">Off</option></select></label>
+      <div className="tool-toolbar"><button className="button" onClick={() => exportWorkspace(workspace)}>Export</button><button className="button" onClick={() => workbench.openTool("connection")}>Account</button><button className="button" onClick={() => workbench.openTool("phone")}>Phone</button></div>
+      {permission && <div className="confirmation" role="group" aria-label="Browser permission"><p>Allow {permission === "capture" ? "screenshots" : "browser actions"}?</p><button data-essential="permission" className="button" onClick={() => void grant()}>Allow</button><button data-essential="permission" className="button" onClick={() => setPermission(null)}>Cancel</button></div>}
+      {!!settings.hiddenOnHosts.length && <details><summary>Paused sites</summary>{settings.hiddenOnHosts.map((hostname) => <div className="tool-actions" key={hostname}><span>{hostname}</span><ToolButton icon="play" label={`Resume on ${hostname}`} onClick={() => edit({ hiddenOnHosts: settings.hiddenOnHosts.filter((value) => value !== hostname) })} /></div>)}</details>}
+    </>}
+    {section === "learning" && <LearningCollection />}
+  </div></section>;
+}
+function LearningCollection() {
+  const { settings, patch } = useSettings();
+  const workbench = useWorkbench();
+  const [graph, setGraph] = useState<LearningGraph | null>(null);
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState<"plan" | "review">("plan"), [goal, setGoal] = useState("");
+  const [checking, setChecking] = useState(false), [explanation, setExplanation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const abort = useRef<AbortController | null>(null);
+  const refresh = async (signal?: AbortSignal) => {
+    const next = await request<LearningGraph>({ type: "graph.get" }, signal);
+    signal?.throwIfAborted(); setGraph(next);
   };
   useEffect(() => {
-    if (active !== "settings" || !extensionPage) return;
     const controller = new AbortController();
-    void request<Health>({ type: "connection.ensure" }, controller.signal)
-      .then(setHealth)
-      .catch((e) => {
-        if (!controller.signal.aborted) setHealth(null);
-      });
-    return () => controller.abort();
-  }, [active, settings.serverUrl, extensionPage]);
-  const tasks = [...workspace.tasks]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .filter((task) => filter === "all" || task.status === filter);
-  const notes = [...workspace.notes]
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .filter((note) =>
-      `${note.text} ${note.excerpt} ${note.title} ${note.url}`
-        .toLowerCase()
-        .includes(search.toLowerCase()),
-    );
-  const outcomes = [...workspace.events].reverse().filter((event) =>
-    !event.ok || !/^(Page observed|Control activated|Video seek verified|Field filled|Scrolled|Highlighted)/i.test(event.summary),
-  );
-  const toggle = (
-    icon: IconName,
-    label: string,
-    checked: boolean,
-    change: (value: boolean) => void,
-  ) => (
-    <button
-      type="button"
-      className={`inline-capability ${checked ? "selected" : ""}`}
-      aria-label={label}
-      title={`${label}: ${checked ? "on" : "off"}`}
-      aria-pressed={checked}
-      onClick={() => change(!checked)}
-    >
-      <Icon name={icon} />
-      <i aria-hidden="true" />
-    </button>
-  );
-  return (
-    <section
-      className={`inline-toolbox inline-toolbox-${active}`}
-      aria-label={companionSections.find((s) => s.section === active)?.label}
-    >
-      {!embedded && <header className="inline-tool-header">
-        <nav className="inline-tool-tabs" aria-label="Companion collections">
-          {companionSections.map((item) => (
-            <button
-              key={item.section}
-              type="button"
-              aria-label={item.label}
-              title={item.label}
-              aria-pressed={active === item.section}
-              className={active === item.section ? "selected" : ""}
-              onClick={() => {
-                setActive(item.section);
-                onSectionChange?.(item.section);
-                setNotice("");
-              }}
-            >
-              <Icon name={item.icon} />
-            </button>
-          ))}
-        </nav>
-        <div className="inline-tool-actions">
-          <button
-            type="button"
-            aria-label="Export workspace"
-            title="Export workspace"
-            onClick={() => exportWorkspace(workspace)}
-          >
-            <Icon name="download" />
-          </button>
-          <button type="button" aria-label="Close tools" title="Close tools" onClick={onClose}>
-            <Icon name="close" />
-          </button>
-        </div>
-      </header>}
-      <div className="inline-tool-body">
-        <Notice tone="error">{error || settingsError || (!onError ? notice : "")}</Notice>
-        {loading && (
-          <span role="status" className="inline-loading">
-            <Icon name="activity" />
-            <span className="sr-only">Loading</span>
-          </span>
-        )}
-        {active === "tasks" && (
-          <>
-            <div className="inline-tool-filters" role="group" aria-label="Filter tasks">
-              {(
-                [
-                  ["all", "task", "All tasks"],
-                  ["running", "play", "Running tasks"],
-                  ["paused", "pause", "Paused tasks"],
-                  ["completed", "check", "Completed tasks"],
-                  ["cancelled", "close", "Cancelled tasks"],
-                ] as const
-              ).map(([value, icon, label]) => (
-                <button
-                  type="button"
-                  key={value}
-                  aria-label={label}
-                  title={label}
-                  aria-pressed={filter === value}
-                  className={filter === value ? "selected" : ""}
-                  onClick={() => setFilter(value)}
-                >
-                  <Icon name={icon} />
-                </button>
-              ))}
-              {onStartTask && (
-                <button type="button" aria-label="New task" title="New task" onClick={onStartTask}>
-                  <Icon name="plus" />
-                </button>
-              )}
-            </div>
-            <div className="inline-tool-list">
-              {tasks.length ? (
-                tasks.map((task) => <TaskCard key={task.id} task={task} refresh={refresh} />)
-              ) : (
-                <Empty title="Clear runway">Describe a task in the message field.</Empty>
-              )}
-            </div>
-            {embedded && outcomes.length > 0 && <details className="workspace-history"><summary>Completed actions</summary><div className="inline-action-list">{outcomes.slice(0, 12).map((event) => <article key={event.id} className="inline-action"><Icon name={event.ok ? "check" : "close"} /><p>{event.summary}</p></article>)}</div></details>}
-          </>
-        )}
-        {active === "notes" && (
-          <>
-            <div className="inline-tool-search">
-              <Icon name="search" />
-              <input
-                aria-label="Search saved notes"
-                placeholder="Find a note…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <div className="inline-tool-list">
-              {notes.length ? (
-                notes.map((note) => <NoteCard key={note.id} note={note} refresh={refresh} />)
-              ) : (
-                <Empty title={search ? "No matches" : "Nothing pinned"}>
-                  Select text on a webpage and pin it.
-                </Empty>
-              )}
-            </div>
-          </>
-        )}
-        {active === "activity" && (
-          <div className="inline-tool-list inline-action-list">
-            {outcomes.length ? (
-              outcomes.map((event) => (
-                <article key={event.id} className="inline-action">
-                  <Icon
-                    name={event.ok ? "check" : "close"}
-                    aria-label={event.ok ? "Verified" : "Failed"}
-                  />
-                  <div>
-                    <p>{event.summary}</p>
-                    <details>
-                      <summary aria-label="Action details" title="Action details">
-                        <Icon name="plus" />
-                        <time>{relativeTime(event.at)}</time>
-                      </summary>
-                      <span>{event.action.replaceAll("_", " ")}</span>
-                      {event.url && (
-                        <a href={event.url} target="_blank" rel="noreferrer">
-                          {host(event.url)} <Icon name="external" />
-                        </a>
-                      )}
-                      <small>
-                        {workspace.tasks.find((task) => task.id === event.taskId)?.goal}
-                      </small>
-                    </details>
-                  </div>
-                </article>
-              ))
-            ) : (
-              <Empty title="Fresh track">Verified actions appear here.</Empty>
-            )}
-          </div>
-        )}
-        {active === "settings" && (
-          <>
-            <div className="inline-capabilities" role="group" aria-label="Capability permissions">
-              {toggle(
-                "camera",
-                "Page screenshots",
-                settings.screenshotEnabled,
-                (value) => void setScreenshotAccess(value, patch).catch(fail),
-              )}
-              {toggle("folder", "Other tab context", settings.tabContextEnabled, (value) =>
-                edit({ tabContextEnabled: value }),
-              )}
-              {toggle(
-                "shield",
-                "Trusted browser actions",
-                settings.trustedInput,
-                (value) => void permission(value),
-              )}
-              {toggle("hint", "Automatic hints", settings.proactiveEnabled, (value) =>
-                edit({ proactiveEnabled: value }),
-              )}
-              {toggle("learn", "Learning mode", settings.learningEnabled, (value) =>
-                edit({ learningEnabled: value }),
-              )}
-            </div>
-            <div className="inline-setting-fields">
-              <label title="Companion name">
-                <Icon name="chat" />
-                <input
-                  aria-label="Companion name"
-                  maxLength={60}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  onBlur={() =>
-                    name.trim()
-                      ? edit({ characterName: name.trim() })
-                      : setName(settings.characterName)
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") e.currentTarget.blur();
-                  }}
-                />
-              </label>
-              <label title="Motion">
-                <Icon name="activity" />
-                <select
-                  aria-label="Motion"
-                  value={settings.reducedMotion}
-                  onChange={(e) =>
-                    edit({ reducedMotion: e.target.value as Settings["reducedMotion"] })
-                  }
-                >
-                  <option value="auto">System motion</option>
-                  <option value="on">Reduced motion</option>
-                  <option value="off">Full animation</option>
-                </select>
-              </label>
-              <label title="Video companion">
-                <Icon name="video" />
-                <select
-                  aria-label="Video companion"
-                  value={settings.videoCompanion}
-                  onChange={(e) =>
-                    edit({ videoCompanion: e.target.value as Settings["videoCompanion"] })
-                  }
-                >
-                  <option value="ask">Ask before video help</option>
-                  <option value="on">Video help on</option>
-                  <option value="off">Video help off</option>
-                </select>
-              </label>
-            </div>
-            <div className="inline-setting-shortcuts">
-              <button
-                type="button"
-                aria-label="Customize companion"
-                title="Customize companion"
-                onClick={() =>
-                  onOpenTool ? onOpenTool("customize") : void request({ type: "control.open", section: "customize" }).catch(fail)
-                }
-              >
-                <Icon name="customize" />
-              </button>
-              <button
-                type="button"
-                aria-label="Connection settings"
-                title="Connection settings"
-                onClick={() => {
-                  if (onOpenTool) { onOpenTool("connection"); return; }
-                  if (extensionPage) setConnectionOpen(!connectionOpen);
-                  else
-                    void chrome.tabs.create({ url: chrome.runtime.getURL("newtab.html#settings") });
-                }}
-                aria-expanded={extensionPage ? connectionOpen : undefined}
-              >
-                <Icon name="link" />
-              </button>
-            </div>
-            {health && (
-              <div
-                className="inline-provider-status"
-                role="group"
-                aria-label="Provider availability"
-              >
-                {Object.entries(health.capabilities).map(([key, value]) => (
-                  <span
-                    key={key}
-                    className={value.available ? "available" : "unavailable"}
-                    title={`${key}: ${value.available ? value.mode : value.reason || "Unavailable"}`}
-                    aria-label={`${key}: ${value.available ? value.mode : "Unavailable"}`}
-                  >
-                    <Icon
-                      name={
-                        key === "agent"
-                          ? "bolt"
-                          : key === "video"
-                            ? "video"
-                            : key === "notebook"
-                              ? "notebook"
-                              : "sketch"
-                      }
-                    />
-                    <i />
-                  </span>
-                ))}
-              </div>
-            )}
-            {extensionPage && connectionOpen && (
-              <ChatGPTConnection
-                connectionKey={settings.serverUrl}
-                onConnectionChange={setHealth}
-              />
-            )}
-            {!!settings.hiddenOnHosts.length && (
-              <details className="inline-paused-sites">
-                <summary>
-                  <Icon name="pause" />
-                  <span className="sr-only">Paused sites</span>
-                  <span>{settings.hiddenOnHosts.length}</span>
-                </summary>
-                {settings.hiddenOnHosts.map((hostname) => (
-                  <div key={hostname}>
-                    <span>{hostname}</span>
-                    <button
-                      type="button"
-                      aria-label={`Allow again: ${hostname}`}
-                      title="Allow again"
-                      onClick={() =>
-                        edit({
-                          hiddenOnHosts: settings.hiddenOnHosts.filter((item) => item !== hostname),
-                        })
-                      }
-                    >
-                      <Icon name="play" />
-                    </button>
-                  </div>
-                ))}
-              </details>
-            )}
-          </>
-        )}
-        {active === "learning" && (
-          <>
-            <div className="inline-capabilities">
-              {toggle("learn", "Learning mode", settings.learningEnabled, (value) =>
-                edit({ learningEnabled: value }),
-              )}
-              {toggle("hint", "Automatic hints", settings.proactiveEnabled, (value) =>
-                edit({ proactiveEnabled: value }),
-              )}
-            </div>
-            <LearningCollection enabled={settings.learningEnabled} />
-          </>
-        )}
-        {embedded && <div className="workspace-export"><button type="button" aria-label="Export workspace" title="Export notes, tasks, and history" onClick={() => exportWorkspace(workspace)}><Icon name="download" /></button></div>}
-      </div>
-    </section>
-  );
-}
-
-function LearningCollection({ enabled }: { enabled: boolean }) {
-  const [graph, setGraph] = useState<LearningGraph | null>(null);
-  const [selected, setSelected] = useState("");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    const controller = new AbortController();
-    void request<LearningGraph>({ type: "graph.get" }, controller.signal)
-      .then(setGraph)
-      .catch((e) => {
-        if (!controller.signal.aborted) setError(message(e));
-      });
-    return () => controller.abort();
-  }, [enabled]);
-  const nodes = graph ? Object.values(graph.nodes) : [];
-  const active = nodes.find((node) => node.id === selected);
-  const estimate = active ? learningEstimate(active) : null;
-  return (
-    <div className="inline-learning">
-      <Notice tone="error">{error}</Notice>
-      {nodes.length ? (
-        <>
-          <svg
-            className="inline-concept-graph"
-            viewBox="0 0 320 200"
-            role="group"
-            aria-label="Practiced concept graph"
-          >
-            {nodes.slice(0, 20).map((node, index, all) => {
-              const angle = (index / all.length) * Math.PI * 2 - Math.PI / 2;
-              const x = 160 + Math.cos(angle) * 112,
-                y = 100 + Math.sin(angle) * 72;
-              return (
-                <g
-                  key={node.id}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={node.label}
-                  onClick={() => setSelected(node.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setSelected(node.id);
-                    }
-                  }}
-                >
-                  <line x1="160" y1="100" x2={x} y2={y} stroke="#C9CEDB" />
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r={9 + Math.min(node.attempts, 8)}
-                    fill={node.id === selected ? "#FF5FD2" : "#00E5FF"}
-                    stroke="#1B1F3B"
-                    strokeWidth="2"
-                  />
-                  <title>{node.label}</title>
-                </g>
-              );
-            })}
-            <circle cx="160" cy="100" r="16" fill="#7B5CFF" />
-          </svg>
-          <select
-            aria-label="Concept"
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-          >
-            <option value="">Choose a concept</option>
-            {nodes.map((node) => (
-              <option key={node.id} value={node.id}>
-                {node.label}
-              </option>
-            ))}
-          </select>
-          {active && (
-            <div className="inline-learning-detail">
-              <strong>{active.label}</strong>
-              <div className="inline-learning-metrics">
-                <span title="Practice attempts" aria-label={`${active.attempts} practice attempts`}>
-                  <Icon name="task" />
-                  {active.attempts}
-                </span>
-                <span title="Accuracy" aria-label="Accuracy">
-                  <Icon name="check" />
-                  {estimate?.precision == null ? "—" : `${Math.round(estimate.precision * 100)}%`}
-                </span>
-                <span
-                  title="Successful recalls"
-                  aria-label={`${active.recalls} successful recalls`}
-                >
-                  <Icon name="rewind" />
-                  {active.recalls}
-                </span>
-                <span title="Estimated retention" aria-label="Estimated retention">
-                  <Icon name="learn" />
-                  {estimate?.retention == null ? "—" : `${Math.round(estimate.retention * 100)}%`}
-                </span>
-              </div>
-              <details>
-                <summary>
-                  <Icon name="notes" />
-                  Evidence
-                </summary>
-                <p>
-                  {active.correct} correct · {active.hints} hints · {active.explanations}{" "}
-                  explanations
-                </p>
-                <p>
-                  {active.exposures} page exposures · {relativeTime(active.lastSeen)}
-                </p>
-                {active.evidence.slice(-4).map((item, i) => (
-                  <p key={i}>{item}</p>
-                ))}
-              </details>
-            </div>
-          )}
-        </>
-      ) : (
-        <Empty title="No concepts yet">
-          {enabled ? "Practice on any webpage." : "Turn on learning to keep practice evidence."}
-        </Empty>
-      )}
-    </div>
-  );
+    const cancel = () => abort.current?.abort();
+    window.addEventListener("hypeman.cancel-tools", cancel);
+    void refresh(controller.signal).catch((cause) => { if (!controller.signal.aborted) setError(message(cause)); });
+    return () => { controller.abort(); cancel(); window.removeEventListener("hypeman.cancel-tools", cancel); };
+  }, []);
+  useToolHandler("learning", async (operation, args) => {
+    if (operation === "open") return "Ask for a practice plan, a hint, or feedback on your explanation.";
+    const controller = new AbortController(); abort.current?.abort(); abort.current = controller;
+    const signal = controller.signal;
+    try {
+      if (operation === "clear") { await request({ type: "learn.clear" }, signal); signal.throwIfAborted(); await refresh(signal); return "Practice history cleared."; }
+      if (!settings.learningEnabled) await patch({ learningEnabled: true });
+      signal.throwIfAborted();
+      const concept = String(args.concept || args.goal || workbench.selected?.title || "This topic");
+      if (operation === "plan") {
+        const result = await request<{ goal: string; steps: { title: string; concept: string }[] }>({ type: "api", path: "/api/learn/plan", body: { goal: concept } }, signal);
+        signal.throwIfAborted();
+        const plan: LearningPlan = { id: crypto.randomUUID(), goal: result.goal, steps: result.steps.map((step) => ({ ...step, done: false })), createdAt: Date.now() };
+        await request({ type: "learn.plan", plan }, signal); signal.throwIfAborted(); await refresh(signal); return plan.steps.map((step, index) => `${index + 1}. ${step.title}`).join("\n");
+      }
+      if (operation === "hint") { const reply = await request<{ text?: string }>({ type: "assistant.ask", message: `Give me one small hint about ${concept}, without solving it for me. ${workbench.selected?.text || ""}` }, signal); signal.throwIfAborted(); return reply.text || "Select the problem or describe what you are working on."; }
+      if (operation === "teach" || operation === "check") {
+        const explanation = String(args.explanation || args.text || workbench.selected?.text || "");
+        if (!explanation.trim()) throw new Error("Explain the idea in your own words first.");
+        const result = await request<{ status: "correct" | "needs-work" | "uncertain"; hint: string; evidence: string; provider: AgentReply["provider"] }>({ type: "api", path: "/api/learn/teachback", body: { concept, explanation } }, signal);
+        signal.throwIfAborted();
+        if (!["correct", "needs-work", "uncertain"].includes(result.status) || typeof result.hint !== "string" || typeof result.evidence !== "string") throw new Error("The explanation assessment returned invalid data.");
+        const grounded = result.provider === "openai" && result.status !== "uncertain" && !!result.evidence && explanation.includes(result.evidence);
+        if (grounded) await request({ type: "learn.event", event: { id: crypto.randomUUID(), concept, kind: "explanation", correct: result.status === "correct", evidence: result.evidence, at: Date.now() } }, signal);
+        signal.throwIfAborted(); await refresh(signal); return `${result.provider === "demo" ? "Demonstration feedback:" : !grounded ? "I need more detail." : result.status === "correct" ? "Your explanation is supported." : "One thing to revisit:"} ${result.hint}`;
+      }
+      throw new Error("That learning action is unavailable.");
+    } finally { if (abort.current === controller) abort.current = null; }
+  });
+  const run = async (operation: string, args: Record<string, unknown> = {}) => {
+    setBusy(true); setError("");
+    try { await workbench.executeTool("learning", operation, args); return true; }
+    catch (cause) { setError(message(cause)); return false; } finally { setBusy(false); }
+  };
+  const send = (text: string) => void workbench.send(text).catch((cause) => setError(message(cause)));
+  return <div className="inline-learning"><Notice tone="error">{error}</Notice>
+    <div className="tool-tabs" role="tablist" aria-label="Practice views"><button type="button" role="tab" aria-selected={tab === "plan"} onClick={() => setTab("plan")}>Plan</button><button type="button" role="tab" aria-selected={tab === "review"} onClick={() => setTab("review")}>Review</button></div>
+    {tab === "plan" ? <><form className="tool-form tool-toolbar" onSubmit={(event) => { event.preventDefault(); if (goal.trim()) void run("plan", { goal: goal.trim() }).then((saved) => { if (saved) setGoal(""); }); }}><input aria-label="Practice goal" placeholder="Learn about…" value={goal} onChange={(event) => setGoal(event.target.value)} /><button className="button primary" type="submit" disabled={busy || !goal.trim()}>Plan</button></form><div className="tool-content">{graph?.plans.length ? graph.plans.map((plan) => <article key={plan.id}><h3>{plan.goal}</h3><ol>{plan.steps.map((step, index) => <li key={index}>{step.done ? "✓ " : "○ "}{step.title}</li>)}</ol></article>) : <Empty title="No plans yet" />}</div></> : <div className="tool-content">{graph?.nodes.length ? graph.nodes.map((node) => { const estimate = learningEstimate(node); const select = () => workbench.selectContent({ kind: "concept", id: node.id, title: node.label, text: node.evidence.join("\n") }); return <article key={node.id} tabIndex={0} onFocus={select} onClick={select} data-selected={workbench.selected?.id === node.id}><div className="tool-actions"><h3>{node.label}</h3>{estimate.due && <span className="status-pill">Due</span>}</div><small>{estimate.evidenceCount} practices</small><details><summary>Evidence</summary>{node.evidence.map((evidence, index) => <p key={index}>{evidence}</p>)}</details></article>; }) : <Empty title="No practice yet" />}</div>}
+    <div className="tool-toolbar"><ToolButton icon="hint" label="Get a hint" onClick={() => send("Give me a hint")} /><button className="button" type="button" onClick={() => setChecking(!checking)}>Check</button>{!!graph?.nodes.length && <ToolButton icon="trash" label="Clear practice history" disabled={busy} onClick={() => void run("clear")} />}</div>
+    {checking && <form className="tool-form" onSubmit={(event) => { event.preventDefault(); if (explanation.trim()) { send(`Check my explanation: ${explanation.trim()}`); setChecking(false); setExplanation(""); } }}><textarea aria-label="Your explanation" placeholder="Explain it in your words…" rows={3} value={explanation} onChange={(event) => setExplanation(event.target.value)} autoFocus /><button className="button primary" type="submit" disabled={!explanation.trim()}>Check</button></form>}
+  </div>;
 }

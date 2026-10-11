@@ -1,71 +1,66 @@
-# Demo walkthrough
+# Development fixtures and verification
 
-Start with [README setup](../README.md) and `npm run demo`. The extension connects automatically. Every listing, attendee, registration, and scripted provider response below is demonstration data. There are no real charges or bookings.
+Everyday use starts with the little HypeMan avatar on an ordinary webpage; a new tab is a quiet rooftop. Follow [README setup](../README.md) for that flow. The local gateway root is an inert connection-status page.
 
-## Flagship: beginner workshop under $75
+This document describes development checks. `npm run demo` starts a deterministic fixture gateway, and the explicit `/demo/*` pages are inputs for isolated automated browser tests. They are not a playground, homepage, or feature menu. Listings, registrations, and provider responses are fictional; there are no real charges or bookings.
 
-1. Open the rooftop New Tab page. Enter:
+## Conversation and content
 
-   > Find a beginner workshop under $75, compare two options, prepare registration, and request confirmation before submission. Wait for me between milestones.
+On the webpage you are working with, activate the little avatar or Chrome toolbar to open the compact pixel conversation. The new-tab rooftop starts without a composer or tool tray. Enter sends; Shift+Enter adds a line. Ask to open tools; highlight, draw, edit, select, or drop content directly. Tools float independently over the page and keep chat in place. Drag a title bar, resize any edge or corner, or use the minimize/maximize controls. Open notes and the whiteboard together, then close either without losing its work or pausing a project. Escape stops an active request, then dismisses the focused tool before chat.
 
-2. Include `http://127.0.0.1:8787/demo/workshops/` in that same prompt, then press Enter or the arrow icon. Pasted links need no separate field.
-3. HypeMan saves a three-step project: compare the options, prepare registration, then review and confirm it. It shows the first milestone and waits for you. A simple question or one-off action does not create a project.
-4. Send “Help me compare the two workshop options.” HypeMan reads and saves the comparison: Pottery Basics is $60 and Printmaking for Everyone is $70. The visible comparison completes the first milestone; the next step appears in chat.
-5. Send “Help me prepare the Pottery Basics registration.” HypeMan opens the chosen workshop, saves its source, and fills fictional attendee **Alex Morgan**, **alex@example.com**. It stops for review. The prepared fields complete the second milestone without submitting the form.
-6. Send “Submit the prepared registration after asking for confirmation.” At **Submit registration**, the companion opens a confirmation dialog. The page remains unsubmitted. Choose **Cancel action** to demonstrate that nothing is sent.
-7. Send “Prepare registration and request confirmation before submitting.” Review the new dialog, then choose **Yes, continue**. **Registration confirmed** on the page completes the final milestone. A successful click or a final assistant reply alone cannot complete the project.
-8. Open the checklist icon and the bookmark icon for projects and notes. Expand **Completed actions** inside the project tools. Inspect the three milestone quotes and source excerpts. Edit a note and use **Export workspace** to download local JSON.
+1. Ask **open whiteboard**, then **draw a diagram explaining how to balance an equation**. Assistant content and your ink share the same scene. Double-click equations to edit their source, drag objects, use Ctrl/Cmd+Z and Shift+Ctrl/Cmd+Z, or ask **undo**. Ask **export this board** for a combined PNG.
+2. Drop a PDF onto chat, or activate its contextual file picker. Highlight a passage and ask about it. Ask **show page 2**, **summarize this PDF**, or **inspect scanned page 3**. Follow a citation to its saved page. Ask for a whiteboard explanation of the passage. Original files up to 25 MiB stay in extension-owned storage; password entry stays local. Ask **export this PDF** to download the original.
+3. Say **save this** after selecting content, or **remember: a useful explanation**. Say **open notes** or **find my notes about equations**. Edit text directly; edits autosave. Select a note and ask to delete it, then say **undo**.
+4. Ask **show saved work** to reopen a conversation and its artifacts. **New chat** starts another conversation. **Export workspace** downloads saved conversations, artifacts, notes, projects, and PDF metadata as JSON; original PDFs export separately.
+5. Ask **preferences**, change values directly, or say **reduce motion**. Contextual browser permission controls appear only when needed. Ask **sign in**, **use model …**, **switch to account …**, or **reconnect** for connection recovery.
 
-This walkthrough explicitly waits between milestones. Omit that instruction to start browser work after planning and continue automatically after verified progress. You can also do a milestone yourself: HypeMan checks visible page progress and advances only the current step. If completion is not visible, say **done step 1** (using the current number) or use the check icon to confirm it. On another website, open the checklist icon and choose **Continue project here** to move observation there without replaying actions.
+## Browser fixture: beginner workshop under $75
 
-For persistence, start a new project with multiple concrete steps, pause it, then close and reopen Chrome with the same profile. The rooftop shows **Continue project**; work resumes after choosing it. Only one project runs at a time.
+1. The browser test explicitly visits the workshop fixture, opens the avatar conversation, and sends:
 
-## Separate demonstrations
+   > At http://127.0.0.1:8787/demo/workshops/ find a beginner workshop under $75, compare two options, prepare registration, and request confirmation before submission. Wait for me between milestones.
 
-| Demonstration    | Steps                                                                                                                                                                                  | Expected result                                                                                                                                |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Site pause       | Open the extension popup on a demo page and choose **Pause HypeMan on this site**. Attempt a page request and reload.                                                                  | No page analysis or action is sent. Re-enable the hostname to continue.                                                                        |
-| Learning         | Enable **Learning mode** from the companion’s More → Preferences. Visit `/demo/learning/`. Ask for a learning plan, a small hint, and an analogous sketch. Enter an answer and check it on the page.              | Optional plan, hint, sketch, and actual page-feedback evidence, separate from task notes.                                                      |
-| Teach-back       | In Learning mode, send “I learned that applying the same operation to both sides preserves equality.” Review the card and request a check.                                             | Explanation recorded. Demo feedback is labeled and does not establish assessed mastery.                                                        |
-| Video            | Visit `/demo/video/`; ask “Pause video,” “Rewind 5 seconds,” or “Summarize the captions.” Or open the Video overlay, load VTT/SRT or paste a transcript, and choose **Find the thread**. | Native controls and caption-backed notes/chapters. Demo analysis is labeled.                                                                   |
-| Missing captions | In live mode without a transcript service, visit `/demo/video/uncaptioned.html` and request a summary.                                                                                 | Captions unavailable; controls still work. Demo mode may intentionally return a labeled fixture.                                               |
-| Drawing          | Open **Whiteboard** over any webpage. Draw, Undo/Redo, open the sparkle coaching control, then save PNG.                                                                                                      | Local drawing works. Demo coaching clearly says demonstration feedback.                                                                        |
-| Notebook         | Open **More → Paper camera**. Choose a photo, or Start camera and take a photo. Choose **Read handwriting**.                                                                    | Demo transcription is scripted. Stop, switching away, or closing stops the camera.                                                             |
-| Customization    | Upload a simple PNG/JPEG/WebP in **Customize companion**. Adjust cutout/colors/size, name it, and choose **Save & use companion**. Reload.                                             | Character remains selected in the saved shelf. Provider palette suggestions are optional.                                                      |
-| Accessibility    | Tab through controls, use Enter/Space, and set Motion to **Reduce motion**.                                                                                                            | Visible focus and immediate motion updates. Alt+Shift+P toggles the panel.                                                                     |
-| Optional context | Enable screenshots or other-tab context in Settings. Choose **More → Capture this page**, then explicitly attach it to the next message. Ask “Show open tabs.”           | Capture previews stay local until attached; an attachment is sent once. Tab context contains titles/links, without page bodies or URL queries. |
+2. HypeMan saves three meaningful milestones and opens the relevant browser page. A simple question or one-off action does not create a project.
+3. Send **Help me compare the two workshop options.** HypeMan saves source findings: Pottery Basics is $60 and Printmaking for Everyone is $70. Visible comparison evidence completes the first milestone.
+4. Send **Help me prepare the Pottery Basics registration.** HypeMan saves its source and fills fictional attendee Alex Morgan, alex@example.com. It stops for review; nothing is submitted.
+5. Send **Submit the prepared registration after asking for confirmation.** Choose **Cancel action** to show that nothing is sent. Ask again and choose **Yes, continue**. Only visible confirmation completes the final milestone.
+6. Ask **show projects**, **open notes**, and **show action history**. Select content to inspect or discuss it; note source links remain directly usable. Ask **export workspace** to download saved records.
 
-Prefix relative demo URLs with `http://127.0.0.1:8787`. Chrome can reassign shortcuts; configure them at `chrome://extensions/shortcuts`.
+Omit the wait instruction to continue browser work automatically after planning and verified progress. You can complete a milestone yourself; HypeMan verifies the current visible outcome. If verification is unavailable, explicitly confirm the current step. To continue on another website, ask **show projects**, select the project, then **continue this project here**. After restart, projects remain paused until explicitly continued.
 
-The pixel companion opens a compact icon dock. Hover an icon for its label, or use keyboard focus. The bookmark opens notes; the plus opens additional tools. Video controls appear directly when a video is on the page. The rooftop prompt defaults to **Ask HypeMan**; use its chat or search icon for **Quick answer** or web search. Project progress is available from the checklist icon. The arrow sends a message; while working it becomes Stop. There are no speech controls.
+## Other fixture coverage
 
-## Live ChatGPT connection
+| Demonstration | Conversation and content interaction | Expected result |
+| --- | --- | --- |
+| Site pause | On a webpage, say **pause HypeMan on this site**. On another webpage say **resume HypeMan on example.com**. | Observation and browser actions stop for paused hosts. Local PDFs remain usable. |
+| Learning | Say **enable learning mode**, visit `/demo/learning/`, and ask for a plan, hint, or teach-back check. | Graduated help and evidence from actual practice. Demo feedback does not establish mastery. |
+| Video | Visit `/demo/video/`; say **pause video**, **rewind 5 seconds**, or **summarize this video**. Click chapters/transcript passages to seek. Drop VTT/SRT or edit supplied captions directly. | Original playback, caption analysis, timestamped notes, and native media controls. Hidden local players pause. |
+| Missing captions | Visit `/demo/video/uncaptioned.html` and ask for a summary in live mode without a transcript service. | Caption availability is explicit; unheard narration is never quoted. |
+| Images | Paste/drop an image; on a webpage ask **capture a screen region**, grant access if required, then drag over the region. | An explicit image preview is used with the next question. Screenshots remain transient. |
+| Phone | Say **pair my phone +14155551234**, complete the phone reply, then select a note and **text this to me**. Ask **open phone inbox**, select a capture, and **continue this capture in Chrome**. | Pairing, status, check-ins, reminders, inbox and unpairing remain available. Incoming texts never launch browser work. |
+| Recovery | Stop an active request, close a tool, disconnect the gateway, or sign out. | Cancelled responses cannot reopen content; failed drafts remain editable. Local commands and saved work remain available. |
 
-Set `DEMO_MODE=0`, run `npm start`, and choose **Continue with ChatGPT** in regular Google Chrome. HypeMan connects to the local server automatically. Approve ChatGPT plan usage in the browser. The setup page shows **ChatGPT connected** and reveals **Let’s go**. On a benign workshop page, ask “Summarize this page” and “Highlight Compare workshops.” Verify source facts and targets. Stop cancels inference. Sign out and verify AI requests ask you to sign in again without trying a different provider.
+The test harness prefixes relative fixture URLs with its isolated local gateway address. A default local fixture server uses `http://127.0.0.1:8787`. Chrome shortcuts can be configured at `chrome://extensions/shortcuts`.
 
-Drawing and notebook images use this same ChatGPT connection. No local-model installation or provider API key is required. Image support depends on the selected account model; unsupported attachments produce an explicit error.
+## Live checks
 
-## Automated deterministic checks
+Set `DEMO_MODE=0`, run `npm start`, ask **sign in**, and use the contextual **Continue with ChatGPT** consent control in regular Chrome. Verify source facts, model/account switching, cancellation, and signed-out recovery. Test readable, blank, scanned, encrypted and ambiguous PDFs. Only requested scanned pages are sent as images, and inferred readings are identified. Drawing review asks evidence-linked questions rather than claiming a corrected solution.
+
+Live credentials, model recognition quality, and Photon delivery require separate account-dependent checks. The deterministic suites use isolated profiles and labeled fixtures; they never fall back from a failed live request to fabricated reasoning.
+
+## Automated checks
 
 ```sh
 npm run check
 npm run e2e:install
 npm run e2e:ui
+npm run e2e:pdf
 npm run e2e:hints
 npm run e2e:projects
 npm run e2e:execution
+npm run e2e:auth
+npm run e2e:messaging
 npm run e2e
 ```
 
-The focused `e2e:ui` suite checks the single input, icon keyboard controls, inline notes/tasks/settings, and interactive wallpaper. `e2e:hints` checks prepared hints and selection explanations. `e2e:projects` checks one-off chat, collaborative milestones, current-step confirmation, stale/cancelled assessments, website ownership, and restart recovery. `e2e:execution` verifies that one laptop request opens three source tabs, compares their observed facts, and continues configuration with the saved sources intact. The full browser suite starts its own demo gateway on a temporary port with an isolated Chrome profile. It verifies the collaborative workshop workflow, pending registration, confirmation, durable notes/completion, paused-page silence, specialist fixtures, and explicit restart continuation. Screenshots go to `tests/screenshots/`. No provider credentials are required.
-
-## Credential-dependent live checks
-
-These are separate from the deterministic suite. Set `DEMO_MODE=0`, restart with `npm start`, sign in with ChatGPT, and inspect onboarding connection status first.
-
-- **ChatGPT:** compare two benign real page sources. Check saved excerpts, stale-page handling, cancellation, and final confirmation. An unavailable model must produce a visible failure.
-- **ChatGPT vision:** test readable, blank, covered, and ambiguous writing in Drawing and Notebook. Uncertainty stays visible; previous writing cannot be invented as current content.
-- **Transcript service:** test a supported URL, an unavailable transcript, and native captions. Missing captions must never become a claimed live summary.
-- **Optional context/input:** enable the capability being tested, grant its Chrome permission if requested, then verify disabling it takes effect immediately.
-
-Live credentials and recognition quality are not tested by the no-key demo. Use benign test pages and sample personal data for exploratory runs.
+`e2e:ui` audits controls and exercises shared board equations/ink/export, PDF passages/citations, notes autosave, and conversation continuation. `e2e:pdf` checks exact local originals, encrypted-file recovery, worker compatibility, export and frame authorization. Other suites retain hint privacy, milestone evidence, browser ownership, consequential confirmations, source handoff, mocked OAuth/accounts/models, and phone delivery/continuation checks. Screenshots go to `tests/screenshots/`.

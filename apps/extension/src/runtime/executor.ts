@@ -13,6 +13,7 @@ export interface ExecuteContext {
   allowed: () => boolean;
   reducedMotion: boolean;
   trustedInput: boolean;
+  companionHost?: HTMLElement;
   handoff?: SessionHandoff;
   sketch: (action: Extract<Action, { type: "sketch" }>) => void;
   plan: (action: Extract<Action, { type: "plan" }>) => void;
@@ -135,7 +136,27 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
     check(signal);
     return observer.snapshot();
   };
+  const withoutCompanion = async <T>(dispatch: () => T | Promise<T>): Promise<T> => {
+    // Use the runtime's exact host reference. A webpage element with our ID
+    // must never be treated as extension UI or bypass the occlusion check.
+    const host = context.companionHost;
+    if (!host?.isConnected) return dispatch();
+    const previous = host.style.getPropertyValue("display");
+    const priority = host.style.getPropertyPriority("display");
+    host.style.setProperty("display", "none", "important");
+    try { return await dispatch(); }
+    finally {
+      if (previous) host.style.setProperty("display", previous, priority);
+      else host.style.removeProperty("display");
+    }
+  };
+  const covered = (target: Element, rect = target.getBoundingClientRect()) => {
+    const top = document.elementFromPoint?.(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return !!top && top !== target && !target.contains(top) && !top.contains(target);
+  };
   switch (action.type) {
+    case "tool":
+      return { ok: false, changed: false, message: "Tool operations must run through the conversation controller." };
     case "observe":
       return result(true, node ? (node.textContent ?? "").slice(0, 2500) : "Page observed");
     case "point":
@@ -144,13 +165,6 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
     case "click": {
       await ready();
       verify();
-      const rect = node!.getBoundingClientRect();
-      const top = document.elementFromPoint?.(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      if (top && top !== node && !node!.contains(top) && !top.contains(node!))
-        return result(false, "Another control covers the target. Close it first.");
-      await api.request({ type: "session.set", handoff: context.handoff ?? null }, signal);
-      verify();
-      let trusted = false;
       let clickEvent: MouseEvent | undefined;
       let link: HTMLAnchorElement | undefined;
       const capture = (event: Event) => {
@@ -160,31 +174,33 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
           .composedPath()
           .find((part): part is HTMLAnchorElement => part instanceof HTMLAnchorElement);
       };
-      node!.addEventListener("click", capture, true);
-      try {
-        if (action.trusted && context.trustedInput) {
-          const response = await api.request<{ ok: boolean }>(
-            {
-              type: "input",
-              ops: [
+      const activated = await withoutCompanion(async () => {
+        if (covered(node!)) return false;
+        await api.request({ type: "session.set", handoff: context.handoff ?? null }, signal);
+        verify();
+        const rect = node!.getBoundingClientRect();
+        if (covered(node!, rect)) return false;
+        let trusted = false;
+        node!.addEventListener("click", capture, true);
+        try {
+          if (action.trusted && context.trustedInput) {
+            const response = await api.request<{ ok: boolean }>(
                 {
-                  kind: "click",
-                  x: rect.x + rect.width / 2,
-                  y: rect.y + rect.height / 2,
-                  button: "left",
-                  count: 1,
+                  type: "input",
+                  ops: [{ kind: "click", x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, button: "left", count: 1 }],
                 },
-              ],
-            },
-            signal,
-          );
-          trusted = response.ok;
-          if (!trusted) verify();
+                signal,
+              );
+            trusted = response.ok;
+            if (!trusted) { verify(); if (covered(node!)) return false; }
+          }
+          if (!trusted) click(node!);
+        } finally {
+          node!.removeEventListener("click", capture, true);
         }
-        if (!trusted) click(node!);
-      } finally {
-        node!.removeEventListener("click", capture, true);
-      }
+        return true;
+      });
+      if (!activated) return result(false, "Another control covers the target. Close it first.");
       const pendingDestination = nativeLinkDestination(clickEvent, link, page.url);
       const after = await settle();
       const navigation = after.url !== page.url || !!pendingDestination;
@@ -297,6 +313,8 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       const target = node ?? document.activeElement;
       if (!target || privateField(target))
         return result(false, "Please operate the private field yourself.");
+      if (context.companionHost && (target === context.companionHost || target.getRootNode() === context.companionHost.shadowRoot))
+        return result(false, "Choose the page control before sending a keyboard action.");
       (target as HTMLElement).focus?.();
       const parts = action.key.split("+");
       const key = parts.pop()!;

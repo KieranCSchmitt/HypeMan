@@ -2,138 +2,145 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DEFAULT_SETTINGS, emptyWorkspace } from "@core";
+import { DEFAULT_SETTINGS } from "@core";
 import { NewTab } from "../apps/extension/src/ui/NewTab";
 import { request } from "../apps/extension/src/bridge";
-import { useReducedMotion, useSettings, useWorkspace } from "../apps/extension/src/ui/hooks";
-
-vi.mock("../apps/extension/src/bridge", () => ({
-  request: vi.fn(),
-  subscribe: vi.fn(() => () => {}),
-}));
-vi.mock("../apps/extension/src/ui/Rooftop", () => ({ Rooftop: () => null }));
-vi.mock("../apps/extension/src/ui/ToolOverlay", () => ({
-  ToolOverlay: ({ section, onClose }: { section: string | null; onClose: () => void }) => section
-    ? createElement("section", { "data-section": section }, createElement("button", { "aria-label": "Close tools", onClick: onClose })) : null,
-}));
-vi.mock("../apps/extension/src/ui/CompanionTools", () => ({
-  CompanionTools: ({ section, onClose }: { section: string; onClose: () => void }) =>
-    createElement("section", { "data-section": section },
-      createElement("button", { "aria-label": "Close tools", onClick: onClose })),
-}));
-vi.mock("../apps/extension/src/ui/hooks", () => ({
-  useSettings: vi.fn(),
-  useWorkspace: vi.fn(),
-  useReducedMotion: vi.fn(),
-  exportWorkspace: vi.fn(),
-  openPage: vi.fn(),
-  message: (error: unknown) => error instanceof Error ? error.message : String(error),
-}));
-
+vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn(), subscribe: () => () => {} }));
+vi.mock("../apps/extension/src/ui/Rooftop", () => ({ Rooftop: ({ onCompanion }: any) => createElement("button", { "aria-label": "Open HypeMan", onClick: onCompanion }) }));
+vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: () => createElement("span", null, "Avatar") }));
+vi.mock("../apps/extension/src/ui/ToolOverlay", () => ({ ToolOverlay: ({ section, onClose }: any) => section ? createElement("section", { "data-section": section }, createElement("button", { "aria-label": "Close tools", onClick: () => onClose(section) })) : null }));
+vi.mock("../apps/extension/src/ui/hooks", () => ({ useSettings: () => ({ settings: DEFAULT_SETTINGS, error: "", patch: vi.fn() }), useReducedMotion: () => true }));
 let root: Root, container: HTMLDivElement;
-const refresh = vi.fn();
+let decide: (message: any, signal?: AbortSignal) => Promise<any>;
+let saved: Array<any>;
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
-  vi.stubGlobal("chrome", { tabs: { create: vi.fn() } });
-  history.replaceState(null, "", "/");
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  refresh.mockReset().mockResolvedValue(undefined);
-  vi.mocked(useSettings).mockReturnValue({ settings: DEFAULT_SETTINGS, patch: vi.fn(), error: "" });
-  vi.mocked(useWorkspace).mockReturnValue({
-    workspace: emptyWorkspace(), refresh, loading: false, error: "",
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.stubGlobal("chrome", { tabs: {} });
+  history.replaceState(null, "", "/"); container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  saved = []; decide = async () => ({ action: { type: "say", text: "Fixture answer." }, done: true });
+  vi.mocked(request).mockReset().mockImplementation(async (message, signal) => {
+    if (message.type === "conversation.resolve") return { id: "fixture-conversation", messages: saved };
+    if (message.type === "conversation.append") { saved.push(message.message); return {}; }
+    if (message.type === "assistant.turn") return decide(message, signal);
+    return {};
   });
-  vi.mocked(useReducedMotion).mockReturnValue(true);
-  vi.mocked(request).mockReset().mockResolvedValue({ text: "Fixture answer." });
 });
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-async function render() {
-  await act(async () => root.render(createElement(NewTab)));
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
+async function render(open = true, initialTool?: string) {
+  await act(async () => root.render(createElement(NewTab, { initialTool })));
+  if (open && !container.querySelector("textarea")) await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
 }
-function button(label: string) {
-  const found = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
-  expect(found, `Missing icon button: ${label}`).not.toBeNull();
-  return found!;
-}
-async function fill(value: string) {
-  await act(async () => {
-    const field = container.querySelector<HTMLInputElement>("#task-goal")!;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(field, value);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
+async function fill(value: string) { await act(async () => { const field = container.querySelector("textarea")!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value); field.dispatchEvent(new Event("input", { bubbles: true })); }); }
+async function submit() { await act(async () => { container.querySelector("form.conversation-composer")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); }); }
+describe("shared conversation", () => {
+  it("starts as a quiet rooftop and opens the conversation only from the avatar", async () => {
+    await render(false);
+    expect(container.querySelector(".conversation-workbench")).toBeNull();
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.resolve" }));
+    expect([...container.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"))).toEqual(["Open HypeMan", "Open HypeMan chat"]);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector("main")!.hidden).toBe(false);
   });
-}
-async function submit() {
-  await act(async () => container.querySelector("form")!
-    .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-}
-
-describe("single-field companion new tab", () => {
-  it("starts with one text field and named icons instead of dashboard links", async () => {
-    await render();
-    expect(container.querySelectorAll("input,textarea")).toHaveLength(1);
-    expect(container.querySelector('input[type="url"]')).toBeNull();
+  it("provides regular web search without sending the query to HypeMan", async () => {
+    await render(false);
+    const search = container.querySelector<HTMLFormElement>('form[role="search"]')!;
+    expect(search.action).toBe("https://www.google.com/search"); expect(search.method).toBe("get");
+    const field = search.querySelector<HTMLInputElement>('input[type="search"]')!;
+    field.value = "space telescope";
+    expect(new FormData(search).get("q")).toBe("space telescope");
+    expect(container.querySelector("textarea")).toBeNull(); expect(request).not.toHaveBeenCalled();
+  });
+  it("opens and closes the same conversation from its bottom-right avatar", async () => {
+    await render(false);
+    const avatar = container.querySelector<HTMLButtonElement>(".newtab-avatar-icon")!;
+    const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+    search.value = "space telescope";
+    const expectSearchPreserved = () => {
+      expect(container.querySelector('input[type="search"]')).toBe(search);
+      expect(search.closest("[hidden]")).toBeNull();
+      expect(new FormData(search.form!).get("q")).toBe("space telescope");
+    };
+    await act(async () => avatar.click());
+    const composer = container.querySelector("textarea"); expect(composer).not.toBeNull();
+    expect(avatar.getAttribute("aria-expanded")).toBe("true");
+    expectSearchPreserved();
+    await act(async () => avatar.click()); expect(container.querySelector("main")!.hidden).toBe(true);
+    expectSearchPreserved();
+    await act(async () => avatar.click()); expect(container.querySelector("textarea")).toBe(composer);
+    expectSearchPreserved();
+  });
+  it("opens explicit chat continuations without requiring another avatar click", async () => {
+    history.replaceState(null, "", "/#chat");
+    await render(false);
+    expect(container.querySelector("textarea")).not.toBeNull();
+    expect(container.querySelector("main")!.hidden).toBe(false);
+    const search = container.querySelector('input[type="search"]');
+    expect(search).not.toBeNull(); expect(search!.closest("[hidden]")).toBeNull();
+  });
+  it("keeps dedicated tool pages without web search", async () => {
+    await render(false, "board");
+    expect(container.querySelector('form[role="search"]')).toBeNull();
+    expect(container.querySelector('[data-section="board"]')).not.toBeNull();
+    expect(container.querySelector("main")!.hidden).toBe(false);
+  });
+  it("has one composer, contextual file input, and no persistent feature launchers or modes", async () => {
+    await render(); expect(container.querySelectorAll("textarea")).toHaveLength(1);
+    expect(container.querySelector('input[type="file"]')).not.toBeNull();
+    expect([...container.querySelectorAll("button")].map((b) => b.getAttribute("aria-label")).sort()).toEqual(["Attach a file", "Close HypeMan chat", "Close HypeMan window", "Maximize HypeMan window", "Minimize HypeMan window", "Open HypeMan", "Send message"]);
+    expect(container.querySelector(".conversation-context")).toBeNull();
+    expect(container.querySelector(".conversation-welcome")).toBeNull();
     expect(container.querySelector('a[href*="control.html"]')).toBeNull();
-    expect(container.querySelector('a[href*="onboarding.html"]')).toBeNull();
-    for (const name of ["Projects", "Saved notes", "Whiteboard", "More tools"])
-      expect(button(name).textContent).toBe("");
-    expect(button("Ask HypeMan").disabled).toBe(true);
   });
-
-  it("dispatches an ordinary conversation from a link without creating a project", async () => {
-    await render();
-    const goal = "Read https://example.com/help, and save the important facts.";
-    await fill(`  ${goal}  `);
-    await submit();
-    expect(request).toHaveBeenCalledWith({
-      type: "assistant.run", goal, url: "https://example.com/help",
-    }, expect.any(AbortSignal));
-    expect(refresh).toHaveBeenCalledOnce();
-    expect(container.querySelector<HTMLInputElement>("#task-goal")!.value).toBe("");
+  it("decides ordinary questions before any navigation and persists the answer", async () => {
+    await render(); await fill("What is inertia?"); await submit();
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.turn", conversationId: "fixture-conversation", message: "What is inertia?" }), expect.any(AbortSignal));
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.run" }));
+    expect(container.textContent).toContain("Fixture answer."); expect(saved.map((m) => m.role)).toEqual(["user", "assistant"]);
   });
-
-  it("routes a question through the same field without starting a browser task", async () => {
-    await render();
-    await act(async () => button("Quick answer mode").click());
-    await fill("What can you help with?");
-    await submit();
-    expect(request).toHaveBeenCalledWith({
-      type: "assistant.ask", message: "What can you help with?",
-    }, expect.any(AbortSignal));
-    expect(vi.mocked(request).mock.calls.some(([message]) => message.type === "task.start")).toBe(false);
-    expect(container.querySelector(".answer")?.textContent).toBe("Fixture answer.");
+  it("opens tools through chat locally and keeps the same composer on close", async () => {
+    await render(); await fill("open whiteboard"); await submit(); expect(container.querySelector('[data-section="board"]')).not.toBeNull();
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.turn" }), expect.anything());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Close tools"]')!.click());
+    expect(container.querySelector("[data-section]")).toBeNull(); expect(document.activeElement).toBe(container.querySelector("textarea"));
   });
-
-  it("opens collections inline and returns focus to the same composer when closed", async () => {
-    await render();
-    for (const [name, section] of [["Projects", "tasks"], ["Saved notes", "notes"], ["Whiteboard", "board"]]) {
-      await act(async () => button(name!).click());
-      expect(container.querySelector(`[data-section="${section}"]`)).not.toBeNull();
-      expect(location.hash).toBe(`#${section}`);
-      await act(async () => button("Close tools").click());
-      expect(container.querySelector("[data-section]")).toBeNull();
-      expect(document.activeElement).toBe(container.querySelector("#task-goal"));
-    }
-    expect(chrome.tabs.create).not.toHaveBeenCalled();
+  it("dispatches only a decided browser action with the conversation ID", async () => {
+    decide = async () => ({ action: { type: "navigate", url: "https://example.com/help" } });
+    await render(); await fill("Read https://example.com/help"); await submit();
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.run", conversationId: "fixture-conversation", url: "https://example.com/help" }));
   });
-
-  it("cancels an outstanding question and ignores its late response", async () => {
-    let finish!: (reply: unknown) => void;
-    vi.mocked(request).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-    await render();
-    await act(async () => button("Quick answer mode").click());
-    await fill("A slow question");
-    await submit();
-    const signal = vi.mocked(request).mock.calls[0]![1]!;
-    await act(async () => button("Cancel request").click());
+  it("dispatches the latest submitted goal after an earlier question", async () => {
+    await render(); await fill("What can you do?"); await submit();
+    decide = async () => ({ action: { type: "plan", goal: "Compare then prepare", steps: ["Compare two sources", "Prepare the chosen option"] } });
+    await fill("Compare two sources then prepare the chosen option"); await submit();
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.run", goal: "Compare two sources then prepare the chosen option" }));
+  });
+  it("cancels a request, preserves its draft, and ignores a late answer", async () => {
+    let finish!: (value: any) => void; let signal!: AbortSignal;
+    decide = async (_message, requestSignal) => { signal = requestSignal!; return new Promise((resolve) => { finish = resolve; }); };
+    await render(); await fill("A slow question"); await submit();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click()); expect(signal.aborted).toBe(true);
+    await act(async () => finish({ action: { type: "say", text: "Late answer" } }));
+    expect(container.textContent).not.toContain("Late answer"); expect(container.querySelector("textarea")!.value).toBe("A slow question");
+  });
+  it("keeps a failed submission editable for retry", async () => {
+    decide = async () => { throw new Error("Reconnect the local server."); };
+    await render(); await fill("Please help"); await submit();
+    expect(container.textContent).toContain("Reconnect the local server."); expect(container.querySelector("textarea")!.value).toBe("Please help");
+  });
+  it("cancels when the mascot closes chat and does not reopen a tool from a late answer", async () => {
+    let finish!: (value: any) => void; let signal!: AbortSignal;
+    decide = async (_message, requestSignal) => { signal = requestSignal!; return new Promise((resolve) => { finish = resolve; }); };
+    await render(); await fill("Explain this with a diagram"); await submit();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
     expect(signal.aborted).toBe(true);
-    await act(async () => finish({ text: "Late answer should stay hidden." }));
-    expect(container.querySelector(".answer")).toBeNull();
-    expect(button("Quick answer").disabled).toBe(false);
+    expect(container.querySelector("main")!.hidden).toBe(true);
+    await act(async () => finish({ action: { type: "tool", tool: "board", operation: "open" } }));
+    expect(container.querySelector("[data-section]")).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open HypeMan"]')!.click());
+    expect(container.querySelector("textarea")!.value).toBe("Explain this with a diagram");
+  });
+  it("saves conversational notes without inventing a webpage URL", async () => {
+    await render(); await fill("remember: Newton's first law"); await submit();
+    expect(request).toHaveBeenCalledWith({ type: "note.save", note: expect.objectContaining({ text: "Newton's first law", url: "", origin: { kind: "conversation", conversationId: "fixture-conversation" } }) });
   });
 });

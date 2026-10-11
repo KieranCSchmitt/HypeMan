@@ -54,6 +54,16 @@ const post = (url: string, path: string, input: unknown, extra: Record<string, s
   });
 
 describe("local gateway boundary", () => {
+  it("keeps the server address out of the product navigation", async () => {
+    const { url } = await start();
+    const root = await fetch(url + "/", { redirect: "manual" });
+    expect(root.status).toBe(200); expect(root.headers.get("location")).toBeNull();
+    const html = await root.text();
+    expect(html).toContain("little HypeMan avatar");
+    expect(html).not.toMatch(/<(?:button|input|textarea|script|a)\b/i);
+    const menu = await (await fetch(url + "/demo/")).text();
+    expect(menu).not.toMatch(/<(?:button|input|textarea|script|a)\b/i);
+  });
   it("pins the gateway connection origin to the manifest's stable public identity", () => {
     expect(manifest.key).toBe(HYPEMAN_EXTENSION_KEY);
     const digest = createHash("sha256")
@@ -145,7 +155,7 @@ describe("local gateway boundary", () => {
     const fetcher = vi.fn() as unknown as typeof fetch;
     const { url } = await start({ fetcher }, false);
     const health = await (await fetch(url + "/health")).json();
-    for (const name of ["agent", "character", "ink", "notebook", "learning"])
+    for (const name of ["agent", "ink", "learning"])
       expect(health.capabilities[name]).toMatchObject({ available: false, mode: "unavailable" });
     for (const [path, input] of [
       ["/api/agent", agentInput()],
@@ -157,7 +167,6 @@ describe("local gateway boundary", () => {
       expect(await result.json()).toMatchObject({ code: "chatgpt_auth_required" });
     }
     expect(fetcher).not.toHaveBeenCalled();
-    expect((await fetch(url + "/ws/tts")).status).toBe(404);
   });
   it("binds loopback, exposes honest nonsecret health, and requires pairing", async () => {
     const { gateway, url } = await start({}, false);
@@ -168,7 +177,7 @@ describe("local gateway boundary", () => {
       demoMode: false,
       capabilities: {
         agent: { available: false, mode: "unavailable" },
-        notebook: { available: false },
+        ink: { available: false },
       },
     });
     expect(JSON.stringify(health)).not.toContain(token);
@@ -220,13 +229,11 @@ describe("local gateway boundary", () => {
     expect(broken.status).toBe(400);
     expect(agent).not.toHaveBeenCalled();
   });
-  it("never substitutes scripted ink, notebook, character, or agent output in live mode", async () => {
+  it("never substitutes scripted ink or agent output in live mode", async () => {
     const { url } = await start({}, false);
     const image = "data:image/png;base64,YQ==";
     for (const [path, input] of [
       ["/api/ink", { image }],
-      ["/api/notebook", { image }],
-      ["/api/character", { image }],
       ["/api/agent", agentInput()],
     ] as const) {
       const response = await post(url, path, input);
@@ -242,8 +249,6 @@ describe("local gateway boundary", () => {
     const image = "data:image/png;base64,YQ==";
     for (const [path, input] of [
       ["/api/ink", { image }],
-      ["/api/notebook", { image }],
-      ["/api/character", { image }],
       [
         "/api/video",
         {
@@ -274,9 +279,16 @@ describe("local gateway boundary", () => {
     });
     expect(fetcher).not.toHaveBeenCalled();
   });
-  it("serves fresh notebook and supports byte ranges for native media seeking", async () => {
+  it("returns not found for unregistered page and API paths", async () => {
     const { url } = await start();
-    const response = await fetch(url + "/notebook.html", { headers: { range: "bytes=0-20" } });
+    expect((await fetch(url + "/missing-page")).status).toBe(404);
+    const response = await post(url, "/api/missing", {});
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: "Unknown API route." });
+  });
+  it("supports byte ranges for native media seeking", async () => {
+    const { url } = await start();
+    const response = await fetch(url + "/demo/media/lesson.webm", { headers: { range: "bytes=0-20" } });
     expect(response.status).toBe(206);
     expect((await response.arrayBuffer()).byteLength).toBe(21);
     const font = await fetch(url + "/fonts/PressStart2P.ttf");

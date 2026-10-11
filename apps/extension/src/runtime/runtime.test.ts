@@ -103,7 +103,7 @@ describe("automatic learning hints", () => {
     await vi.advanceTimersByTimeAsync(300);
     document.querySelector("h1")!.className = "animated";
     controller.getSnapshot();
-    await vi.advanceTimersByTimeAsync(46_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(inference(request)).toHaveLength(1);
     const answer = document.querySelector("input")!;
     answer.value = "6";
@@ -119,8 +119,24 @@ describe("automatic learning hints", () => {
     document.getElementById("feedback")!.textContent = "Try Again";
     await vi.advanceTimersByTimeAsync(300);
     expect(inference(request)).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(45_000);
+    await vi.advanceTimersByTimeAsync(12_000);
     expect(inference(request)).toHaveLength(3);
+  });
+  it("gives a longer hint time to be read before responding to another failed attempt", async () => {
+    const { request } = await setup(async () => ({
+      action: { type: "say", text: "Think about the relationship between the visible numbers. ".repeat(20) },
+      provider: "demo",
+    }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(inference(request)).toHaveLength(1);
+    const answer = document.querySelector("input")!;
+    answer.value = "6";
+    answer.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector("button")!.click();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(inference(request)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(inference(request)).toHaveLength(2);
   });
   it.each(["learning off", "automatic hints off", "paused site", "hidden page", "unfocused window"])(
     "does not send page analysis when %s", async (condition) => {
@@ -367,11 +383,11 @@ describe("automatic learning hints", () => {
   });
   it("reports unavailable inference without inventing a replacement hint", async () => {
     const { controller } = await setup(async () => {
-      throw new Error("Local model is offline");
+      throw new Error("ChatGPT is disconnected");
     });
     await vi.advanceTimersByTimeAsync(300);
     expect(controller.getSnapshot().learning.autoHint).toBeNull();
-    expect(controller.getSnapshot().messages.at(-1)?.text).toBe("Hints unavailable: Local model is offline");
+    expect(controller.getSnapshot().messages.at(-1)?.text).toBe("Hints unavailable: ChatGPT is disconnected");
     expect(controller.getSnapshot().messages.some((message) => message.role === "assistant")).toBe(false);
   });
 });
@@ -699,6 +715,18 @@ describe("media intentions", () => {
   });
 });
 describe("task runtime", () => {
+  it("adopts an existing-tab conversation handoff without pausing its newly owned project", async () => {
+    const b = bridge(async () => ({ action: { type: "say", text: "Continued in this tab." }, done: true, provider: "demo" }));
+    const controller = createCompanion(host(), b.api);
+    await controller.start(); controller.setConversationId?.("previous-chat");
+    b.emit({ type: "task.run", taskId: task.id, goal: task.goal, handoff: { conversationId: "handoff-chat", taskId: task.id, goal: task.goal, history: [], step: 0, at: Date.now() } });
+    await vi.waitFor(() => expect(b.request.mock.calls.some(([message]) => message.type === "agent.decide")).toBe(true));
+    expect(b.request.mock.calls.some(([message]) => message.type === "task.pause")).toBe(false);
+    expect(controller.getSnapshot().conversationId).toBe("handoff-chat");
+    const decision = b.request.mock.calls.find(([message]) => message.type === "agent.decide")![0];
+    expect((decision.input as AgentRequest).conversationId).toBe("handoff-chat");
+    controller.dispose();
+  });
   it("captures source excerpts from the page rather than fabricated model quotes or personal thoughts", async () => {
     document.body.innerHTML =
       "<h1>Pottery Basics</h1><p>Beginner workshop. Materials included. $60 total.</p>";

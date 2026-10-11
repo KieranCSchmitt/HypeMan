@@ -8,15 +8,16 @@ async function until(read, description, timeout = 20000) {
   }
   throw new Error(`Specialist check timed out: ${description}`);
 }
-const pet = (page, name) =>
-  page.getByRole("button", { name: `Open ${name}. Drag to move.`, exact: true });
+const pet = (page) =>
+  page.getByRole("button", { name: "Open HypeMan. Drag to move.", exact: true });
 
-async function openTool(page, name) {
-  const button = page.getByRole("button", { name, exact: true });
-  if (!(await button.isVisible()))
-    await page.getByRole("button", { name: "More tools", exact: true }).click();
-  await button.click();
+async function chat(page, text) {
+  await page.getByRole("textbox", { name: "What do you need?", exact: true }).fill(text);
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await until(async () => await page.getByRole("textbox", { name: "What do you need?", exact: true }).inputValue() === "", `conversation finishes: ${text}`);
+  assert.equal(await page.locator(".conversation-pane .notice.error:visible").count(), 0);
 }
+async function openTool(page, name) { await chat(page, `open ${name}`); }
 
 /** Exercise specialist integrations in an actual extension, without paid services. */
 export async function runSpecialists({ ctx, home, rpc, base, extensionId, check }) {
@@ -30,22 +31,21 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
       const v = document.querySelector("video");
       return v?.readyState >= 1 && Array.from(v.textTracks).some((track) => track.cues?.length > 0);
     });
-    await pet(video, original.characterName).press("Enter");
-    await video.locator(".companion-panel").waitFor();
-    assert.equal(await video.getByRole("button", { name: /microphone|speech|voice/i }).count(), 0);
+    await pet(video).press("Enter");
+    await video.locator(".conversation-pane").waitFor();
     assert.equal(await video.getByRole("button", { name: "Video", exact: true }).count(), 0);
-    assert.ok(await video.getByRole("button", { name: "More tools", exact: true }).isVisible());
+    assert.equal(await video.getByRole("button", { name: "More tools", exact: true }).count(), 0);
 
     const closePet = video.getByRole("button", {
-      name: `Close ${original.characterName}. Drag to move.`,
+      name: "Close HypeMan. Drag to move.",
       exact: true,
     });
     await closePet.press("Space");
-    await video.locator(".companion-panel").waitFor({ state: "detached" });
-    await pet(video, original.characterName).press("Enter");
+    await video.locator(".conversation-pane").waitFor({ state: "hidden" });
+    await pet(video).press("Enter");
     await rpc(home, {
       type: "settings.patch",
-      patch: { character: "hypeman", reducedMotion: "auto" },
+      patch: { reducedMotion: "auto" },
     });
     await video.emulateMedia({ reducedMotion: "reduce" });
     await until(
@@ -69,48 +69,31 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
     check("Mascot Enter/Space keyboard controls and immediate system reduced motion");
 
     await openTool(video, "Video");
-    await video.getByRole("button", { name: "Play video", exact: true }).click();
+    await chat(video, "play video");
     await video.waitForFunction(() => document.querySelector("video")?.paused === false);
     await openTool(video, "Video");
-    await video.getByRole("button", { name: "Pause video", exact: true }).click();
+    await chat(video, "pause video");
     await video.waitForFunction(() => document.querySelector("video")?.paused === true);
-    await video.getByLabel("Message your companion").fill("Seek the video to 3 seconds");
+    await video.getByLabel("What do you need?").fill("Seek the video to 3 seconds");
     await video.getByRole("button", { name: "Send message", exact: true }).click();
     await video.waitForFunction(
       () => Math.abs(document.querySelector("video").currentTime - 3) < 0.25,
     );
     await openTool(video, "Video");
-    await video.getByRole("button", { name: "Video key ideas", exact: true }).click();
-    await until(async () => {
-      await openTool(video, "Video");
-      return (await video.locator(".panel-video .video-summary").count()) > 0;
-    }, "native caption summary");
-    assert.match(
-      await video.locator(".panel-video .video-summary").innerText(),
-      /equation|operation|equality/i,
-    );
+    await chat(video, "summarize this video");
+    await video.getByRole("tab", { name: "Summary", exact: true }).click();
+    await video.locator(".video-summary").waitFor();
+    assert.match(await video.locator(".video-summary").innerText(), /equation|operation|equality/i);
     check("Native captions support grounded video summary, play, pause and seek");
 
     const unavailable = await ctx.newPage();
     pages.push(unavailable);
     await unavailable.goto(`${base}/demo/video/uncaptioned.html`);
     await unavailable.waitForFunction(() => document.querySelector("video")?.readyState >= 1);
-    await pet(unavailable, original.characterName).press("Enter");
+    await pet(unavailable).press("Enter");
     await openTool(unavailable, "Video");
-    await unavailable.getByRole("button", { name: "Video key ideas", exact: true }).click();
-    await unavailable.locator(".dock-activity-log summary").click();
-    await unavailable
-      .getByText(
-        "Captions are unavailable. I can use visible content, but cannot quote unheard narration.",
-        { exact: true },
-      )
-      .waitFor();
-    await openTool(unavailable, "Video");
-    assert.ok(
-      await unavailable
-        .getByText("Captions aren’t available on this player.", { exact: false })
-        .isVisible(),
-    );
+    await chat(unavailable, "summarize this video");
+    await unavailable.getByText("Captions are unavailable. I can use visible content, but cannot quote unheard narration.", { exact: true }).last().waitFor();
     const noCaptions = await rpc(home, {
       type: "api",
       path: "/api/video",
@@ -120,50 +103,6 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
     assert.equal(noCaptions.source, "none");
     assert.deepEqual(noCaptions.segments, []);
     check("Uncaptioned native video reports unavailable without fabricated narration");
-
-    const notebook = await ctx.newPage();
-    pages.push(notebook);
-    await notebook.goto(`${base}/notebook.html`);
-    await notebook.bringToFront();
-    await notebook
-      .getByLabel("Local server pairing token", { exact: true })
-      .fill(original.serverToken);
-    await notebook.getByRole("button", { name: "Start camera", exact: true }).click();
-    await notebook.waitForFunction(() => {
-      const v = document.getElementById("preview");
-      return (
-        v.srcObject?.getVideoTracks().some((track) => track.readyState === "live") &&
-        v.videoWidth > 0
-      );
-    });
-    await notebook.getByRole("button", { name: "Read now", exact: true }).click();
-    await notebook
-      .getByText("DEMO: scripted notebook fixture. This is not camera transcription.", {
-        exact: true,
-      })
-      .waitFor();
-    assert.ok((await notebook.locator("#lines .line").count()) > 0);
-    await notebook.getByRole("button", { name: "Faint page", exact: true }).click();
-    assert.equal(
-      await notebook
-        .getByRole("button", { name: "Faint page", exact: true })
-        .getAttribute("aria-pressed"),
-      "true",
-    );
-    await notebook.evaluate(() => {
-      window.__cameraTestTrack = document.getElementById("preview").srcObject.getVideoTracks()[0];
-    });
-    await home.bringToFront();
-    // Headless windows can keep all tabs visible; simulate the visibility source when needed.
-    await notebook.evaluate(() => {
-      if (!document.hidden)
-        Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await notebook.getByText("Camera stopped.", { exact: true }).waitFor();
-    assert.equal(await notebook.evaluate(() => window.__cameraTestTrack.readyState), "ended");
-    assert.equal(await notebook.evaluate(() => document.getElementById("preview").srcObject), null);
-    check("Fake camera notebook pairs, labels demo transcription and stops tracks when hidden");
 
     const note = await rpc(home, {
       type: "note.save",
@@ -179,9 +118,10 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
     await control.goto(`chrome-extension://${extensionId}/newtab.html#notes`);
     const card = control
       .locator(".note-card")
-      .filter({ hasText: "Specialist test note to remove" });
+      .filter({ has: control.locator("textarea").filter({ hasText: "Specialist test note to remove" }) });
     await card.waitFor();
-    await card.getByRole("button", { name: "Remove", exact: true }).click();
+    await card.locator("textarea").focus();
+    await chat(control, "delete this note");
     await until(
       async () =>
         !(await rpc(home, { type: "workspace.get" })).notes.some((value) => value.id === note.id),
@@ -207,10 +147,14 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
       await browserCdp.detach();
     }
     await video.bringToFront();
-    await openTool(video, "Capture this page");
-    await video.locator(".page-capture img").waitFor();
-    await video.getByRole("button", { name: "Attach to next message", exact: true }).click();
-    await video.locator(".attachment-chip").waitFor();
+    await video.getByRole("textbox", { name: "What do you need?", exact: true }).fill("capture screen region");
+    await video.getByRole("button", { name: "Send message", exact: true }).click();
+    await video.locator(".screen-region-selection").waitFor();
+    await video.mouse.move(80, 80);
+    await video.mouse.down();
+    await video.mouse.move(640, 360, { steps: 12 });
+    await video.mouse.up();
+    await video.locator(".conversation-attachment").waitFor();
     const requests = [];
     const captureRequest = (request) => {
       if (request.url().includes("/api/agent")) {
@@ -224,7 +168,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
     ctx.on("request", captureRequest);
     try {
       await video
-        .getByLabel("Message your companion")
+        .getByLabel("What do you need?")
         .fill("What is shown in the attached page image?");
       await video.getByRole("button", { name: "Send message", exact: true }).click();
       await until(
@@ -236,7 +180,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
         /^data:image\/jpeg;base64,/,
       );
       await until(
-        async () => (await video.locator(".attachment-chip").count()) === 0,
+        async () => (await video.locator(".conversation-attachment").count()) === 0,
         "one-use screenshot attachment cleared",
       );
       await until(
@@ -246,7 +190,7 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
       );
       const before = requests.length;
       await video
-        .getByLabel("Message your companion")
+        .getByLabel("What do you need?")
         .fill("Describe the page heading in one sentence");
       await video.getByRole("button", { name: "Send message", exact: true }).click();
       await until(() => Promise.resolve(requests.length > before), "follow-up question");
@@ -259,7 +203,6 @@ export async function runSpecialists({ ctx, home, rpc, base, extensionId, check 
     await rpc(home, {
       type: "settings.patch",
       patch: {
-        character: original.character,
         reducedMotion: original.reducedMotion,
         screenshotEnabled: original.screenshotEnabled,
       },

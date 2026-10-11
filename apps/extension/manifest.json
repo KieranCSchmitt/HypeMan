@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "description": "A pixel companion for browser tasks, source-backed notes, and optional learning.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus"],
+  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus", "alarms"],
   "optional_permissions": ["debugger"],
   "optional_host_permissions": ["<all_urls>"],
   "host_permissions": ["http://*/*", "https://*/*"],
@@ -21,7 +21,6 @@
     }
   ],
   "action": {
-    "default_popup": "popup.html",
     "default_title": "HypeMan",
     "default_icon": {
       "16": "assets/icons/icon16.png",
@@ -41,17 +40,17 @@
   "commands": {
     "toggle-companion": {
       "suggested_key": {
-        "default": "Alt+Shift+P"
+        "default": "Alt+Shift+H"
       },
       "description": "Open HypeMan"
     },
     "open-control": {
-      "description": "Open HypeMan tasks"
+      "description": "Open HypeMan conversation"
     }
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/*", "ui.css", "capture.html", "capture.js", "connection.html", "connection.js", "preferences.html", "preferences.js"],
+      "resources": ["assets/*", "fonts/*", "ui.css", "documents.html", "documents.js", "documents.css", "connection.html", "connection.js", "preferences.html", "preferences.js"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],

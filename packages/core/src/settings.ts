@@ -4,8 +4,6 @@ export interface Settings {
   version: 2;
   serverUrl: string;
   serverToken: string;
-  characterName: string;
-  character: string;
   proactiveEnabled: boolean;
   learningEnabled: boolean;
   screenshotEnabled: boolean;
@@ -20,8 +18,6 @@ export const DEFAULT_SETTINGS: Settings = {
   version: 2,
   serverUrl: "http://localhost:8787",
   serverToken: "",
-  characterName: "HypeMan",
-  character: "hypeman",
   proactiveEnabled: true,
   learningEnabled: false,
   screenshotEnabled: false,
@@ -56,12 +52,6 @@ export function parseSettings(value: unknown): Settings {
   }
   if (typeof raw.serverToken === "string")
     settings.serverToken = raw.serverToken.trim().slice(0, 512);
-  if (typeof raw.characterName === "string" && raw.characterName.trim()) {
-    const name = raw.characterName.trim().slice(0, 60);
-    settings.characterName = name;
-  }
-  if (typeof raw.character === "string" && /^(hypeman|custom:[a-zA-Z0-9_-]+)$/.test(raw.character))
-    settings.character = raw.character;
   if (raw.reducedMotion === "auto" || raw.reducedMotion === "on" || raw.reducedMotion === "off")
     settings.reducedMotion = raw.reducedMotion;
   if (raw.videoCompanion === "ask" || raw.videoCompanion === "on" || raw.videoCompanion === "off")

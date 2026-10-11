@@ -10,12 +10,11 @@ const names = [
   "newtab",
   "popup",
   "onboarding",
-  "customize",
   "board",
   "video",
-  "capture",
   "connection",
   "preferences",
+  "documents",
 ];
 const entries = Object.fromEntries(
   names
@@ -28,10 +27,18 @@ function copy() {
   const publicRoot = resolve(source, "public");
   cpSync(publicRoot, output, { recursive: true });
   cpSync(resolve(source, "manifest.json"), resolve(output, "manifest.json"));
-  const styles = ["ui.css", "y2k-base.css", "y2k-art.css", "y2k-hub.css", "y2k-tools.css", "overlays.css"]
+  const pdfRoot = resolve(root, "node_modules/pdfjs-dist");
+  const pdfOutput = resolve(output, "assets/pdfjs");
+  mkdirSync(pdfOutput, { recursive: true });
+  cpSync(resolve(pdfRoot, "legacy/build/pdf.worker.min.mjs"), resolve(pdfOutput, "pdf.worker.min.mjs"));
+  for (const name of ["cmaps", "standard_fonts", "wasm"])
+    cpSync(resolve(pdfRoot, name), resolve(pdfOutput, name), { recursive: true });
+  cpSync(resolve(root, "node_modules/katex/dist/fonts"), resolve(output, "fonts"), { recursive: true });
+  const styles = ["ui.css", "y2k-base.css", "y2k-art.css", "y2k-hub.css", "y2k-tools.css", "overlays.css", "tool-theme.css"]
     .map((name) => resolve(source, "public", name))
     .filter(existsSync)
     .map((path) => readFileSync(path, "utf8"));
+  styles.push(readFileSync(resolve(root, "node_modules/katex/dist/katex.min.css"), "utf8"));
   writeFileSync(resolve(output, "ui.css"), styles.join("\n"));
 }
 rmSync(output, { recursive: true, force: true });
@@ -48,7 +55,7 @@ const options = {
   sourcemap: watchMode,
   alias: { "@core": resolve(root, "packages/core/src/index.ts") },
   define: { "process.env.NODE_ENV": JSON.stringify(watchMode ? "development" : "production") },
-  loader: { ".css": "css" },
+  loader: { ".css": "css", ".woff2": "file", ".woff": "file", ".ttf": "file" },
   logLevel: "info",
 };
 if (watchMode) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -130,7 +130,7 @@ const fetcher = async (input, init) => {
 const auth = new ChatGPTAuth({
   directory,
   fetcher,
-  verifyIdentity: async () => ({ subject: "browser-test-sub", email: "browser-test@example.com" }),
+  verifyIdentity: async () => ({ subject: tokenExchanges > 1 ? "browser-second-sub" : "browser-test-sub", email: tokenExchanges > 1 ? "browser-second@example.com" : "browser-test@example.com" }),
 });
 const token = "hypeman-auth-private-transport";
 const gateway = createGateway(loadConfig({ PORT: "0" }), {
@@ -211,7 +211,28 @@ try {
       if (!result?.ok) throw new Error(result?.error);
       return result.data;
     }, message);
-  await page.getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
+  const connection = () => page.frameLocator(".workspace-connection-frame");
+  const waitForPendingSignIn = async () => {
+    await connection().getByRole("status").filter({ hasText: /^Signing in…$/ }).waitFor();
+    await connection().getByRole("button", { name: "Cancel", exact: true }).waitFor();
+    assert.equal((await rpc({ type: "chatgpt.status" })).pending, true);
+  };
+  const waitForAccount = async (email) => {
+    await connection().getByRole("status").filter({ hasText: /^Connected$/ }).waitFor({ timeout: 15000 });
+    await connection().getByRole("combobox", { name: "ChatGPT account", exact: true }).locator("option:checked").filter({ hasText: email }).waitFor({ state: "attached" });
+    const status = await rpc({ type: "chatgpt.status" });
+    assert.equal(status.connected, true); assert.equal(status.sharing, true);
+    assert.equal(status.profiles.find((profile) => profile.id === status.activeProfileId)?.email, email);
+  };
+  const chat = async (text) => {
+    await page.bringToFront();
+    const messages = page.locator(".chat-message.assistant"), before = await messages.count();
+    await page.getByLabel("What do you need?", { exact: true }).fill(text);
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction((count) => document.querySelectorAll(".chat-message.assistant").length > count, before);
+    await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  };
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
   // The install page follows onInstalled's queued settings write. Configure through that owner.
   assert.equal((await rpc({ type: "settings.get" })).serverToken, "");
   const configured = await rpc({ type: "settings.patch", patch: { serverUrl: url } });
@@ -221,11 +242,15 @@ try {
   assert.equal((await rpc({ type: "settings.get" })).serverToken, token);
   assert.equal((await rpc({ type: "chatgpt.status" })).connected, false);
   assert.equal(await page.getByLabel("Pairing token", { exact: true }).count(), 0);
-  await page.getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
   assert.ok(!(await page.locator("body").innerText()).includes("On-device model"));
-  await page.getByRole("button", { name: "Continue with ChatGPT", exact: true }).click();
-  await page.getByRole("button", { name: "Cancel sign-in", exact: true }).waitFor();
-  assert.equal(await worker.evaluate(() => globalThis.mockAuthorizationUrls.length), 1);
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).click();
+  await waitForPendingSignIn();
+  await chat("cancel sign-in");
+  assert.equal((await rpc({ type: "chatgpt.status" })).pending, false);
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).click();
+  await waitForPendingSignIn();
+  assert.equal(await worker.evaluate(() => globalThis.mockAuthorizationUrls.length), 2);
   const authorize = new URL(await worker.evaluate(() => globalThis.mockAuthorizationUrl));
   assert.equal(authorize.origin, "https://auth.openai.com");
   const callback = new URL(authorize.searchParams.get("redirect_uri"));
@@ -240,14 +265,28 @@ try {
     (await context.newPage());
   await loginPage.goto(callback.href);
   assert.equal(tokenExchanges, 1);
-  await page.waitForURL(`chrome-extension://${extensionId}/newtab.html`, { timeout: 15000 });
+  await page.bringToFront();
+  await waitForAccount("browser-test@example.com");
   await assert.doesNotReject(async () => {
     await page.waitForFunction(() => document.visibilityState === "visible");
   });
-  await page.goto(`chrome-extension://${extensionId}/onboarding.html`);
-  await page.getByText("Using ChatGPT plan · browser-test@example.com", { exact: true }).waitFor();
-  await page.locator("summary").filter({ hasText: "Account settings" }).click();
-  await page.getByLabel("ChatGPT model", { exact: true }).selectOption("model-two");
+  await chat("add account");
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).click();
+  await waitForPendingSignIn();
+  const secondAuthorize = new URL(await worker.evaluate(() => globalThis.mockAuthorizationUrl));
+  const secondCallback = new URL(secondAuthorize.searchParams.get("redirect_uri"));
+  assert.equal(secondCallback.origin, url);
+  secondCallback.search = new URLSearchParams({ state: secondAuthorize.searchParams.get("state"), code: "browser-second-code", client_id: "oaiapp_browser_second" }).toString();
+  const secondLoginPage = await context.newPage();
+  await secondLoginPage.goto(secondCallback.href);
+  await page.bringToFront();
+  await waitForAccount("browser-second@example.com");
+  assert.equal(tokenExchanges, 2);
+  assert.equal((await rpc({ type: "chatgpt.status" })).profiles.length, 2);
+  await chat("use account browser-test@example.com");
+  await waitForAccount("browser-test@example.com");
+  await chat("use model Model Two");
+  assert.equal(await connection().getByLabel("ChatGPT model", { exact: true }).inputValue(), "model-two");
   await page.waitForTimeout(300);
   const reply = await rpc({ type: "assistant.ask", message: "Say hello" });
   assert.equal(reply.text, "Mock ChatGPT plan response.");
@@ -255,7 +294,7 @@ try {
   const article = await context.newPage();
   await article.goto(`${url}/demo/learning/`);
   await article.getByRole("button", { name: /Open HypeMan\. Drag/ }).click();
-  await article.getByLabel("Message your companion").fill("Explain this");
+  await article.getByLabel("What do you need?", { exact: true }).fill("Explain this");
   await article.getByRole("button", { name: "Send message", exact: true }).click();
   const explanation = article
     .locator(".chat-message.assistant")
@@ -270,22 +309,20 @@ try {
   await article.close();
   const saved = await page.evaluate(() => chrome.storage.local.get(null));
   assert.ok(!JSON.stringify(saved).includes("fake-browser-access"));
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await page.getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
+  await chat("sign out");
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
   assert.equal(auth.status().activeProfileId, null);
-  await page
-    .getByRole("button", { name: "Open HypeMan", exact: true })
-    .waitFor({ state: "hidden" });
   const signedOutHealth = await rpc({ type: "health" });
-  for (const name of ["agent", "character", "ink", "notebook", "learning"])
+  for (const name of ["agent", "ink", "learning"])
     assert.equal(signedOutHealth.capabilities[name].available, false);
   await assert.rejects(rpc({ type: "assistant.ask", message: "Say hello" }), /Sign in again/);
   await page.reload();
-  await page.getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
+  await connection().getByRole("button", { name: "Continue with ChatGPT", exact: true }).waitFor();
   assert.equal(await page.getByLabel("Pairing token", { exact: true }).count(), 0);
+  await mkdir("tests/screenshots", { recursive: true });
   await page.screenshot({ path: "tests/screenshots/hypeman-chatgpt-only.png", fullPage: true });
   console.log(
-    "PASS: fresh extension connects without a key, one-button OAuth, automatic return to HypeMan, account/model choice, streamed inference, companion page explanation, sign-out, and no OAuth credentials in extension storage.",
+    "PASS: fresh extension connects without a key, native OAuth consent and conversational cancellation, connected review beside chat, saved-account switching and model choice, streamed inference, companion page explanation, sign-out, and no OAuth credentials in extension storage.",
   );
 } catch (error) {
   console.log("Safe auth state", JSON.stringify(auth.status()));

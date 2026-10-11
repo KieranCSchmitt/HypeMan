@@ -9,6 +9,8 @@ import {
   requireObject,
   stringList,
 } from "./media";
+import { validateDocumentInput } from "./documents";
+import { GatewayError } from "./errors";
 const maybe = (value: unknown, check: (value: unknown) => boolean) =>
   value === undefined || check(value);
 /** Core parsers are shared with the extension, so wire contracts cannot drift. */
@@ -18,7 +20,7 @@ export function validAction(value: unknown): value is Action {
 export function validateAgent(value: unknown): AgentRequest {
   const request = parseAgentRequest(value);
   requireInput(request !== null, "Invalid agent request: missing, malformed, or oversized fields.");
-  requireInput(isWebUrl(request.page.url), "Agent requests need an accessible HTTP(S) page.");
+  requireInput(isWebUrl(request.page.url) || (request.surface === "conversation" && request.page.url === "" && !request.page.elements.length && !request.task), "Agent requests need an accessible HTTP(S) page or a conversation surface.");
   return request;
 }
 export function validateTaskAssessment(value: unknown): TaskAssessmentRequest {
@@ -34,6 +36,9 @@ export function validateRoute(path: string, value: unknown) {
     return input;
   }
   switch (path) {
+    case "/api/document":
+      validateDocumentInput(input);
+      break;
     case "/api/task/assess":
       validateTaskAssessment(input);
       break;
@@ -58,7 +63,7 @@ export function validateRoute(path: string, value: unknown) {
             input.segments,
             (v) =>
               Array.isArray(v) &&
-              v.length <= 6000 &&
+              Buffer.byteLength(JSON.stringify(v), "utf8") <= 256 * 1024 &&
               v.every(
                 (segment) =>
                   isObject(segment) &&
@@ -80,22 +85,18 @@ export function validateRoute(path: string, value: unknown) {
       );
       break;
     case "/api/ink":
-    case "/api/notebook":
       requireInput(
         isImage(input.image) &&
           maybe(input.context, isImage) &&
-          maybe(input.previousLines, (v) => stringList(v)) &&
-          maybe(input.rung, (v) => isNumber(v, 1, 5)),
+          maybe(input.previousLines, (v) => stringList(v, 60)) &&
+          maybe(input.goal, (v) => isText(v, 2000)),
       );
-      break;
-    case "/api/character":
-      requireInput(isImage(input.image) && maybe(input.description, (v) => isText(v, 2000)));
       break;
     case "/api/lookup":
       requireInput(isText(input.query, 1000) && !!input.query.trim());
       break;
     default:
-      requireInput(false, "Unknown API route.");
+      throw new GatewayError(404, "Unknown API route.");
   }
   return input;
 }

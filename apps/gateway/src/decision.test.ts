@@ -71,7 +71,7 @@ describe("provider decision boundary", () => {
     expect(() => flat({ action: "ask", text: "Which date?" })).toThrow();
     expect(() => flat({ action: "sketch", text: "First line\nSecond line" })).toThrow();
   });
-  it("validates envelope metadata and limits accompanying speech", () => {
+  it("validates envelope metadata and limits accompanying text", () => {
     expect(flat({ action: "say", text: "Hello" }).done).toBe(false);
     expect(flat({ action: "say", text: "Hello", say: "a".repeat(1200) }).say).toHaveLength(1000);
     for (const fields of [{ say: 1 }, { done: "true" }, { done: null }]) {

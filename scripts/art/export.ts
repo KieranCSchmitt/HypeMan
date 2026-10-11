@@ -261,8 +261,6 @@ export async function exportAssets(fonts: Record<string, string>) {
     t: 0,
     now: new Date("2026-10-10T00:00:00"),
     glow: 1,
-    micLive: false,
-    soundOn: false,
     avatarState: "idle",
     im: { text: "", caret: 0, focused: false, log: [] },
     crt: { channel: 2, status: "", steps: [], changedAt: -9000, typedAt: 0 },

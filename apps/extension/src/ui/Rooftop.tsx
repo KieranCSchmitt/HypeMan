@@ -1,24 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import type { Settings } from "@core";
 import { Wallpaper, WALLPAPER_ACTIONS, type WallpaperAction, type WallpaperActivity } from "../art/wallpaper";
 import { artURL } from "./ArtSprite";
 
 export interface RooftopProps {
   reduced?: boolean;
   activity?: WallpaperActivity;
-  settings?: Settings;
   onCompanion?: () => void;
-  onCustomize?: () => void;
-  onNotes?: () => void;
 }
 
 /** The authored city is interactive without adding more desktop chrome. */
-export function Rooftop({ reduced = false, activity = "idle", settings, onCompanion, onCustomize, onNotes }: RooftopProps) {
+export function Rooftop({ reduced = false, activity = "idle", onCompanion }: RooftopProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const engine = useRef<Wallpaper | null>(null);
   const buttons = useRef(new Map<WallpaperAction, HTMLButtonElement>());
-  const callbacks = useRef({ onCompanion, onCustomize, onNotes });
-  callbacks.current = { onCompanion, onCustomize, onNotes };
+  const callbacks = useRef({ onCompanion });
+  callbacks.current = { onCompanion };
   const [dancing, setDancing] = useState(false);
   const [phase, setPhase] = useState("");
   useEffect(() => {
@@ -40,8 +36,6 @@ export function Rooftop({ reduced = false, activity = "idle", settings, onCompan
       },
       onAction: (action) => {
         if (action === "hypeman") callbacks.current.onCompanion?.();
-        if (action === "graffiti") callbacks.current.onCustomize?.();
-        if (action === "crt") callbacks.current.onNotes?.();
         setDancing(wallpaper.dancing);
         setPhase(wallpaper.timeOfDay);
       },
@@ -52,36 +46,6 @@ export function Rooftop({ reduced = false, activity = "idle", settings, onCompan
   }, []);
   useEffect(() => engine.current?.setReducedMotion(reduced), [reduced]);
   useEffect(() => engine.current?.setActivity(activity), [activity]);
-  useEffect(() => {
-    let disposed = false;
-    let version = 0;
-    const selected = settings?.character;
-    const load = async () => {
-      const current = ++version;
-      engine.current?.setCustomSprite(null);
-      if (!selected?.startsWith("custom:")) return;
-      try {
-        const data = await chrome.storage.local.get("hypeman.characters");
-        if (disposed || current !== version) return;
-        const raw: unknown = data["hypeman.characters"];
-        const valid = Array.isArray(raw) ? raw.filter((value): value is { id: string; name: string; image: string } =>
-          Boolean(value) && typeof value === "object" &&
-          typeof value.id === "string" && typeof value.name === "string" &&
-          typeof value.image === "string" && value.image.length <= 2_000_000 &&
-          /^data:image\/(png|webp);base64,/.test(value.image),
-        ).slice(-8) : [];
-        engine.current?.setCustomSprite(valid.find((character) => `custom:${character.id}` === selected)?.image ?? null);
-      } catch {
-        // Invalid or unavailable local artwork falls back to the packaged character.
-      }
-    };
-    const changed = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-      if (area === "local" && changes["hypeman.characters"]) void load();
-    };
-    void load();
-    chrome.storage.onChanged.addListener(changed);
-    return () => { disposed = true; chrome.storage.onChanged.removeListener(changed); };
-  }, [settings?.character]);
   return (
     <div
       className="rooftop-wallpaper"
@@ -99,7 +63,7 @@ export function Rooftop({ reduced = false, activity = "idle", settings, onCompan
         aria-hidden="true"
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 0, pointerEvents: "auto", imageRendering: "pixelated" }}
       />
-      {WALLPAPER_ACTIONS.map((action) => (
+      {WALLPAPER_ACTIONS.filter((action) => action.id === "hypeman").map((action) => (
         <button
           key={action.id}
           type="button"
