@@ -935,6 +935,37 @@ describe("phone companion extension boundary", () => {
     expect(session["hypeman.tab.100"]).toMatchObject({ handoff: { goal: capture.text } });
     expect(await rpc({ type: "messaging.continue", id: capture.id }, extensionSender())).toMatchObject({ ok: false });
   });
+  it("dispatches a paired phone browser request in a fresh open conversation without taking over an existing project", async () => {
+    const task = await ok<BrowserTask>({ type: "task.start", goal: "Compare workshops", steps: ["Read the workshop page", "Compare the options"], dispatch: false });
+    session["hypeman.tab.1"] = { conversationId: "existing-project-chat" };
+    const job = { id: "browser:phone-open", conversationId: "phone-browser-chat", goal: "Open YouTube", url: "https://www.youtube.com/", createdAt: 1, updatedAt: 1, status: "queued" };
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/browser.claim")) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({ id: job.id, claimId: expect.any(String) });
+        job.status = "claimed"; return reply(job);
+      }
+      if (path.endsWith("/browser.result")) {
+        expect(JSON.parse(String(init?.body))).toMatchObject({ id: job.id, status: "started" });
+        job.status = "started";
+      }
+      return reply({ ...phoneStatus(), browserRequests: [job] });
+    });
+    beforeTabUpdate = (id, properties) => {
+      if (!properties.url) return;
+      expect(id).toBe(100);
+      expect(session["hypeman.tab.100"]).toMatchObject({ conversationId: job.conversationId, handoff: { goal: job.goal, conversationId: job.conversationId } });
+      expect(session["hypeman.workbench.ui.phone-browser-chat"]).toMatchObject({ open: true, tools: [] });
+    };
+    await ok({ type: "messaging.inbox" }, extensionSender());
+    await ok({ type: "messaging.inbox" }, extensionSender());
+    expect(chrome.tabs.create).toHaveBeenCalledTimes(1);
+    expect(chrome.tabs.update).toHaveBeenCalledExactlyOnceWith(100, { url: job.url });
+    expect(session["hypeman.tab.1"]).toEqual({ conversationId: "existing-project-chat" });
+    expect((await snapshot()).tasks.find((item) => item.id === task.id)).toMatchObject({ status: "running", tabId: 1 });
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(1, expect.objectContaining({ type: "hypeman.assistant.run" }));
+    expect(await rpc({ type: "messaging.browser.claim", id: job.id })).toMatchObject({ ok: false, error: "Manage your phone companion from HypeMan’s Settings." });
+  });
   it("uses durable local inbox contents when the gateway is unavailable", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(reply(phoneStatus()));
     await ok({ type: "messaging.inbox" }, extensionSender());
@@ -950,7 +981,7 @@ describe("phone companion extension boundary", () => {
     vi.resetModules();
     await import("../apps/extension/src/background/index");
     await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
-    expect(chrome.alarms.create).toHaveBeenCalledWith("hypeman.messaging.sync", { periodInMinutes: 1 });
+    expect(chrome.alarms.create).toHaveBeenCalledWith("hypeman.messaging.sync", { periodInMinutes: 0.5 });
     await vi.waitFor(() => expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "hypeman.messaging.changed" })));
     const alarm = onAlarm.addListener.mock.calls[0]![0] as (value: chrome.alarms.Alarm) => void;
     alarm({ name: "hypeman.messaging.sync", scheduledTime: Date.now(), persistAcrossSessions: true });

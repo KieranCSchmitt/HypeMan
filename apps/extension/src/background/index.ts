@@ -46,6 +46,10 @@ const phone = new PhoneSync(
   () => workspace.snapshot(),
   (path, body) => gateway.post(path, body, crypto.randomUUID(), null, 15000),
   () => notify("messaging.changed"),
+  async (request) => {
+    await workbenchMessage({ type: "workbench.ui.patch", conversationId: request.conversationId, patch: { open: true } });
+    return dispatchAssistant(request.goal, request.url, request.conversationId, true);
+  },
 );
 const ready = (async () => {
   const raw = await chrome.storage.session.get("hypeman.session");
@@ -179,7 +183,7 @@ async function dispatchTask(
   return owned;
 }
 /** The rooftop composer starts a conversation; only a proposed multi-step plan becomes a project. */
-async function dispatchAssistant(goal: string, suppliedUrl?: string, conversationId?: string): Promise<{ tabId: number }> {
+async function dispatchAssistant(goal: string, suppliedUrl?: string, conversationId?: string, freshTab = false): Promise<{ tabId: number }> {
   const config = await settings();
   const linkedUrl = goal.match(/https?:\/\/[^\s<>"']+/i)?.[0]?.replace(/[),.!?;]+$/, "");
   const destination = safePageUrl(suppliedUrl || linkedUrl);
@@ -200,7 +204,7 @@ async function dispatchAssistant(goal: string, suppliedUrl?: string, conversatio
       .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))[0] ?? null;
   }
   const handoff: SessionHandoff = { goal, history: [], step: 0, at: Date.now(), ...(conversationId ? { conversationId } : {}) };
-  if (source?.id !== undefined && (!destination || safePageUrl(source.url) === destination)) {
+  if (!freshTab && source?.id !== undefined && (!destination || safePageUrl(source.url) === destination)) {
     await setSession(source.id, { handoff, ...(conversationId ? { conversationId } : {}) });
     await chrome.tabs.update(source.id, { active: true });
     await chrome.windows.update(source.windowId, { focused: true });
@@ -396,7 +400,7 @@ async function handle(
       return { code: result.code, expiresAt: result.expiresAt, deliveryStatus: result.deliveryStatus === "sent" ? "sent" : "unknown" } satisfies MessagingPairingResult;
     }
     case "messaging.unpair":
-      await gateway.post("/api/messaging/unpair", {}, id, tabId, 15000);
+      await phone.rememberStatus(await gateway.post("/api/messaging/unpair", {}, id, tabId, 15000));
       await phone.sync(true).catch(() => {});
       return { ok: true };
     case "messaging.settings": {
@@ -1059,12 +1063,12 @@ if (chrome.alarms) {
   });
   chrome.runtime.onStartup.addListener(() => {
     void ready.then(async () => {
-      await chrome.alarms.create(MESSAGING_ALARM, { periodInMinutes: 1 });
+      await chrome.alarms.create(MESSAGING_ALARM, { periodInMinutes: 0.5 });
       await phone.sync();
     }).catch(() => {});
   });
   void ready.then(async () => {
-    await chrome.alarms.create(MESSAGING_ALARM, { periodInMinutes: 1 });
+    await chrome.alarms.create(MESSAGING_ALARM, { periodInMinutes: 0.5 });
     await phone.sync();
   }).catch(() => {});
 }

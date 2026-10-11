@@ -17,6 +17,7 @@ jobs:
       - run: npm run e2e:hints
       - run: npm run e2e:projects
       - run: npm run e2e:execution
+      - run: npm run e2e:messaging
       - run: npm run e2e
       - uses: actions/upload-artifact@v4
         if: always()

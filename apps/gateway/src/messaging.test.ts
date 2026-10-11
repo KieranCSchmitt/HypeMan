@@ -331,3 +331,157 @@ describe("accountability, delivery, and synchronization recovery", () => {
     expect(service.status().deliveries.at(-1)?.status).toBe("sent");
   });
 });
+
+describe("owner phone browser requests", () => {
+  it.each(["open youtube", "control my desktop to open youtube", "Please open Google", "open https://example.com/watch?v=2"])("queues an explicit command without phone inference: %s", async (text) => {
+    const f = fixture(); await f.pair();
+    const inbound = f.incoming(text);
+    await f.service.receive(inbound); await f.service.receive(inbound);
+    const requests = f.service.status().browserRequests!;
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ id: `browser:${inbound.id}`, goal: text, status: "queued", createdAt: inbound.at, updatedAt: f.now });
+    expect(requests[0].conversationId).toMatch(/^[\w-]{36}$/);
+    expect(requests[0].url).toMatch(/^https:\/\//);
+    expect(f.transport.sent).toHaveLength(1);
+    expect(f.transport.sent[0].text).toMatch(/queued.*Chrome/i);
+    expect(f.transport.sent[0].text).not.toMatch(/opened|can't control/i);
+    await f.service.close();
+    const restarted = new MessagingService({ transport: f.transport, directory: f.directory, now: () => f.now }); services.push(restarted);
+    expect(restarted.status().browserRequests).toEqual(requests);
+  });
+
+  it("keeps SAVE/QUEUE passive and rejects inherited site names and unpaired senders", async () => {
+    const f = fixture(); await f.pair();
+    for (const text of ["SAVE open youtube", "QUEUE open youtube"]) await f.service.receive(f.incoming(text));
+    for (const text of ["open constructor", "open __proto__", "open javascript:alert(1)"]) await f.service.receive(f.incoming(text));
+    for (const extra of [{ sender: "+14155559999" }, { spaceId: "another-thread" }, { isGroup: true }, { fromMe: true }]) await f.service.receive(f.incoming("open youtube", extra));
+    expect(f.service.status().captures).toHaveLength(2);
+    expect(f.service.status().browserRequests).toEqual([]);
+  });
+
+  it("replaces model success claims with a durable queued confirmation and uses the original receipt time", async () => {
+    const provider = { json: vi.fn<Providers["json"]>().mockResolvedValue({ reply: "I already opened it and finished your search.", intent: { type: "browser", goal: "Search for pottery classes", url: "https://example.com/classes" } }) };
+    const f = fixture(undefined, provider); await f.pair();
+    await f.service.receive(f.incoming("Find beginner pottery classes in Chrome", { at: f.now - 30_000 }));
+    expect(f.service.status().browserRequests![0]).toMatchObject({ goal: "Search for pottery classes", createdAt: f.now - 30_000, status: "queued" });
+    expect(f.transport.sent.at(-1)?.text).toMatch(/^Queued for Chrome:/);
+    expect(f.transport.sent.at(-1)?.text).not.toContain("already opened");
+    expect(provider.json.mock.calls[0][0]).toContain("Explicit requests to open websites");
+  });
+
+  it("claims atomically, hides claim secrets, and acknowledges terminal results once across restart", async () => {
+    const f = fixture(); await f.pair(); await f.service.receive(f.incoming("open youtube"));
+    const request = f.service.status().browserRequests![0];
+    const [claimed, duplicate] = await Promise.all([
+      f.service.route("browser.claim", { id: request.id, claimId: "claim-one" }),
+      f.service.route("browser.claim", { id: request.id, claimId: "claim-two" }),
+    ]);
+    expect(claimed).toMatchObject({ ...request, status: "claimed" }); expect(duplicate).toBeNull();
+    expect(JSON.stringify(claimed)).not.toContain("claim-one");
+    expect(JSON.stringify(f.service.status())).not.toContain("claim-one");
+    expect(await f.service.route("browser.claim", { id: request.id, claimId: "claim-one" })).toEqual(claimed);
+    await expect(f.service.route("browser.result", { id: request.id, claimId: "claim-two", status: "started" })).rejects.toThrow("another claim");
+    await f.service.route("browser.result", { id: request.id, claimId: "claim-one", status: "started" });
+    expect(f.transport.sent.at(-1)?.text).toContain("Started in Chrome: open youtube");
+    expect(f.transport.sent.at(-1)?.text).toContain("youtube.com");
+    const count = f.transport.sent.length;
+    await f.service.close();
+    const restarted = new MessagingService({ transport: f.transport, directory: f.directory, now: () => f.now }); services.push(restarted);
+    await restarted.route("browser.result", { id: request.id, claimId: "claim-one", status: "failed", error: "Late contradictory retry" });
+    expect(restarted.status().browserRequests![0].status).toBe("started"); expect(f.transport.sent).toHaveLength(count);
+    expect(await restarted.route("browser.claim", { id: request.id, claimId: "claim-one" })).toBeNull();
+  });
+
+  it("expires ambiguous claims without replay and old queued requests with feedback despite STOP and quiet hours", async () => {
+    const f = fixture("2026-10-10T06:00:00Z"); await f.pair();
+    await f.service.receive(f.incoming("open youtube"));
+    const claimed = f.service.status().browserRequests![0];
+    await f.service.route("browser.claim", { id: claimed.id, claimId: "lost-claim" });
+    f.at(f.now + 120_001);
+    expect(await f.service.route("browser.claim", { id: claimed.id, claimId: "new-claim" })).toBeNull();
+    expect(f.service.status().browserRequests![0].status).toBe("unknown");
+    expect(f.transport.sent.at(-1)?.text).toContain("will not launch it again automatically");
+    await f.service.receive(f.incoming("open google"));
+    await f.service.receive(f.incoming("STOP"));
+    f.at(f.now + 600_001);
+    await f.service.route("sync", { workspace: emptyWorkspace(), captureAcks: [] });
+    expect(f.service.status().browserRequests![1].status).toBe("cancelled");
+    expect(f.transport.sent.at(-1)?.text).toContain("expired before Chrome picked it up");
+    await f.service.receive(f.incoming("open youtube"));
+    const explicit = f.service.status().browserRequests!.at(-1)!;
+    await f.service.route("browser.claim", { id: explicit.id, claimId: "night-claim" });
+    await f.service.route("browser.result", { id: explicit.id, claimId: "night-claim", status: "failed", error: "Chrome is paused on this site." });
+    expect(f.transport.sent.at(-1)?.text).toContain("Chrome is paused on this site");
+    expect(f.service.status().settings.proactiveEnabled).toBe(false);
+  });
+
+  it("does not revive stale or future-dated browser commands, including AI intents", async () => {
+    const provider = { json: vi.fn<Providers["json"]>().mockResolvedValue({ reply: "Sure", intent: { type: "browser", goal: "Search pottery" } }) };
+    const f = fixture(undefined, provider); await f.pair();
+    await f.service.receive(f.incoming("open youtube", { at: f.now - 600_001 }));
+    await f.service.receive(f.incoming("Search pottery classes", { at: f.now - 600_001 }));
+    await f.service.receive(f.incoming("open google", { at: f.now + 60_001 }));
+    expect(f.service.status().browserRequests!.map(request => request.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
+    expect(f.transport.sent.every(message => !message.text.startsWith("Queued for Chrome"))).toBe(true);
+  });
+
+  it("stops expiry feedback and claim completion when the owner changes during delivery", async () => {
+    const f = fixture(); await f.pair();
+    await f.service.receive(f.incoming("open youtube")); await f.service.receive(f.incoming("open google"));
+    f.at(f.now + 600_001); await f.service.receive(f.incoming("open bing"));
+    const fresh = f.service.status().browserRequests!.at(-1)!;
+    const original = f.transport.send.bind(f.transport);
+    let release!: () => void;
+    vi.spyOn(f.transport, "send").mockImplementationOnce(async (destination, text) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return original(destination, text);
+    });
+    const claiming = f.service.route("browser.claim", { id: fresh.id, claimId: "waiting-claim" });
+    const rejected = expect(claiming).rejects.toThrow("Phone pairing changed");
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    const nextPhone = "+14155559999";
+    const pairing = await f.service.route("pair", { phone: nextPhone }) as { code: string };
+    await f.service.receive(f.incoming(`PAIR ${pairing.code}`, { sender: nextPhone, spaceId: "new-owner-thread" }));
+    release(); await rejected;
+    const expiryTexts = f.transport.sent.filter(message => message.text.includes("expired before Chrome picked it up"));
+    expect(expiryTexts).toHaveLength(1);
+    expect(expiryTexts[0].destination.phone).toBe("+14155551234");
+    expect(f.service.status().browserRequests!.find(request => request.id === fresh.id)?.status).toBe("cancelled");
+  });
+
+  it("cancels pending jobs and already-queued inbound messages on same-owner re-pair", async () => {
+    let complete!: (value: Record<string, unknown>) => void;
+    const provider = { json: vi.fn<Providers["json"]>(() => new Promise<Record<string, unknown>>(resolve => { complete = resolve; })) };
+    const f = fixture(undefined, provider); await f.pair();
+    await f.service.receive(f.incoming("open youtube"));
+    const prior = f.service.status().browserRequests![0];
+    await f.service.route("browser.claim", { id: prior.id, claimId: "prior-claim" });
+    const inference = f.service.receive(f.incoming("Research workshops"));
+    await vi.waitFor(() => expect(provider.json).toHaveBeenCalled());
+    const queued = f.service.receive(f.incoming("open google"));
+    const pairing = await f.service.route("pair", { phone: "+14155551234" }) as { code: string };
+    await f.service.receive(f.incoming(`PAIR ${pairing.code}`));
+    complete({ reply: "Sure", intent: { type: "browser", goal: "Old owner request" } });
+    await Promise.all([inference, queued]);
+    expect(f.service.status().browserRequests).toMatchObject([{ id: prior.id, status: "cancelled" }]);
+    const count = f.transport.sent.length;
+    await f.service.route("browser.result", { id: prior.id, claimId: "prior-claim", status: "started" });
+    expect(f.transport.sent).toHaveLength(count);
+    await f.service.receive(f.incoming("open google"));
+    await f.service.route("unpair", {});
+    expect(f.service.status().browserRequests!.every(request => request.status === "cancelled")).toBe(true);
+  });
+
+  it("migrates old stores and rejects malformed browser records and result fields", async () => {
+    const f = fixture(); await f.pair();
+    for (const input of [{ id: "x", claimId: "c", status: "completed" }, { id: "x", claimId: "c", status: "failed", error: "" }, { id: "x", claimId: "c", status: "started", phone: "+14155559999" }])
+      await expect(f.service.route("browser.result", input)).rejects.toThrow(/valid|field/);
+    const path = join(f.directory, "messaging.json"), original = JSON.parse(readFileSync(path, "utf8"));
+    delete original.browserRequests; writeFileSync(path, JSON.stringify(original));
+    expect(new MessagingStore(f.directory).state.browserRequests).toEqual([]);
+    const invalid = { ...original, browserRequests: [{ id: "bad", conversationId: "valid", goal: "Open", createdAt: f.now, updatedAt: f.now, status: "queued", url: "javascript:alert(1)" }] };
+    writeFileSync(path, JSON.stringify(invalid));
+    expect(() => new MessagingStore(f.directory)).toThrow("existing data was preserved");
+    writeFileSync(path, JSON.stringify(original));
+  });
+});

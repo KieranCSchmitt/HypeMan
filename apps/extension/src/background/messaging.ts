@@ -5,6 +5,7 @@ import {
   type CompanionSnapshot,
   type MessagingCapture,
   type MessagingStatus,
+  type PhoneBrowserRequest,
 } from "@core";
 
 export const MESSAGING_INBOX_KEY = "hypeman.messaging.inbox";
@@ -15,6 +16,14 @@ interface InboxState {
   captures: MessagingCapture[];
   importedIds: string[];
   pendingAcks: string[];
+  browserDispatches: BrowserDispatch[];
+}
+interface BrowserDispatch {
+  id: string;
+  claimId: string;
+  status: "dispatching" | "started" | "failed" | "unknown" | "ignored";
+  pendingResult: boolean;
+  error?: string;
 }
 interface Storage {
   get(key: string): Promise<Record<string, unknown>>;
@@ -27,6 +36,21 @@ const stamp = (value: unknown): value is number =>
 const id = (value: unknown): value is string => text(value, 300);
 const time = (value: unknown): value is string =>
   typeof value === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+
+function browserRequest(value: unknown): PhoneBrowserRequest {
+  if (!isRecord(value) || !id(value.id) || typeof value.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(value.conversationId) ||
+      !text(value.goal, 2000) || !stamp(value.createdAt) || !stamp(value.updatedAt) ||
+      value.createdAt > 8_640_000_000_000_000 || value.updatedAt > 8_640_000_000_000_000 ||
+      !["queued", "claimed", "started", "failed", "cancelled", "unknown"].includes(String(value.status)) ||
+      (value.error !== undefined && !text(value.error, 2000)))
+    throw new Error("The local server returned an invalid phone browser request.");
+  const url = value.url === undefined ? undefined : safePageUrl(value.url);
+  if (value.url !== undefined && (!text(value.url, 4096) || !url))
+    throw new Error("The local server returned an invalid phone browser URL.");
+  return { id: value.id, conversationId: value.conversationId, goal: value.goal,
+    createdAt: value.createdAt, updatedAt: value.updatedAt, status: value.status as PhoneBrowserRequest["status"],
+    ...(url ? { url } : {}), ...(value.error !== undefined ? { error: value.error } : {}) };
+}
 
 function capture(value: unknown): MessagingCapture {
   if (!isRecord(value) || !id(value.id) || !["idea", "goal", "link"].includes(String(value.kind)) ||
@@ -73,6 +97,7 @@ export function safeMessagingStatus(value: unknown): MessagingStatus {
       timezone: settings.timezone as string,
     },
     captures: list(value.captures, capture),
+    ...(value.browserRequests === undefined ? {} : { browserRequests: list(value.browserRequests, browserRequest) }),
     reminders: list(value.reminders, (item) => {
       if (!isRecord(item) || !id(item.id) || !text(item.text, 8000) || !stamp(item.dueAt) ||
           !stamp(item.createdAt) || !["pending", "sent", "cancelled", "failed", "unknown"].includes(String(item.status)))
@@ -100,7 +125,7 @@ export function safeMessagingStatus(value: unknown): MessagingStatus {
 
 function parseInbox(value: unknown): InboxState {
   if (value === undefined || value === null)
-    return { version: 1, captures: [], importedIds: [], pendingAcks: [] };
+    return { version: 1, captures: [], importedIds: [], pendingAcks: [], browserDispatches: [] };
   // Corrupt local inboxes must fail visibly instead of acknowledging and losing phone captures.
   if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.captures) || !Array.isArray(value.importedIds) ||
       !value.importedIds.every(id) || !Array.isArray(value.pendingAcks) || !value.pendingAcks.every(id))
@@ -109,21 +134,32 @@ function parseInbox(value: unknown): InboxState {
   const imported = new Set([...value.importedIds, ...captures.map((item) => item.id)]);
   if (value.pendingAcks.some((ack) => !imported.has(ack)))
     throw new Error("HypeMan's phone inbox contains an acknowledgement without a saved capture.");
-  return { version: 1, captures, importedIds: [...imported], pendingAcks: [...new Set(value.pendingAcks)] };
+  const dispatches = value.browserDispatches === undefined ? [] : value.browserDispatches;
+  if (!Array.isArray(dispatches) || dispatches.length > 5000 || dispatches.some((item) =>
+      !isRecord(item) || !id(item.id) || !id(item.claimId) ||
+      !["dispatching", "started", "failed", "unknown", "ignored"].includes(String(item.status)) ||
+      typeof item.pendingResult !== "boolean" || (item.error !== undefined && !text(item.error, 2000))) ||
+      new Set(dispatches.map((item) => item.id)).size !== dispatches.length)
+    throw new Error("HypeMan's phone browser dispatch history could not be read.");
+  return { version: 1, captures, importedIds: [...imported], pendingAcks: [...new Set(value.pendingAcks)],
+    browserDispatches: dispatches.map((item) => ({ id: item.id, claimId: item.claimId, status: item.status,
+      pendingResult: item.pendingResult, ...(item.error ? { error: item.error } : {}) })) };
 }
 
-/** A capture is durably imported before acknowledgement, and never dispatches browser work here. */
+/** Saved captures wait for Continue; explicit browser requests use a separate durable dispatch ledger. */
 export class PhoneSync {
   private queue: Promise<unknown> = Promise.resolve();
   private running: Promise<MessagingStatus | null> | null = null;
   private revision = 0;
   private status: MessagingStatus | null = null;
   private failure: string | undefined;
+  private ownerRevision = 0;
   constructor(
     private storage: Storage,
     private workspace: () => Promise<CompanionSnapshot>,
     private post: (path: string, body: unknown) => Promise<unknown>,
     private changed: () => Promise<void> = async () => {},
+    private launchBrowser?: (request: PhoneBrowserRequest) => Promise<unknown>,
   ) {}
   private transaction<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation);
@@ -136,15 +172,110 @@ export class PhoneSync {
   private async save(state: InboxState): Promise<void> {
     await this.storage.set({ [MESSAGING_INBOX_KEY]: state });
   }
+  private acceptStatus(status: MessagingStatus): void {
+    if (!this.status || this.status.paired !== status.paired || this.status.ownerPhone !== status.ownerPhone) this.ownerRevision++;
+    this.status = status;
+  }
+  private async recordDispatch(dispatch: BrowserDispatch): Promise<void> {
+    await this.transaction(async () => {
+      const state = await this.read();
+      const existing = state.browserDispatches.findIndex((item) => item.id === dispatch.id);
+      if (existing < 0) state.browserDispatches.push(dispatch);
+      else state.browserDispatches[existing] = dispatch;
+      await this.save(state);
+    });
+  }
+  private async reportResult(dispatch: BrowserDispatch): Promise<void> {
+    if (!dispatch.pendingResult || !["started", "failed", "unknown"].includes(dispatch.status)) return;
+    const ownerRevision = this.ownerRevision;
+    const status = safeMessagingStatus(await this.post("/api/messaging/browser.result", {
+      id: dispatch.id, claimId: dispatch.claimId, status: dispatch.status,
+      ...(dispatch.error ? { error: dispatch.error } : {}),
+    }));
+    const confirmed = status.browserRequests?.find((request) => request.id === dispatch.id);
+    if (!confirmed || ["queued", "claimed"].includes(confirmed.status))
+      throw new Error("The local server did not confirm the phone browser dispatch result.");
+    await this.recordDispatch({ ...dispatch, pendingResult: false });
+    if (ownerRevision === this.ownerRevision) this.acceptStatus(status);
+  }
+  private async browserRequests(status: MessagingStatus, ownerRevision: number): Promise<void> {
+    if (!status.paired || status.browserRequests === undefined) return;
+    const dispatches = await this.transaction(async () => {
+      const state = await this.read();
+      let changed = false;
+      for (const dispatch of state.browserDispatches) {
+        if (dispatch.status !== "dispatching") continue;
+        dispatch.status = "unknown"; dispatch.pendingResult = true;
+        dispatch.error = "Chrome stopped before browser dispatch was confirmed. This request will not run again automatically.";
+        changed = true;
+      }
+      if (changed) await this.save(state);
+      return state.browserDispatches;
+    });
+    let reportError: unknown;
+    for (const dispatch of dispatches) {
+      const remote = status.browserRequests.find((item) => item.id === dispatch.id);
+      if (remote && !["queued", "claimed"].includes(remote.status) && dispatch.pendingResult) {
+        await this.recordDispatch({ ...dispatch, pendingResult: false });
+        continue;
+      }
+      try { await this.reportResult(dispatch); } catch (error) { reportError = error; }
+    }
+    if (this.launchBrowser) for (const request of status.browserRequests) {
+      if (this.ownerRevision !== ownerRevision || !this.status?.paired) break;
+      if (request.status !== "queued") continue;
+      const dispatch: BrowserDispatch = { id: request.id, claimId: crypto.randomUUID(), status: "dispatching", pendingResult: false };
+      const fresh = await this.transaction(async () => {
+        const state = await this.read();
+        if (state.browserDispatches.some((item) => item.id === request.id)) return false;
+        if (state.browserDispatches.length >= 5000) throw new Error("Phone browser dispatch history is full. Existing requests were preserved.");
+        state.browserDispatches.push(dispatch); await this.save(state); return true;
+      });
+      if (!fresh) continue;
+      try {
+        const value = await this.post("/api/messaging/browser.claim", { id: request.id, claimId: dispatch.claimId });
+        if (value === null) { await this.recordDispatch({ ...dispatch, status: "ignored" }); continue; }
+        let claimed: PhoneBrowserRequest | undefined;
+        try {
+          claimed = browserRequest(value);
+          if (claimed.status !== "claimed" || claimed.id !== request.id || claimed.conversationId !== request.conversationId ||
+              claimed.goal !== request.goal || claimed.url !== request.url) throw new Error("Changed request");
+        } catch {
+          dispatch.status = "failed";
+          dispatch.error = "The phone browser request changed or was invalid. Chrome did not dispatch it.";
+        }
+        if (this.ownerRevision !== ownerRevision || !this.status?.paired) {
+          dispatch.status = "failed";
+          dispatch.error = "Phone pairing changed before Chrome could dispatch this request.";
+        }
+        if (dispatch.status !== "failed") {
+          try {
+            await this.launchBrowser(claimed!);
+            dispatch.status = "started";
+          } catch {
+            dispatch.status = "unknown";
+            dispatch.error = "Chrome could not confirm browser dispatch. Check Chrome before sending the request again; it will not retry automatically.";
+          }
+        }
+      } catch {
+        dispatch.status = "unknown";
+        dispatch.error = "Chrome could not confirm the browser request claim. This request will not run again automatically.";
+      }
+      dispatch.pendingResult = true;
+      await this.recordDispatch(dispatch);
+      try { await this.reportResult(dispatch); } catch (error) { reportError = error; }
+    }
+    if (reportError) throw reportError;
+  }
   async rememberStatus(value: unknown): Promise<MessagingStatus> {
     const status = safeMessagingStatus(value);
-    this.status = status;
+    this.acceptStatus(status);
     this.failure = undefined;
     await this.changed().catch(() => {});
     return status;
   }
   sync(manual = false): Promise<MessagingStatus | null> {
-    // A gateway without Photon credentials should not receive minute-by-minute retries.
+    // A gateway without Photon credentials should not receive automatic retries.
     if (!manual && this.status?.configured === false) return Promise.resolve(this.status);
     this.revision++;
     if (this.running) return this.running;
@@ -152,6 +283,7 @@ export class PhoneSync {
       let completedRevision: number;
       do {
         completedRevision = this.revision;
+        const ownerRevision = this.ownerRevision;
         const pendingAcks = await this.transaction(async () => (await this.read()).pendingAcks);
         const status = safeMessagingStatus(await this.post("/api/messaging/sync", {
           workspace: await this.workspace(), captureAcks: pendingAcks,
@@ -172,8 +304,10 @@ export class PhoneSync {
           state.pendingAcks = [...acks];
           await this.save(state);
         });
-        this.status = status;
+        const currentOwner = ownerRevision === this.ownerRevision;
+        if (currentOwner) this.acceptStatus(status);
         this.failure = undefined;
+        if (currentOwner) await this.browserRequests(status, this.ownerRevision);
         await this.changed().catch(() => {});
       } while (completedRevision !== this.revision && this.status?.configured !== false);
       return this.status;

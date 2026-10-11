@@ -24,6 +24,17 @@ export interface MessagingCapture {
   createdAt: number;
   importedAt?: number;
 }
+/** Explicit phone commands wait durably for the owner's Chrome extension. */
+export interface PhoneBrowserRequest {
+  id: string;
+  conversationId: string;
+  goal: string;
+  url?: string;
+  createdAt: number;
+  updatedAt: number;
+  status: "queued" | "claimed" | "started" | "failed" | "cancelled" | "unknown";
+  error?: string;
+}
 export interface PhoneReminder {
   id: string;
   text: string;
@@ -63,13 +74,16 @@ export interface MessagingStatus {
   reminders: PhoneReminder[];
   commitments: DailyCommitment[];
   deliveries: DeliverySummary[];
+  /** Older gateways do not expose remote browser commands. */
+  browserRequests?: PhoneBrowserRequest[];
 }
 export interface MessagingSync {
   workspace: CompanionSnapshot;
   captureAcks: string[];
 }
-/** Phone intents deliberately contain no browser actions or arbitrary recipients. */
+/** Browser intents authorize the existing Chrome assistant, never arbitrary recipients or native apps. */
 export type PhoneIntent =
+  | { type: "browser"; goal: string; url?: string }
   | { type: "capture"; kind: MessagingCapture["kind"]; text: string; url?: string }
   | { type: "reminder"; text: string; dueAt: number }
   | { type: "commitment"; text: string }

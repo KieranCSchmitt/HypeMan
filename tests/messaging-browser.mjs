@@ -90,10 +90,10 @@ async function launch() {
 }
 async function chat(page, text) {
   await page.bringToFront();
-  const before = await page.locator(".chat-message.assistant").count();
-  await page.getByLabel("What do you need?", { exact: true }).fill(text);
+  const field = page.getByLabel("What do you need?", { exact: true });
+  await field.fill(text);
   await page.getByRole("button", { name: "Send message", exact: true }).click();
-  await waitFor(async () => await page.locator(".chat-message.assistant").count() > before, `conversation response to ${text}`);
+  await waitFor(async () => await field.inputValue() === "", `composer clears after ${text}`);
   await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
 }
 async function openPreferences() {
@@ -134,7 +134,7 @@ try {
     learningEnabled: false, proactiveEnabled: false, screenshotEnabled: false,
   } });
   let phone = await openPreferences();
-  await phone.getByRole("heading", { name: "Phone companion · Ready to pair", exact: true }).waitFor();
+  await phone.getByText("Ready to pair", { exact: true }).waitFor();
   assert.equal(messaging.status().paired, false);
   check("Real extension Settings displays a configured Photon connection without live credentials");
 
@@ -148,15 +148,15 @@ try {
   await receive(`PAIR ${code}`, { sender: "+14155559999" });
   assert.equal(messaging.status().paired, false);
   await receive(`PAIR ${code}`);
-  await phone.getByText(`Paired with ${ownerPhone}`, { exact: true }).waitFor();
-  await phone.getByRole("heading", { name: "Phone companion · Connected", exact: true }).waitFor();
+  await phone.getByText("Paired · •••• 1234", { exact: true }).waitFor();
+  await phone.getByRole("tab", { name: "Check-ins", exact: true }).click();
   assert.equal(await phone.getByLabel("Morning planning time", { exact: true }).inputValue(), "09:00");
   assert.equal(await phone.getByLabel("Evening reflection time", { exact: true }).inputValue(), "19:00");
   assert.equal(await phone.getByLabel("Phone timezone", { exact: true }).inputValue(), "America/New_York");
   check("Phone ownership requires the desktop code from the matching sender and shows the default schedule");
 
   await phone.getByLabel("Morning planning time", { exact: true }).fill("10:30");
-  await phone.getByText("Phone preferences saved.", { exact: true }).waitFor();
+  await waitFor(() => messaging.status().settings.morningTime === "10:30", "phone preferences saved");
   assert.equal(messaging.status().settings.morningTime, "10:30");
   const beforeTestText = sent.length;
   await chat(preferences, "send test text");
@@ -176,6 +176,7 @@ try {
   check("An uncertain manual delivery stays visible and status refresh never repeats the text");
 
   await chat(preferences, "remind me to Check the kiln in 2 minutes");
+  await phone.getByRole("tab", { name: "Reminders", exact: true }).click();
   const reminder = phone.getByRole("region", { name: "Phone reminders", exact: true }).locator(".phone-item").filter({ hasText: "Check the kiln" });
   await reminder.waitFor();
   assert.equal(messaging.status().reminders.filter((item) => item.status === "pending").length, 1);
@@ -195,6 +196,7 @@ try {
   assert.equal(messaging.status().captures.length, 0);
   await receive(`QUEUE ${goal}`);
   await refreshPhone();
+  await phone.getByRole("tab", { name: "Inbox", exact: true }).click();
   await phone.locator(".phone-inbox .phone-item").filter({ hasText: goal }).waitFor();
   assert.equal((await rpc({ type: "workspace.get" })).tasks.length, 0);
   assert.equal(decisions.length, 0);
@@ -208,7 +210,7 @@ try {
   context = undefined;
   await launch();
   phone = await openPreferences();
-  await phone.getByText(`Paired with ${ownerPhone}`, { exact: true }).waitFor();
+  await phone.getByText("Paired · •••• 1234", { exact: true }).waitFor();
   await phone.locator(".phone-inbox .phone-item").filter({ hasText: goal }).waitFor();
   assert.equal(await phone.locator(".phone-inbox .phone-item").count(), 1);
   assert.equal(decisions.length, 0);
@@ -226,7 +228,7 @@ try {
   const noteText = "Pottery workshops include clay and tools; compare the evening schedule.";
   await rpc({ type: "note.save", note: { text: noteText, excerpt: "Clay and tools included", title: "Workshop finding", url: target } });
   await article.bringToFront();
-  await article.getByRole("button", { name: /Open HypeMan\. Drag to move/ }).waitFor();
+  await article.getByRole("button", { name: /(?:Open|Close) HypeMan\. Drag to move/ }).waitFor();
   if (!await article.getByLabel("What do you need?", { exact: true }).isVisible())
     await article.getByRole("button", { name: /Open HypeMan\. Drag to move/ }).click();
   await chat(article, "open notes");
@@ -257,6 +259,39 @@ try {
   await waitFor(async () => (await rpc({ type: "messaging.inbox" })).captures.length === 0, "dismissed capture stays handled");
   assert.equal((await rpc({ type: "workspace.get" })).notes.length, 1);
   check("Freeform phone ideas remain separate from source notes and dismissed captures do not reappear");
+
+  const remoteUrl = `${base}/demo/workshops/?phone=remote`;
+  const remoteText = `control my desktop to open ${remoteUrl}`;
+  for (const patch of [{ fromMe: true }, { isGroup: true }, { sender: "+14155559999" }, { spaceId: "wrong-thread" }])
+    await receive(remoteText, patch);
+  assert.equal(messaging.status().browserRequests?.length, 0);
+  const existingProject = await rpc({ type: "task.start", goal: "Existing desktop project", steps: ["Review source notes", "Prepare a decision"], dispatch: false });
+  const remote = incoming(remoteText);
+  await transport.receive(remote);
+  assert.equal(messaging.status().browserRequests.at(-1).status, "queued");
+  assert.match(sent.at(-1).text, /queued.*Chrome/i);
+  // Wait for the real MV3 alarm, without clicking Sync or Continue on the computer.
+  const opened = await waitFor(() => context.pages().find((page) => page.url() === remoteUrl), "phone command automatically opens Chrome", 45000);
+  await waitFor(() => messaging.status().browserRequests.at(-1).status === "started", "Chrome acceptance reported to the phone");
+  await opened.locator(".conversation-pane:visible").waitFor();
+  const decision = await waitFor(() => decisions.find((input) => input.goal.includes(remoteUrl)), "phone goal reaches the browser task runner");
+  assert.equal(decision.task?.id, undefined, "Remote commands must not inherit a desktop project's milestones");
+  assert.equal((await rpc({ type: "workspace.get" })).activeTaskId, existingProject.id);
+  assert.ok(sent.some((message) => /(?:sent to|started in) Chrome/i.test(message.text) && message.text.includes(remoteUrl)));
+  assert.ok(!sent.some((message) => /I can.t (?:open|control)/i.test(message.text)));
+  await transport.receive(remote); await rpc({ type: "messaging.inbox" }); await rpc({ type: "messaging.inbox" });
+  assert.equal(context.pages().filter((page) => page.url() === remoteUrl).length, 1);
+  assert.equal(messaging.status().browserRequests.length, 1);
+  check("A paired phone command opens a fresh Chrome chat automatically and reports acceptance without changing the existing project");
+
+  const decisionsAfterRemote = decisions.length;
+  await context.close(); context = undefined;
+  await launch(); await rpc({ type: "messaging.inbox" });
+  assert.equal(context.pages().filter((page) => page.url() === remoteUrl).length, 0);
+  assert.equal(decisions.length, decisionsAfterRemote);
+  assert.equal(messaging.status().browserRequests.at(-1).status, "started");
+  phone = await openPreferences();
+  check("Duplicate phone events, repeated syncs, and a Chrome restart never relaunch an accepted command");
 
   await mkdir("tests/screenshots", { recursive: true });
   await preferences.screenshot({ path: "tests/screenshots/hypeman-messaging.png", fullPage: true });
