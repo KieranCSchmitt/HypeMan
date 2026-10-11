@@ -3,6 +3,8 @@ import {
   isPaused,
   parseSettings,
   parseAction,
+  contextScope,
+  conversationTurns,
   type Action,
   type ActionResult,
   type AgentReply,
@@ -423,9 +425,11 @@ class Companion implements CompanionRuntime {
       at: typeof input.at === "number" && Number.isFinite(input.at) ? input.at : 0,
     };
   }
-  private async loadTask(id: string): Promise<void> {
-    const workspace = await this.api.request<WorkspaceSnapshot>({ type: "workspace.get" });
-    if (!this.allowed) return;
+  private async loadTask(id: string, signal?: AbortSignal): Promise<void> {
+    const generation = this.generation, conversationId = this.conversationId;
+    const workspace = await this.api.request<WorkspaceSnapshot>({ type: "workspace.get" }, signal);
+    check(signal);
+    if (!this.allowed || generation !== this.generation || conversationId !== this.conversationId) return;
     const task = workspace.tasks.find((task) => task.id === id) ?? null;
     this.update({ task: task?.status === "running" && workspace.activeTaskId !== id ? null : task });
     if (currentMilestone(this.state.task)) this.scheduleProjectObservation();
@@ -838,6 +842,7 @@ Give one brief, grounded hint for the current question using only a say action. 
     }
     if (stopWords.test(text)) {
       this.stop();
+      if (this.conversationId) await this.api.request({ type: "conversation.cancel-pending", conversationId: this.conversationId }).catch(() => {});
       return;
     }
     this.stop(false);
@@ -931,11 +936,13 @@ Give one brief, grounded hint for the current question using only a say action. 
           const last = this.history.at(-1);
           if (last) {
             last.result = arrival;
-            await this.progress(last.action, arrival, page);
+            await this.progress(last.action, arrival, page, signal);
+            check(signal);
           }
           this.pendingNavigation = null;
         }
-        const tabs = await this.openTabs(signal);
+        const scope = contextScope({ message, history: this.history, task: this.state.task, conversation: conversationTurns(this.state.messages, message), toolContext: this.selectedContent ? { selected: this.selectedContent } : undefined });
+        const tabs = scope === "conversation" ? [] : await this.openTabs(signal);
         const agentPage = tabs.length
           ? {
               ...page,
@@ -976,6 +983,10 @@ Give one brief, grounded hint for the current question using only a say action. 
         const action = parseAction(reply.action);
         if (!action)
           throw new Error("The gateway returned an invalid action. Nothing was executed.");
+        if (["conversation", "selection"].includes(reply.contextScope || scope) && (action.type === "say" || action.type === "ask")) {
+          this.say(action.type === "say" ? action.text : action.question);
+          break;
+        }
         if (action.type === "tool") {
           if (!this.toolHandler) throw new Error("Open the conversation to use this tool.");
           const sensitive = (action.tool === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(action.operation)) ||
@@ -1008,7 +1019,8 @@ Give one brief, grounded hint for the current question using only a say action. 
             message: "Target changed while deciding. Observe the page again.",
           };
           this.history.push({ action, result, at: now() });
-          await this.progress(action, result, page);
+          await this.progress(action, result, page, signal);
+          check(signal);
           continue;
         }
         const policy = checkPolicy(action, current, this.observer);
@@ -1018,7 +1030,9 @@ Give one brief, grounded hint for the current question using only a say action. 
             action,
             { ok: false, changed: false, message: policy.reason ?? "Blocked" },
             page,
+            signal,
           );
+          check(signal);
           break;
         }
         await this.persistIntent(action, current, policy.confirmation, signal);
@@ -1124,7 +1138,8 @@ Give one brief, grounded hint for the current question using only a say action. 
               "There is no verified completion signal on the page. Review the task before continuing.",
           };
         this.history.push({ action, result, at: now() });
-        await this.progress(action, result, page, done);
+        await this.progress(action, result, page, signal, done);
+        check(signal);
         if (action.type === "say") {
           this.say(action.text);
           if (this.state.settings.learningEnabled && /\bhint\b/i.test(message)) {
@@ -1156,6 +1171,7 @@ Give one brief, grounded hint for the current question using only a say action. 
         }
         if (action.type === "finish") {
           this.say(done ? action.summary : result.message);
+          if (done) this.update({ completionId: uid() });
           break;
         }
         if (!result.ok) this.message("status", result.message);
@@ -1243,8 +1259,10 @@ Give one brief, grounded hint for the current question using only a say action. 
     action: Action,
     result: ActionResult,
     page: PageSnapshot,
+    signal: AbortSignal,
     done = false,
   ): Promise<void> {
+    check(signal);
     if (!this.state.task || !this.allowed) return;
     const task = this.state.task;
     const taskId = task.id;
@@ -1259,8 +1277,9 @@ Give one brief, grounded hint for the current question using only a say action. 
       url: result.url ?? page.url,
       title: page.title,
       done,
-    });
-    await this.loadTask(taskId);
+    }, signal);
+    check(signal);
+    await this.loadTask(taskId, signal);
   }
   private askConfirmation(message: string, signal: AbortSignal): Promise<boolean> {
     this.update({

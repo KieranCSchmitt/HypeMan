@@ -9,6 +9,7 @@ import type {
 } from "./contracts";
 import { parseWorkspace, safePageUrl } from "./workspace";
 import { parseToolAction } from "./tools";
+import { validMessagingTimezone } from "./messaging";
 export const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const text = (v: unknown, max = 4000): v is string => typeof v === "string" && v.length <= max;
@@ -178,6 +179,11 @@ export function parseAction(value: unknown): Action | null {
   }
 }
 export function parseAgentRequest(value: unknown): AgentRequest | null {
+  if (isRecord(value) && value.conversation !== undefined && (!Array.isArray(value.conversation) || value.conversation.length > 32 ||
+      !value.conversation.every((turn) => isRecord(turn) && ["user", "assistant"].includes(String(turn.role)) && text(turn.text, 6000) && finite(turn.at) && turn.at >= 0) ||
+      JSON.stringify(value.conversation).length > 24000)) return null;
+  if (isRecord(value) && value.clock !== undefined && (!isRecord(value.clock) || !finite(value.clock.now) || value.clock.now < 0 || !validMessagingTimezone(value.clock.timezone))) return null;
+  if (isRecord(value) && value.contextScope !== undefined && !["conversation", "page", "selection", "task"].includes(String(value.contextScope))) return null;
   if (isRecord(value) && value.conversationId !== undefined &&
       (typeof value.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(value.conversationId))) return null;
   if (isRecord(value) && value.toolContext !== undefined) {
@@ -361,6 +367,9 @@ export function parseAgentRequest(value: unknown): AgentRequest | null {
     requestId: value.requestId,
     ...(value.surface === "conversation" ? { surface: "conversation" as const } : {}),
     ...(text(value.conversationId, 160) ? { conversationId: value.conversationId } : {}),
+    ...(Array.isArray(value.conversation) ? { conversation: value.conversation.map((turn) => ({ role: turn.role, text: turn.text, at: turn.at })) } : {}),
+    ...(isRecord(value.clock) ? { clock: { now: Number(value.clock.now), timezone: String(value.clock.timezone) } } : {}),
+    ...(typeof value.contextScope === "string" ? { contextScope: value.contextScope as AgentRequest["contextScope"] } : {}),
     ...(isRecord(value.toolContext) && JSON.stringify(value.toolContext).length <= 12000 ? { toolContext: value.toolContext as AgentRequest["toolContext"] } : {}),
     goal: value.goal,
     message: value.message,

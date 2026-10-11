@@ -84,7 +84,7 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
   };
   const handlePhone = async (operation: string, args: Record<string, unknown>) => {
     const selected = args.selected && typeof args.selected === "object" ? args.selected as typeof workbench.selected : workbench.selected;
-    if (["open", "status", "inbox", "reminders"].includes(operation)) { const current = await phone.refresh(); return current?.status?.paired ? `Phone companion connected to ${current.status.ownerPhone || "your phone"}. ${current.captures.length} saved ideas.` : "Ask to pair your phone, including its country code."; }
+    if (["open", "status", "inbox", "reminders"].includes(operation)) { if (operation === "reminders") setTab("Reminders"); else if (operation === "inbox") setTab("Inbox"); const current = await phone.refresh(); return current?.status?.paired ? `Phone companion connected to ${current.status.ownerPhone || "your phone"}. ${current.captures.length} saved ideas.` : "Ask to pair your phone, including its country code."; }
     if (operation === "pair") {
       const number = String(args.phone || "").trim(); if (!number) throw new Error("Tell me your phone number, including its country code.");
       const result = await act("messaging.pair", { phone: number }) as MessagingPairingResult; setPairing(result); setNow(Date.now());
@@ -107,7 +107,7 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
       const id = String(args.id || (selected?.kind === "reminder" ? selected.id : "")); if (!id) throw new Error("Select a reminder first.");
       await act("messaging.reminders", { operation, id, ...(operation === "snooze" ? { minutes: Number(args.minutes || 60) } : {}) }); return operation === "snooze" ? "Reminder snoozed." : "Reminder cancelled.";
     }
-    if (operation === "remind") { await act("messaging.remind", args); return "Reminder scheduled."; }
+    if (operation === "remind") { await act("messaging.remind", { text: args.text, dueAt: args.dueAt }); setTab("Reminders"); return "Reminder scheduled."; }
     throw new Error("That phone action is unavailable.");
   };
   useToolHandler("phone", handlePhone);

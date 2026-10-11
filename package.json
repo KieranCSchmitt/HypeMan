@@ -23,6 +23,7 @@
     "e2e:hints": "node tests/automatic-hints-browser.mjs",
     "e2e:projects": "node tests/projects-browser.mjs",
     "e2e:messaging": "node tests/messaging-browser.mjs",
+    "e2e:reminders": "node tests/reminder-context-browser.mjs",
     "e2e:execution": "node tests/project-execution-browser.mjs",
     "e2e:install": "playwright install chromium",
     "check": "npm run typecheck && npm test && npm run build",

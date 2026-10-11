@@ -16,6 +16,8 @@ export interface CompanionSnapshot {
   conversationId?: string;
   phase: "idle" | "thinking" | "acting" | "confirming" | "paused" | "error";
   status: string;
+  /** Fresh only after a browser finish action passes completion verification. */
+  completionId?: string;
   messages: RuntimeMessage[];
   confirmation: { message: string } | null;
   task: BrowserTask | null;

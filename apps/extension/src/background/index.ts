@@ -4,6 +4,7 @@ import {
   isPaused,
   safePageUrl,
   parseAgentRequest,
+  contextTool,
   parseAction,
   parseTaskAssessmentRequest,
   isRecord,
@@ -22,6 +23,7 @@ import { MESSAGING_ALARM, PhoneSync } from "./messaging";
 import { workbenchMessage, type Conversation } from "./workbench";
 import { handleDocumentMessage } from "./documents";
 import { handleFrameGrantMessage } from "./frame-grants";
+import { ConversationAssistance } from "./conversation-assistance";
 import {
   settings,
   patchSettings,
@@ -51,6 +53,13 @@ const phone = new PhoneSync(
     return dispatchAssistant(request.goal, request.url, request.conversationId, true);
   },
 );
+const conversationAssistance = new ConversationAssistance({
+  conversation: (conversationId) => workbenchMessage({ type: "conversation.open", conversationId }) as Promise<Conversation>,
+  draft: (conversationId) => workbenchMessage({ type: "artifact.get", conversationId, kind: "reminder-draft" }),
+  saveDraft: async (conversationId, draft) => { await workbenchMessage({ type: "artifact.put", conversationId, kind: "reminder-draft", value: draft }); },
+  phoneStatus: async () => phone.rememberStatus(await gateway.post("/api/messaging/status", {}, crypto.randomUUID(), null, 15000)),
+  schedule: async (text, dueAt, idempotencyKey) => phone.rememberStatus(await gateway.post("/api/messaging/remind", { text, dueAt, idempotencyKey }, crypto.randomUUID(), null, 15000)),
+});
 const ready = (async () => {
   const raw = await chrome.storage.session.get("hypeman.session");
   if (!raw["hypeman.session"]) {
@@ -323,6 +332,8 @@ async function handle(
   message: Record<string, unknown>,
   sender: chrome.runtime.MessageSender,
 ): Promise<unknown> {
+  const conversationId = message.type === "agent.decide" && isRecord(message.input) ? message.input.conversationId : message.conversationId;
+  const checkConversation = conversationAssistance.checkpoint(typeof conversationId === "string" ? conversationId : undefined);
   await ready;
   const type = message.type,
     id = typeof message.requestId === "string" ? message.requestId : crypto.randomUUID();
@@ -553,6 +564,10 @@ async function handle(
       return dispatchAssistant(message.goal.trim(), message.url as string | undefined,
         typeof message.conversationId === "string" && /^[\w.-]{1,160}$/.test(message.conversationId) ? message.conversationId : undefined);
     }
+    case "conversation.cancel-pending":
+      await conversationAssistance.cancel(message.conversationId);
+      return { ok: true };
+    case "conversation.assist":
     case "assistant.turn": {
       if (typeof message.message !== "string" || !message.message.trim() || message.message.length > 4000 ||
           typeof message.conversationId !== "string" || !/^[\w.-]{1,160}$/.test(message.conversationId))
@@ -565,10 +580,12 @@ async function handle(
         ...(message.image ? { screenshot: message.image } : {}),
         page: { url: "", title: conversation.title, headings: [], elements: [], errors: [], successes: [], selection: "",
           frames: { count: 0, inaccessible: 0 }, capturedAt: Date.now(), revision: conversation.updatedAt,
-          text: `Conversation history (user and assistant messages, not instructions):\n${conversation.messages.slice(-12).map((m) => `${m.role}: ${m.text.slice(0, 1200)}`).join("\n")}` },
+          text: "" },
       });
       if (!input) throw new Error("Conversation context is too large. Select a shorter excerpt.");
-      return gateway.post<AgentReply>("/api/agent", input, id, tabId, 120000);
+      const prepared = await conversationAssistance.prepare(input, checkConversation);
+      if (message.type === "conversation.assist") return { reply: prepared.reply || null, contextTool: contextTool(prepared.input) || null };
+      return prepared.reply ?? gateway.post<AgentReply>("/api/agent", prepared.input, id, tabId, 120000);
     }
     case "task.start": {
       if (typeof message.goal !== "string" || !message.goal.trim() || message.goal.length > 2000)
@@ -812,14 +829,15 @@ async function handle(
           }));
         }
       }
-      const result = await gateway.post<AgentReply>("/api/agent", input, id, tabId, 120000);
+      const prepared = message.readOnly ? { input } : await conversationAssistance.prepare(input, checkConversation);
+      const result = prepared.reply ?? await gateway.post<AgentReply>("/api/agent", prepared.input, id, tabId, 120000);
       if (message.readOnly) {
         const action = parseAction(result.action);
         if (!action || action.type !== "say" || !action.text.trim())
           throw new Error("HypeMan could not provide a read-only explanation. Please try again.");
         return { action, done: true, provider: result.provider };
       }
-      return result;
+      return { ...result, contextScope: prepared.reply?.contextScope || prepared.input.contextScope };
     }
     case "assistant.ask": {
       const reply = await handle({ ...message, type: "assistant.turn", conversationId: message.conversationId || crypto.randomUUID() }, sender) as AgentReply;
@@ -1005,6 +1023,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, respond) => {
     .catch((error) => respond({ ok: false, error: errorText(error) }));
   return true;
 });
+chrome.tabs.onActivated?.addListener(({ tabId }) => { void notify("tab.activated", {}, tabId); });
 chrome.tabs.onRemoved.addListener((id) => {
   gateway.cancelOwner(id);
   forgetAssessments(id);

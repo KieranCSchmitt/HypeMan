@@ -363,7 +363,7 @@ export class MessagingService {
   }
   async route(action: string, input: unknown): Promise<unknown> {
     if (!object(input)) throw new GatewayError(400, "Invalid phone request.");
-    const keys: Record<string, string[]> = { status: [], pair: ["phone"], unpair: [], settings: ["patch"], send: ["text"], remind: ["text", "dueAt"], reminders: ["operation", "id", "minutes"], sync: ["workspace", "captureAcks"], "browser.claim": ["id", "claimId"], "browser.result": ["id", "claimId", "status", "error"] };
+    const keys: Record<string, string[]> = { status: [], pair: ["phone"], unpair: [], settings: ["patch"], send: ["text"], remind: ["text", "dueAt", "idempotencyKey"], reminders: ["operation", "id", "minutes"], sync: ["workspace", "captureAcks"], "browser.claim": ["id", "claimId"], "browser.result": ["id", "claimId", "status", "error"] };
     if (!Object.hasOwn(keys, action)) throw new GatewayError(404, "Unknown phone action.");
     if (Object.keys(input).some(key => !keys[action].includes(key))) throw new GatewayError(400, "Invalid phone request field.");
     if (action === "status") return this.status();
@@ -371,7 +371,11 @@ export class MessagingService {
       const intent = phoneIntent({ type: "reminder", text: input.text, dueAt: input.dueAt }, this.now());
       if (!intent || intent.type !== "reminder") throw new GatewayError(400, "Give a reminder and a future time within one year.");
       if (!this.store.state.owner) throw new GatewayError(409, "Pair your phone first.");
-      this.store.state.reminders.push({ id: randomUUID(), text: intent.text, dueAt: intent.dueAt, status: "pending", createdAt: this.now() });
+      if (input.idempotencyKey !== undefined && (!boundedText(input.idempotencyKey, 160) || !/^[\w.-]+$/.test(input.idempotencyKey))) throw new GatewayError(400, "Invalid reminder request ID.");
+      const id = input.idempotencyKey ? `desktop:${input.idempotencyKey}` : randomUUID();
+      const existing = this.store.state.reminders.find((reminder) => reminder.id === id);
+      if (existing && (existing.text !== intent.text || existing.dueAt !== intent.dueAt)) throw new GatewayError(409, "This reminder request was already used for different details.");
+      if (!existing) this.store.state.reminders.push({ id, text: intent.text, dueAt: intent.dueAt, status: "pending", createdAt: this.now() });
       this.store.save(); return this.status();
     }
     if (action === "sync") {

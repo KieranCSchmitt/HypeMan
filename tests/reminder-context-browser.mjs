@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { chromium } from "playwright";
+import { tsImport } from "tsx/esm/api";
+const { createGateway } = await tsImport("../apps/gateway/src/index.ts", import.meta.url);
+const { loadConfig } = await tsImport("../apps/gateway/src/config.ts", import.meta.url);
+const { MessagingService } = await tsImport("../apps/gateway/src/messaging.ts", import.meta.url);
+const profile = await mkdtemp(join(tmpdir(), "hypeman-reminder-context-"));
+const directory = await mkdtemp(join(tmpdir(), "hypeman-reminder-phone-"));
+const token = "hypeman-reminder-context-fixture", decisions = [];
+const owner = "+12125550123", thread = "fixture-reminder-owner";
+const transport = { configured: true, connected: true, async start(receive) { this.receive = receive; }, async send() { return { id: crypto.randomUUID(), spaceId: thread }; }, async close() {} };
+const messaging = new MessagingService({ directory, transport, demo: true });
+const fixture = http.createServer((_request, response) => { response.writeHead(200, { "content-type": "text/html" }); response.end('<!doctype html><html><title>Math practice</title><main><h1>Practice</h1><p>Solve 10 ÷ 5 = 1</p><input aria-label="Answer"><button>Try it</button><p role="alert">Try again</p></main></html>'); });
+const gateway = createGateway(loadConfig({ PORT: "0", DEMO_MODE: "1" }), { token, messaging, agent: async (input) => {
+  decisions.push(input);
+  if (/wrong/i.test(input.message)) {
+    assert.ok(input.page.text.includes("10"), "Explicit page help retains the equation");
+    assert.equal(input.mode, "learn");
+    return { action: { type: "say", text: "Check the divisor and compare both sides." }, done: true, provider: "demo" };
+  }
+  assert.equal(input.page.text, "", "Unrelated webpage text is not sent to the model");
+  assert.equal(input.toolContext, undefined, "Stale selections do not change the topic");
+  assert.equal(input.mode, "browse", "A learning preference does not hijack ordinary chat");
+  if (/another example/i.test(input.message)) assert.ok(input.conversation.some((turn) => turn.role === "assistant" && turn.text.includes("Inertia resists")), "Follow-up includes the prior reply after navigation");
+  return { action: { type: "say", text: /inertia/i.test(input.message) ? "Inertia resists changes in motion." : "A rolling ball continues moving until a force slows it." }, done: true, provider: "demo" };
+} });
+let context, home, page;
+const waitFor = async (predicate, description) => { const deadline = Date.now() + 20000; while (Date.now() < deadline) { const value = await predicate(); if (value) return value; await new Promise((done) => setTimeout(done, 75)); } throw new Error(`Timed out: ${description}`); };
+async function rpc(message) { return home.evaluate(async (message) => { const reply = await chrome.runtime.sendMessage({ ...message, requestId: crypto.randomUUID() }); if (!reply?.ok) throw new Error(reply?.error || "No response"); return reply.data; }, message); }
+async function send(text) {
+  const before = await page.locator(".chat-message.assistant").count();
+  await page.getByRole("textbox", { name: "What do you need?", exact: true }).fill(text);
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await waitFor(async () => await page.locator(".chat-message.assistant").count() > before, `reply to ${text}`);
+  await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  assert.equal(await page.locator(".conversation-pane .notice.error:visible").count(), 0);
+  return page.locator(".chat-message.assistant").last().locator("p").first().innerText();
+}
+try {
+  await messaging.start();
+  const base = `http://127.0.0.1:${await gateway.listen()}`;
+  await new Promise((done) => fixture.listen(0, "127.0.0.1", done));
+  const extension = resolve(process.env.HYPEMAN_TEST_EXTENSION_DIR || "apps/extension/dist");
+  context = await chromium.launchPersistentContext(profile, { channel: "chromium", headless: true, viewport: { width: 1440, height: 1000 }, args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
+  const worker = context.serviceWorkers()[0] || await context.waitForEvent("serviceworker");
+  home = await context.newPage(); await home.goto(`chrome-extension://${new URL(worker.url()).host}/newtab.html#chat`);
+  await home.getByRole("textbox", { name: "What do you need?", exact: true }).waitFor();
+  await rpc({ type: "settings.patch", patch: { serverUrl: base, serverToken: token, onboarded: true, proactiveEnabled: false, learningEnabled: true, reducedMotion: "on" } });
+  const invitation = await rpc({ type: "messaging.pair", phone: owner });
+  await transport.receive({ id: "fixture-pair", sender: owner, spaceId: thread, text: `PAIR ${invitation.code}`, at: Date.now(), fromMe: false, isGroup: false });
+  await rpc({ type: "messaging.status" });
+  page = await context.newPage(); await page.goto(`http://127.0.0.1:${fixture.address().port}/practice`);
+  await page.getByRole("button", { name: /^Open HypeMan/ }).click();
+  await page.getByRole("textbox", { name: "What do you need?", exact: true }).waitFor();
+  assert.equal(await send("send me a text reminder at 12:30 to practice math"), "12:30 AM or PM?");
+  assert.equal(await page.getByRole("button", { name: "12:30 AM", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("button", { name: "12:30 PM", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("alertdialog").count(), 0);
+  await page.reload();
+  await page.getByRole("button", { name: "12:30 AM", exact: true }).waitFor();
+  const confirmation = await send("AM est");
+  assert.ok(confirmation.includes("practice math"));
+  const reminders = (await rpc({ type: "messaging.status" })).reminders;
+  assert.equal(reminders.length, 1); assert.equal(reminders[0].text, "practice math");
+  assert.ok(reminders[0].dueAt > Date.now());
+  assert.equal(new Intl.DateTimeFormat("en-US", { timeZone: "Etc/GMT+5", hour: "numeric", minute: "2-digit" }).format(reminders[0].dueAt), "12:30 AM");
+  assert.equal(decisions.length, 0, "Clear reminders and short answers do not depend on model inference");
+  assert.equal(await page.locator(".workspace-phone:visible").count(), 0, "No phone window or extra clicks are required");
+  console.log("✓ Screenshot reminder completes with one AM/PM clarification, preserved text and no extra clicks");
+  await page.getByRole("textbox", { name: "What do you need?", exact: true }).fill("Open documents");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await page.locator('.workspace-documents:visible').waitFor();
+  await send("remind me to stretch in ten minutes");
+  assert.equal((await rpc({ type: "messaging.status" })).reminders.length, 2);
+  assert.equal(decisions.length, 0);
+  console.log("✓ Complete natural-language reminder schedules in one message even with a document window open");
+  assert.equal(await send("Remind me to read at 9"), "9:00 AM or PM?");
+  await page.getByRole("button", { name: "9:00 AM", exact: true }).click();
+  await waitFor(async () => (await rpc({ type: "messaging.status" })).reminders.length === 3, "quick reply schedules reminder");
+  await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
+  assert.equal(decisions.length, 0);
+  console.log("✓ AM/PM quick reply schedules directly without retyping or opening another window");
+  await send("What is inertia?");
+  await page.reload();
+  await page.locator(".conversation-pane:visible").waitFor();
+  await send("Give another example");
+  assert.ok(decisions.at(-1).conversation.some((turn) => turn.role === "user" && turn.text === "What is inertia?"));
+  console.log("✓ Ordinary chat omits unrelated math content and preserves follow-ups across page reload");
+  await send("Why is my answer wrong?");
+  assert.ok(decisions.at(-1).page.text.includes("10"));
+  console.log("✓ Explicit page questions still receive the relevant page and learning context");
+  const conversation = (await rpc({ type: "conversation.list" })).find((chat) => chat.messages.some((message) => message.text === "Why is my answer wrong?"));
+  assert.ok(conversation, "The visible chat is saved before restoring it");
+  for (let index = 0; index < 35; index++) await rpc({ type: "conversation.append", conversationId: conversation.id, message: { id: `scroll-fixture-${index}`, role: "assistant", text: `Saved chat message ${index}: this conversation continues across browser tabs.`, at: Date.now() } });
+  await page.reload();
+  const log = page.locator(".conversation-messages");
+  await page.getByText("Saved chat message 34:", { exact: false }).waitFor();
+  const bottom = () => log.evaluate((element) => element.clientHeight > 0 && element.scrollHeight - element.clientHeight - element.scrollTop < 3);
+  await waitFor(bottom, "restored conversation scrolled to latest");
+  assert.equal(await page.evaluate(() => window.scrollY), 0, "Chat restoration does not scroll its host webpage");
+  await log.evaluate((element) => { element.scrollTop = 0; });
+  const other = await context.newPage(); await other.goto(`${page.url()}?other-tab`);
+  await home.evaluate(async (urls) => {
+    const tabs = await chrome.tabs.query({});
+    await chrome.tabs.update(tabs.find((tab) => tab.url === urls.other).id, { active: true });
+    await chrome.tabs.update(tabs.find((tab) => tab.url === urls.current).id, { active: true });
+  }, { other: other.url(), current: page.url() });
+  await waitFor(bottom, "reactivated browser tab scrolled to latest");
+  console.log("✓ Restored and reactivated tabs show the latest chat without scrolling the webpage");
+} finally {
+  await context?.close(); await gateway.close(); await new Promise((done) => fixture.close(done));
+  await rm(profile, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true });
+}

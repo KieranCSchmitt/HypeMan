@@ -6,8 +6,8 @@ import { DEFAULT_SETTINGS } from "@core";
 import { NewTab } from "../apps/extension/src/ui/NewTab";
 import { request } from "../apps/extension/src/bridge";
 vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn(), subscribe: () => () => {} }));
-vi.mock("../apps/extension/src/ui/Rooftop", () => ({ Rooftop: ({ onCompanion }: any) => createElement("button", { "aria-label": "Open HypeMan", onClick: onCompanion }) }));
-vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: () => createElement("span", null, "Avatar") }));
+vi.mock("../apps/extension/src/ui/Rooftop", () => ({ Rooftop: ({ onCompanion, activity }: any) => createElement("button", { "aria-label": "Open HypeMan", "data-activity": activity, onClick: onCompanion }) }));
+vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: ({ state }: any) => createElement("span", { "data-avatar": state }, "Avatar") }));
 vi.mock("../apps/extension/src/ui/ToolOverlay", () => ({ ToolOverlay: ({ section, onClose }: any) => section ? createElement("section", { "data-section": section }, createElement("button", { "aria-label": "Close tools", onClick: () => onClose(section) })) : null }));
 vi.mock("../apps/extension/src/ui/hooks", () => ({ useSettings: () => ({ settings: DEFAULT_SETTINGS, error: "", patch: vi.fn() }), useReducedMotion: () => true }));
 let root: Root, container: HTMLDivElement;
@@ -33,6 +33,26 @@ async function render(open = true, initialTool?: string) {
 async function fill(value: string) { await act(async () => { const field = container.querySelector("textarea")!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value); field.dispatchEvent(new Event("input", { bubbles: true })); }); }
 async function submit() { await act(async () => { container.querySelector("form.conversation-composer")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); }); }
 describe("shared conversation", () => {
+  const expectAnimation = (state: string) => {
+    expect(container.querySelector("[data-avatar]")!.getAttribute("data-avatar")).toBe(state);
+    expect(container.querySelector("[data-activity]")!.getAttribute("data-activity")).toBe(state);
+  };
+  it("sends work, stop, and error states to both new-tab avatars", async () => {
+    let finish!: (value: any) => void;
+    decide = async () => new Promise((resolve) => { finish = resolve; });
+    await render(); await fill("A slow question"); await submit(); expectAnimation("thinking");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click()); expectAnimation("idle");
+    await act(async () => finish({ action: { type: "finish", summary: "Late completion" } })); expectAnimation("idle");
+    decide = async () => { throw new Error("Connection failed"); };
+    await fill("Try again"); await submit(); expectAnimation("confused");
+  });
+  it("points for approval and celebrates a successful finish", async () => {
+    decide = async () => ({ action: { type: "tool", tool: "phone", operation: "send", args: { text: "Hello" } } });
+    await render(); await fill("Please say hello"); await submit(); expectAnimation("point");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click()); expectAnimation("idle");
+    decide = async () => ({ action: { type: "finish", summary: "Finished the requested work." } });
+    await fill("Finish the task"); await submit(); expectAnimation("celebrate");
+  });
   it("starts as a quiet rooftop and opens the conversation only from the avatar", async () => {
     await render(false);
     expect(container.querySelector(".conversation-workbench")).toBeNull();
@@ -138,8 +158,31 @@ describe("shared conversation", () => {
     expect(container.querySelector("textarea")!.value).toBe("");
     await fill("An unsent follow-up");
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click()); expect(signal.aborted).toBe(true);
+    expect(request).toHaveBeenCalledWith({ type: "conversation.cancel-pending", conversationId: "fixture-conversation" });
     await act(async () => finish({ action: { type: "say", text: "Late answer" } }));
     expect(container.textContent).not.toContain("Late answer"); expect(container.querySelector("textarea")!.value).toBe("An unsent follow-up");
+  });
+  it.each(["Stop", "Escape", "typed cancel"])("cancels background reminder preparation with %s", async (method) => {
+    let finish!: (value: any) => void; let signal!: AbortSignal;
+    const original = vi.mocked(request).getMockImplementation()!;
+    vi.mocked(request).mockImplementation((message, requestSignal) => {
+      if (message.type === "conversation.assist") {
+        signal = requestSignal!;
+        return new Promise((resolve) => { finish = resolve; });
+      }
+      return original(message, requestSignal);
+    });
+    await render(); await fill("remind me to study in 10 minutes"); await submit();
+    if (method === "typed cancel") { await fill("cancel"); await submit(); }
+    else await act(async () => {
+      if (method === "Stop") container.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.click();
+      else window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(signal.aborted).toBe(true);
+    expect(request).toHaveBeenCalledWith({ type: "conversation.cancel-pending", conversationId: "fixture-conversation" });
+    await act(async () => finish({ reply: { action: { type: "say", text: "Late reminder preparation" } } }));
+    expect(container.textContent).not.toContain("Late reminder preparation");
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "assistant.turn" }), expect.anything());
   });
   it("keeps the sent message in history and the composer clear when a request fails", async () => {
     decide = async () => { throw new Error("Reconnect the local server."); };

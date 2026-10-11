@@ -102,6 +102,17 @@ async function setup(options: {
 }
 
 describe("project orchestration through the public runtime", () => {
+  it("keeps a personal reminder response out of the active project's intent and progress", async () => {
+    const { runtime, calls, active } = await setup({ project: true, decide: async () => ({
+      action: { type: "say", text: "I'll text you at 9 AM to open the guide." }, provider: "local", done: true, contextScope: "conversation",
+    }) });
+    const before = await active();
+    await runtime.send("Remind me to open the guide at 9 AM");
+    expect(calls("task.intent")).toHaveLength(0);
+    expect(calls("task.progress")).toHaveLength(0);
+    expect(await active()).toEqual(before);
+    expect(runtime.getSnapshot().messages.at(-1)?.text).toContain("text you");
+  });
   it("answers a one-off question without saving a project or starting passive assessment", async () => {
     const { runtime, workspace, calls } = await setup();
     await runtime.send("What does this guide mean?");

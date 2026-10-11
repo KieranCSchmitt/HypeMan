@@ -93,6 +93,10 @@ export interface AgentRequest {
   surface?: "conversation";
   conversationId?: string;
   toolContext?: { activeTool?: string | null; selected?: SelectedContent | null };
+  /** Chat turns are separate from untrusted webpage text and verified browser actions. */
+  conversation?: ConversationTurn[];
+  clock?: { now: number; timezone: string };
+  contextScope?: "conversation" | "page" | "selection" | "task";
   requestId: string;
   goal: string;
   message: string;
@@ -104,7 +108,13 @@ export interface AgentRequest {
   sources?: SourceNote[];
   screenshot?: string;
 }
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  text: string;
+  at: number;
+}
 export interface AgentReply {
+  contextScope?: AgentRequest["contextScope"];
   action: Action;
   say?: string;
   done?: boolean;

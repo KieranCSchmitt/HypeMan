@@ -17,15 +17,18 @@ import { clampWindow } from "./window-layout";
 import { useWindowGeometry, WindowControls, WindowResizeHandles } from "./useWindowGeometry";
 import { useConversationUI } from "./useConversationUI";
 import { WindowGeometryProvider, type WindowGeometryPersistence } from "./WindowGeometryPersistence";
+import type { AvatarActivity } from "./useAvatarAnimation";
+import { useChatScroll } from "./useChatScroll";
 
 interface Message { id: string; role: "user" | "assistant" | "status"; text: string; at: number }
 const sections: Record<string, string> = { projects: "tasks", pdf: "documents" };
 const resolveSection = (tool: string | null): OverlaySection | null => {
   const value = tool && (sections[tool] || tool); return isOverlaySection(value) ? value : null;
 };
-export function ConversationWorkbench({ runtime, initialTool, onClose, onActivity, chatOpen = true, onRestoreChatOpen }: {
+export function ConversationWorkbench({ runtime, initialTool, onClose, onActivity, onAvatarActivity, chatOpen = true, onRestoreChatOpen }: {
   runtime?: CompanionRuntime; initialTool?: string; onClose?: () => void; onActivity?: (busy: boolean) => void;
   chatOpen?: boolean; onRestoreChatOpen?: (open: boolean, conversationId: string) => boolean;
+  onAvatarActivity?: (activity: AvatarActivity) => void;
 }) {
   const { settings } = useSettings();
   const [conversationId, setConversationId] = useState("");
@@ -73,6 +76,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [celebration, setCelebration] = useState("");
   const [image, setImage] = useState<string | null>(null);
   const [saved, setSaved] = useState<Array<{ id: string; title: string; messages: Message[] }>>([]);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -81,12 +85,13 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const regionAnswer = useRef<((image: string | null) => void) | null>(null);
   const [snapshot, setSnapshot] = useState(() => runtime?.getSnapshot());
   const [sketch, setSketch] = useState<Extract<Action, { type: "sketch" }> | null>(null);
-  const field = useRef<HTMLTextAreaElement>(null), end = useRef<HTMLDivElement>(null), files = useRef<HTMLInputElement>(null);
+  const field = useRef<HTMLTextAreaElement>(null), files = useRef<HTMLInputElement>(null);
   const preferredHeight = Math.min(400, messages.length ? 360 : confirmation || snapshot?.confirmation ? 240 : image ? 220 : error ? 180 : 120);
   const chatWindow = useWindowGeometry({
     id: "chat", minSize: { width: 300, height: 120 }, preferredHeight, persistence,
     initialRect: (viewport) => clampWindow({ x: viewport.x + viewport.width - 368, y: viewport.y + viewport.height - 105 - preferredHeight, width: 340, height: preferredHeight }, viewport, { width: 300, height: 120 }),
   });
+  const chatScroll = useChatScroll({ conversationId, ready: !hydrating && chatWindow.hydrated, open: chatOpen && !chatWindow.minimized, lastMessage: messages.at(-1) });
   const handlers = useRef(new Map<string, ToolHandler>());
   const pending = useRef<AbortController | null>(null);
   const state = useRef({ conversationId, messages, tool, selected }); state.current = { conversationId, messages, tool, selected };
@@ -171,6 +176,11 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     regionAnswer.current?.(null); regionAnswer.current = null; setCaptureRegion(false);
     window.dispatchEvent(new Event("hypeman.cancel-tools")); setBusy(false);
   }, [runtime]);
+  const cancelPending = useCallback(async () => {
+    const id = state.current.conversationId;
+    stop();
+    if (id) await request({ type: "conversation.cancel-pending", conversationId: id });
+  }, [stop]);
   useEffect(() => {
     window.addEventListener("hypeman.close-conversation", stop);
     return () => window.removeEventListener("hypeman.close-conversation", stop);
@@ -179,7 +189,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting") stop();
+      if (busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting") void cancelPending().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
       else if (confirmation) { confirmationAnswer.current?.(false); setConfirmation(null); }
       else if (snapshot?.confirmation) runtime?.confirm(false);
       else if (state.current.tool) { window.dispatchEvent(new Event("hypeman.cancel-tools")); setTool(null); field.current?.focus(); }
@@ -194,11 +204,20 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     window.addEventListener("keydown", escape); document.addEventListener("selectionchange", selection);
     const oldLink = () => { if (location.protocol === "chrome-extension:") { const section = resolveSection(location.hash.slice(1)); if (section) setTool(section); } };
     window.addEventListener("hashchange", oldLink);
-    const unsubscribe = subscribe((event) => { if (event.type === "command" && event.name === "open-tools" && typeof event.section === "string") setTool(resolveSection(event.section)); });
+    const unsubscribe = subscribe((event) => {
+      if (event.type === "tab.activated") chatScroll.latest(true);
+      if (event.type === "command" && event.name === "open-tools" && typeof event.section === "string") setTool(resolveSection(event.section));
+    });
     return () => { window.removeEventListener("keydown", escape); document.removeEventListener("selectionchange", selection); window.removeEventListener("hashchange", oldLink); unsubscribe(); };
-  }, [busy, snapshot?.phase, snapshot?.confirmation, confirmation, stop, onClose, runtime]);
+  }, [busy, snapshot?.phase, snapshot?.confirmation, confirmation, cancelPending, onClose, runtime]);
   useEffect(() => { onActivity?.(busy); }, [busy, onActivity]);
-  useEffect(() => { end.current?.scrollIntoView?.({ block: "nearest" }); }, [messages.length]);
+  const avatarPhase: AvatarActivity["phase"] = error || snapshot?.phase === "error" ? "confused"
+    : confirmation || snapshot?.confirmation || snapshot?.phase === "confirming" ? "point"
+    : busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting" ? "thinking" : "idle";
+  const avatarCompletion = snapshot?.completionId || celebration ? `${snapshot?.completionId || ""}:${celebration}` : undefined;
+  useEffect(() => {
+    onAvatarActivity?.({ phase: avatarPhase, conversationId, task: snapshot?.task, hintId: snapshot?.learning.autoHint?.id, celebration: avatarCompletion });
+  }, [onAvatarActivity, avatarPhase, conversationId, snapshot?.task, snapshot?.learning.autoHint?.id, avatarCompletion]);
   const applyReply = async (action: Action, say?: string, requestSelection = state.current.selected, submittedText = draft) => {
     if (action.type === "tool") {
       const sensitive = (action.tool === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(action.operation)) || (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) || (action.tool === "settings" && action.operation === "permissions");
@@ -215,7 +234,11 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     else if (action.type === "sketch") { setSketch(action); setTool("board"); await append("assistant", say || `I've shown ${action.title} on the whiteboard.`); }
     else if (action.type === "say") await append("assistant", action.text);
     else if (action.type === "ask") await append("assistant", action.question);
-    else if (action.type === "finish") await append("assistant", action.summary);
+    else if (action.type === "finish") {
+      const signal = pending.current?.signal;
+      await append("assistant", action.summary); signal?.throwIfAborted();
+      if (alive.current) setCelebration(crypto.randomUUID());
+    }
     else if (action.type === "note") await saveNote(action.text, action.excerpt);
     else {
       await request({ type: "assistant.run", goal: submittedText, ...(action.type === "navigate" ? { url: action.url } : {}), conversationId: state.current.conversationId });
@@ -232,7 +255,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   };
   const send = async (raw: string) => {
     const text = raw.trim(); if (!text || !state.current.conversationId) return;
-    if (/^(?:stop|cancel|never mind)[.!]?$/i.test(text)) { stop(); return; }
+    if (/^(?:stop|cancel|never mind)[.!]?$/i.test(text)) { await cancelPending(); return; }
     if (confirmation) { if (/^(?:yes|continue|go ahead|no|cancel)[.!]?$/i.test(text)) { confirmationAnswer.current?.(/^(?:yes|continue|go ahead)/i.test(text)); setConfirmation(null); } else throw new Error("Confirm or cancel the pending action first."); return; }
     if (snapshot?.confirmation) { if (/^(?:yes|continue|go ahead|no|cancel)[.!]?$/i.test(text)) runtime?.confirm(/^(?:yes|continue|go ahead)/i.test(text)); else throw new Error("Confirm or cancel the pending browser action first."); return; }
     if (pending.current) stop();
@@ -264,6 +287,9 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         const url = URL.createObjectURL(new Blob([JSON.stringify({ workspace, workbench: saved }, null, 2)], { type: "application/json" }));
         const anchor = document.createElement("a"); anchor.href = url; anchor.download = "hypeman-workspace.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); await append("assistant", "Exported your conversations, notes, projects, and saved tool content. Ask to export a PDF to download its original file."); return;
       }
+      const assisted = await request<{ reply?: { action: Action; say?: string } | null; contextTool?: "documents" | "video" | null }>({ type: "conversation.assist", conversationId: state.current.conversationId, message: text, toolContext: { activeTool: state.current.tool, selected: state.current.selected } }, controller.signal);
+      controller.signal.throwIfAborted();
+      if (assisted?.reply) { await applyReply(assisted.reply.action, assisted.reply.say, null, text); return; }
       const local = toolIntent(text, state.current.tool, state.current.selected);
       if (local) {
         if (local.tool === "video" && runtime && snapshot?.video && ["play", "pause", "seek", "speed", "summarize", "ask"].includes(local.operation)) {
@@ -278,7 +304,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         }
         const result = await executeTool(local.tool, local.operation, local.args); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return;
       }
-      if (state.current.tool === "documents") {
+      if (state.current.tool === "documents" && assisted?.contextTool === "documents") {
         const documentSelection = state.current.selected;
         const result = await executeTool("documents", "analyze", { question: text, ...(documentSelection?.page ? { page: documentSelection.page, quote: documentSelection.quote } : {}) });
         controller.signal.throwIfAborted(); if (result) await append("assistant", result);
@@ -289,7 +315,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         }
         return;
       }
-      if (state.current.tool === "video" && !runtime) { const result = await executeTool("video", "ask", { question: text }); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return; }
+      if (state.current.tool === "video" && assisted?.contextTool === "video" && !runtime) { const result = await executeTool("video", "ask", { question: text }); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return; }
       if (runtime) { await runtime.send(text); if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Request failed. Try again."); setImage(null); }
       else {
         const requestSelection = state.current.selected;
@@ -349,13 +375,14 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
           <WindowControls geometry={chatWindow} title="HypeMan" onClose={() => { stop(); onClose?.(); }} />
         </header>
         <div className="conversation-body" hidden={chatWindow.minimized}>
-        <div className="conversation-messages" role="log" aria-live="polite">
+        <div ref={chatScroll.ref} onScroll={chatScroll.onScroll} className="conversation-messages" role="log" aria-live="polite">
           {messages.map((message) => <article key={message.id} className={`chat-message ${message.role}${selected?.kind === "message" && selected.id === message.id ? " is-selected" : ""}`} aria-label={message.role === "user" ? "You" : "HypeMan"} tabIndex={0}
             onClick={(event) => { if (!(event.target as Element).closest("a,button")) setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" }); }}
             onKeyDown={(event) => { if (event.target === event.currentTarget && ["Enter", " "].includes(event.key)) { event.preventDefault(); setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" }); } }}>
             <MessageContent text={message.text} onDocumentPage={(documentId, page) => { void executeTool("documents", "page", { documentId, page }).catch((cause) => setError(cause.message)); }} />
+            {message === messages.at(-1) && message.role === "assistant" && /^\d{1,2}:\d{2} AM or PM\?$/.test(message.text) && <div className="tool-actions" style={{ marginTop: 8 }} aria-label="Choose reminder time">{["AM", "PM"].map((period) => <button key={period} type="button" className="button" disabled={working} onClick={(event) => { event.stopPropagation(); void send(`${message.text.split(" ")[0]} ${period}`).catch((cause) => setError(cause.message)); }}>{message.text.split(" ")[0]} {period}</button>)}</div>}
           </article>)}
-          {saved.length > 0 && <div className="saved-conversations" aria-label="Saved conversations">{saved.map((c) => <article key={c.id} tabIndex={0} onClick={() => void switchConversation(c.id)} onKeyDown={(e) => { if (e.key === "Enter") void switchConversation(c.id); }}>{c.title}</article>)}</div>}<div ref={end} />
+          {saved.length > 0 && <div className="saved-conversations" aria-label="Saved conversations">{saved.map((c) => <article key={c.id} tabIndex={0} onClick={() => void switchConversation(c.id)} onKeyDown={(e) => { if (e.key === "Enter") void switchConversation(c.id); }}>{c.title}</article>)}</div>}
           {working && <div className="conversation-working" role="status" aria-label={snapshot?.status || "Working"}><span /><span /><span /></div>}
         </div>
         {snapshot?.confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm browser action"><p>{snapshot.confirmation.message}</p><button type="button" className="button primary" onClick={() => runtime?.confirm(true)}>Allow</button><button type="button" className="button" onClick={() => runtime?.confirm(false)}>Cancel</button></div>}
@@ -366,7 +393,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         <form className="conversation-composer" onSubmit={submit} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void acceptFiles(event.clipboardData.files); } }}>
           <button type="button" className="conversation-attach" aria-label="Attach a file" title="Attach a file" onClick={() => files.current?.click()}><Icon name="paperclip" /></button>
           <textarea id="task-goal" ref={field} aria-label="What do you need?" placeholder="Ask anything…" rows={1} value={draft} maxLength={4000} disabled={!conversationId || hydrating} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
-          {working ? <button type="button" aria-label="Stop" onClick={stop}><Icon name="stop" /></button> : <button type="submit" aria-label="Send message" disabled={!draft.trim() || !conversationId || hydrating}><Icon name="arrow" /></button>}
+          {working ? <button type="button" aria-label="Stop" onClick={() => void cancelPending().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}><Icon name="stop" /></button> : <button type="submit" aria-label="Send message" disabled={!draft.trim() || !conversationId || hydrating}><Icon name="arrow" /></button>}
         </form>
         <input ref={files} className="sr-only" type="file" aria-label="Choose a file" accept="application/pdf,image/*,video/*,.vtt,.srt" multiple onChange={(event) => { if (event.target.files?.length) void acceptFiles(event.target.files); event.target.value = ""; }} />
         </div>

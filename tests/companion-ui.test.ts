@@ -9,7 +9,7 @@ import type { CompanionRuntime, CompanionSnapshot, RuntimeMessage } from "../app
 
 vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn(), subscribe: vi.fn() }));
 vi.mock("../apps/extension/src/ui/hooks", () => ({ useSettings: () => ({ settings: DEFAULT_SETTINGS }) }));
-vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: () => createElement("span", { "aria-label": "HypeMan pet" }) }));
+vi.mock("../apps/extension/src/ui/Pet", () => ({ Pet: ({ state }: { state: string }) => createElement("span", { "aria-label": "HypeMan pet", "data-avatar": state }) }));
 vi.mock("../apps/extension/src/ui/ToolOverlay", () => ({
   ToolOverlay: ({ openSections = [] }: { openSections?: string[] }) => openSections.map((tool) => createElement("section", { key: tool, "data-tool": tool })),
 }));
@@ -69,6 +69,35 @@ const avatar = () => container.querySelector<HTMLButtonElement>(".pet-handle")!;
 const toggle = () => act(async () => avatar().click());
 
 describe("companion window visibility", () => {
+  it("reflects live runtime activity and verified project completion in the webpage avatar", async () => {
+    const animation = () => container.querySelector("[data-avatar]")!.getAttribute("data-avatar");
+    await render(); expect(animation()).toBe("idle");
+    for (const [phase, expected] of [["thinking", "thinking"], ["acting", "thinking"], ["confirming", "point"], ["error", "confused"], ["idle", "idle"]] as const) {
+      await act(async () => { snapshot = { ...snapshot, phase }; notify(); });
+      expect(animation()).toBe(expected);
+    }
+    await act(async () => { snapshot = { ...snapshot, task: { ...snapshot.task!, status: "completed" } }; notify(); });
+    expect(animation()).toBe("celebrate");
+  });
+  it("walks while dragged and returns to idle when pointer capture is lost", async () => {
+    await render();
+    avatar().setPointerCapture = vi.fn();
+    const pointer = async (type: string, x: number) => act(async () => {
+      const event = new MouseEvent(type, { clientX: x, clientY: 100, bubbles: true });
+      Object.defineProperty(event, "pointerId", { value: 1 }); avatar().dispatchEvent(event);
+    });
+    await pointer("pointerdown", 100); await pointer("pointermove", 130);
+    expect(container.querySelector("[data-avatar]")!.getAttribute("data-avatar")).toBe("walk");
+    await pointer("lostpointercapture", 130);
+    expect(container.querySelector("[data-avatar]")!.getAttribute("data-avatar")).toBe("idle");
+    expect(host().hidden).toBe(true);
+  });
+  it("celebrates verified browser completion without requiring a saved project", async () => {
+    snapshot = { ...snapshot, task: null };
+    await render();
+    await act(async () => { snapshot = { ...snapshot, completionId: "verified-finish" }; notify(); });
+    expect(container.querySelector("[data-avatar]")!.getAttribute("data-avatar")).toBe("celebrate");
+  });
   it("restores an open conversation without an avatar click", async () => {
     uiStates.set("chat-one", state(true));
     await render();

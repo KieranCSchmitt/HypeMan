@@ -715,6 +715,55 @@ describe("media intentions", () => {
   });
 });
 describe("task runtime", () => {
+  it.each(["conversation switch", "Stop"])("drops late progress and completion after %s", async (cancel) => {
+    const active = { ...task, goal: "Read the guide" };
+    let finish!: (value: unknown) => void;
+    const pendingProgress = new Promise((resolve) => { finish = resolve; });
+    const b = bridge(async () => ({ action: { type: "finish", summary: "Finished old work" }, provider: "demo" }), (message) => {
+      if (message.type === "session.get") return { task: active };
+      if (message.type === "task.progress") return pendingProgress;
+      if (message.type === "workspace.get") return { tasks: [{ ...active, status: "completed" }], activeTaskId: active.id };
+      return undefined;
+    });
+    const controller = createCompanion(host(), b.api);
+    try {
+      await controller.start(); controller.setConversationId?.("previous-chat");
+      const sending = controller.send("Read the guide");
+      await vi.waitFor(() => expect(b.request.mock.calls.some(([message]) => message.type === "task.progress")).toBe(true));
+      const progressCall = b.request.mock.calls.find(([message]) => message.type === "task.progress")!;
+      if (cancel === "conversation switch") controller.setConversationId?.("new-chat");
+      else controller.stop();
+      expect(progressCall[1]?.aborted).toBe(true);
+      finish({ ok: true }); await sending;
+      expect(controller.getSnapshot().completionId).toBeUndefined();
+      expect(controller.getSnapshot().messages.some((message) => message.text === "Finished old work")).toBe(false);
+      if (cancel === "conversation switch") expect(controller.getSnapshot()).toMatchObject({ conversationId: "new-chat", task: null });
+      else expect(controller.getSnapshot().task?.status).toBe("paused");
+      expect(b.request.mock.calls.some(([message]) => message.type === "workspace.get")).toBe(false);
+    } finally { controller.dispose(); }
+  });
+  it.each(["conversation switch", "Stop"])("ignores a late task refresh after %s", async (cancel) => {
+    let finish!: (value: unknown) => void;
+    const pendingWorkspace = new Promise((resolve) => { finish = resolve; });
+    const b = bridge(undefined, (message) => {
+      if (message.type === "session.get") return { task };
+      if (message.type === "workspace.get") return pendingWorkspace;
+      return undefined;
+    });
+    const controller = createCompanion(host(), b.api);
+    try {
+      await controller.start(); controller.setConversationId?.("previous-chat");
+      b.emit({ type: "workspace.changed" });
+      await vi.waitFor(() => expect(b.request.mock.calls.some(([message]) => message.type === "workspace.get")).toBe(true));
+      if (cancel === "conversation switch") controller.setConversationId?.("new-chat");
+      else controller.stop();
+      finish({ tasks: [{ ...task, status: "completed" }], activeTaskId: task.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (cancel === "conversation switch") expect(controller.getSnapshot()).toMatchObject({ conversationId: "new-chat", task: null });
+      else expect(controller.getSnapshot().task?.status).toBe("paused");
+      expect(controller.getSnapshot().completionId).toBeUndefined();
+    } finally { controller.dispose(); }
+  });
   it("adopts an existing-tab conversation handoff without pausing its newly owned project", async () => {
     const b = bridge(async () => ({ action: { type: "say", text: "Continued in this tab." }, done: true, provider: "demo" }));
     const controller = createCompanion(host(), b.api);
@@ -918,6 +967,7 @@ describe("task runtime", () => {
       .filter((message) => message.type === "task.progress");
     expect(progress).toEqual([]);
     expect(controller.getSnapshot().messages.at(-1)?.text).toBe("Registration verified");
+    expect(controller.getSnapshot().completionId).toBeTruthy();
     controller.dispose();
   });
   it("rejects malformed provider actions before any effects", async () => {
@@ -963,6 +1013,7 @@ describe("task runtime", () => {
     expect(controller.getSnapshot().messages.at(-1)?.text).toMatch(
       /no verified completion signal/i,
     );
+    expect(controller.getSnapshot().completionId).toBeUndefined();
     controller.dispose();
   });
   it("turns confirmed teach-back into graded evidence only when its quotation is grounded", async () => {

@@ -5,11 +5,12 @@ import { artURL } from "./ArtSprite";
 export interface RooftopProps {
   reduced?: boolean;
   activity?: WallpaperActivity;
+  animationKey?: number;
   onCompanion?: () => void;
 }
 
 /** The authored city is interactive without adding more desktop chrome. */
-export function Rooftop({ reduced = false, activity = "idle", onCompanion }: RooftopProps) {
+export function Rooftop({ reduced = false, activity = "idle", animationKey = 0, onCompanion }: RooftopProps) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const engine = useRef<Wallpaper | null>(null);
   const buttons = useRef(new Map<WallpaperAction, HTMLButtonElement>());
@@ -45,7 +46,7 @@ export function Rooftop({ reduced = false, activity = "idle", onCompanion }: Roo
     // One engine survives settings changes; no canvas or animation state resets.
   }, []);
   useEffect(() => engine.current?.setReducedMotion(reduced), [reduced]);
-  useEffect(() => engine.current?.setActivity(activity), [activity]);
+  useEffect(() => engine.current?.setActivity(activity, animationKey), [activity, animationKey]);
   return (
     <div
       className="rooftop-wallpaper"
