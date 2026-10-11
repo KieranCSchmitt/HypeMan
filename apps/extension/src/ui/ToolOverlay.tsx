@@ -5,12 +5,12 @@ import { Video, type NativeVideoState } from "./Video";
 import { Documents } from "./Documents";
 import { CompanionTools, type CompanionSection } from "./CompanionTools";
 import { isOverlaySection, overlaySections, type OverlaySection } from "./overlay-sections";
-import { invokeFrameTool, useToolHandler, useWorkbench } from "./WorkbenchContext";
+import { invokeFrameTool, useToolHandler, useWorkbench, type ToolResult } from "./WorkbenchContext";
 import { FloatingToolWindow } from "./FloatingToolWindow";
 export function ToolOverlay({ section, openSections, onFocus, onClose, onError, onStartTask, conversationId: supplied, sketch, pageVideo, onVideoSeek, onNativeVideoCommand, onVideoCaptionsChange }: {
   section: OverlaySection | null; openSections?: OverlaySection[]; onClose: (section: OverlaySection) => void; onFocus?: (section: OverlaySection) => void;
   onError?: (message: string) => void; onStartTask?: () => void; conversationId?: string;
-  pageVideo?: NativeVideoState | null; onVideoSeek?: (seconds: number) => void; onNativeVideoCommand?: (operation: string, args: Record<string, unknown>) => Promise<string | void> | string | void; onVideoCaptionsChange?: (text: string) => Promise<void> | void;
+  pageVideo?: NativeVideoState | null; onVideoSeek?: (seconds: number) => void; onNativeVideoCommand?: (operation: string, args: Record<string, unknown>) => Promise<ToolResult> | ToolResult; onVideoCaptionsChange?: (text: string) => Promise<void> | void;
   sketch?: Extract<Action, { type: "sketch" }> | null; videoContent?: ReactNode; learningContent?: ReactNode; boardContent?: ReactNode; notesActions?: ReactNode;
 }) {
   const workbench = useWorkbench(), conversationId = supplied || workbench.conversationId;

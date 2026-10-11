@@ -2,7 +2,7 @@
 import type { PageSnapshot, PageTarget as Target, VideoState } from "@core";
 export type { PageSnapshot, PageTarget as Target } from "@core";
 const INTERACTIVE =
-  'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="option"],[role="checkbox"],[contenteditable="true"],video';
+  'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="combobox"],[role="option"],[role="checkbox"],[role="radio"],[role="switch"],[role="slider"],[role="tab"],[role="menuitem"],[role="treeitem"],[contenteditable="true"],video';
 const PRIVATE =
   /password|passcode|\bpin\b|pin.?code|\botp\b|one.?time|verification|security.?code|auth.?code|credit.?card|card.?number|cvv|cvc|social.?security|\bssn\b|payment|\biban\b/i;
 const compact = (value: string | null | undefined, limit = 250) =>
@@ -218,6 +218,13 @@ export class PageObserver {
     const rect = element.getBoundingClientRect();
     const sensitive = privateField(element);
     const input = element as HTMLInputElement;
+    const value = element.tagName === "INPUT" && ["checkbox", "radio"].includes(input.type)
+      ? (input.checked ? "checked" : "unchecked")
+      : ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName)
+        ? input.value
+        : element.getAttribute("contenteditable") === "true"
+          ? element.textContent ?? ""
+          : element.getAttribute("aria-valuetext") ?? element.getAttribute("aria-valuenow") ?? element.getAttribute("aria-checked");
     return {
       id: this.idFor(element),
       name: nameOf(element),
@@ -225,11 +232,8 @@ export class PageObserver {
       tag: element.tagName.toLowerCase(),
       disabled: !!input.disabled || element.getAttribute("aria-disabled") === "true",
       sensitive,
-      ...(!sensitive &&
-      (element.tagName === "INPUT" ||
-        element.tagName === "TEXTAREA" ||
-        element.tagName === "SELECT")
-        ? { value: compact(input.value, 500) }
+      ...(!sensitive && value != null
+        ? { value: compact(value, 500) }
         : {}),
       ...(element instanceof HTMLAnchorElement ? { href: element.href } : {}),
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },

@@ -1,4 +1,5 @@
 import { validMessagingTimezone } from "./messaging";
+import { nextReminderOccurrence, parseReminderRecurrence, type ReminderRecurrence } from "./reminder-recurrence";
 
 export interface ReminderDraft {
   text?: string;
@@ -16,6 +17,8 @@ export interface ReminderDraft {
   updatedAt: number;
   requestId: string;
   sourceMessage?: string;
+  repeat?: { frequency: "daily" | "weekly"; interval: number; weekdays?: number[] };
+  recurrence?: ReminderRecurrence;
 }
 export type ReminderTurn = { kind: "unrelated" } | { kind: "cancel" } | {
   kind: "reminder"; draft: ReminderDraft; question?: string; dueAt?: number; label?: string;
@@ -54,11 +57,27 @@ export function reminderWallTime(date: string, hour: number, minute: number, tim
 export function reminderTimeLabel(at: number, timezone: string): string {
   return new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short" }).format(at);
 }
+export function parseReminderDraft(value: unknown): ReminderDraft | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const draft = value as ReminderDraft;
+  if (!validMessagingTimezone(draft.timezone) || !Number.isFinite(draft.updatedAt) || draft.updatedAt < 0 || typeof draft.requestId !== "string" || !/^[\w.-]{1,160}$/.test(draft.requestId) ||
+    (draft.text !== undefined && (typeof draft.text !== "string" || draft.text.length > 2000)) || (draft.sourceMessage !== undefined && (typeof draft.sourceMessage !== "string" || draft.sourceMessage.length > 4000)) ||
+    (draft.hour !== undefined && (!Number.isInteger(draft.hour) || draft.hour < 0 || draft.hour > 99)) || (draft.minute !== undefined && (!Number.isInteger(draft.minute) || draft.minute < 0 || draft.minute > 99)) || (draft.weekday !== undefined && (!Number.isInteger(draft.weekday) || draft.weekday < 0 || draft.weekday > 6)) || (draft.dueAt !== undefined && (!Number.isFinite(draft.dueAt) || draft.dueAt < 0)) ||
+    (draft.meridiem !== undefined && !["AM", "PM"].includes(draft.meridiem)) || (draft.day !== undefined && !["today", "tomorrow"].includes(draft.day)) || (draft.date !== undefined && (typeof draft.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date))) ||
+    [draft.timezoneUnresolved, draft.needsDate, draft.nextWeek].some(value => value !== undefined && typeof value !== "boolean") ||
+    (draft.repeat !== undefined && (!draft.repeat || !parseReminderRecurrence({ ...draft.repeat, timezone: draft.timezone, hour: 0, minute: 0 }))) ||
+    (draft.recurrence !== undefined && !parseReminderRecurrence(draft.recurrence))) return null;
+  return structuredClone(draft);
+}
 
 export function reminderConversation(message: string, previous: ReminderDraft | null, clock: { now: number; timezone: string }, requestId: string): ReminderTurn {
   const text = message.trim().replace(/^(?:(?:actually|sorry|yes|yeah|yep|okay|ok)[,\s]+)+/i, "").replace(/[.!?]+$/, "").replace(/\b(in|at)\s+(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|sixty)\b/gi, (_, prefix, number) => `${prefix} ${numbers[number.toLowerCase()]}`), fresh = intent.test(text);
   const pending = previous && clock.now - previous.updatedAt < 30 * 60000 ? previous : null;
   if (!fresh && !pending) return { kind: "unrelated" };
+  // The planner can supply typed end dates and exceptions; this small slot parser must not drop them.
+  if (/\b(?:except|excluding|until|ending|starting from|starting on)\b/i.test(text) && (pending?.repeat || /\b(?:every|daily|weekly|repeat)\b/i.test(text))) return { kind: "unrelated" };
+  // A reminder is only one part of these requests; preserve the entire request for the planner.
+  if (!pending && /(?:[,;]\s*|\s+(?:and|then|also)\s+)(?:(?:then|also)\s+)?(?:save|text|send|open|find|search|compare|draw|create|summarize|explain|make|export|download)\b/i.test(text)) return { kind: "unrelated" };
   if (pending && /^(?:cancel(?: (?:it|that|the reminder))?|never ?mind|forget (?:it|that))[.!]?$/i.test(text)) return { kind: "cancel" };
   if (!fresh && /^(?:am|pm)\s+(?:I|you|we|they)\b/i.test(text)) return { kind: "unrelated" };
   if (fresh && pending?.sourceMessage === text && pending.dueAt !== undefined && pending.dueAt > clock.now)
@@ -68,6 +87,14 @@ export function reminderConversation(message: string, previous: ReminderDraft | 
   const draft: ReminderDraft = fresh ? { timezone: validMessagingTimezone(clock.timezone) ? clock.timezone : "America/New_York", updatedAt: clock.now, requestId, sourceMessage: text } : { ...pending!, updatedAt: clock.now };
   const zone = text.match(/\b([A-Za-z_]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?|EST|EDT|ET|Eastern|CST|CDT|CT|Central|MST|MDT|MT|Mountain|PST|PDT|PT|Pacific|UTC|GMT)\b/i)?.[1];
   if (zone) { draft.timezone = zones[zone.toLowerCase()] || (validMessagingTimezone(zone) ? zone : draft.timezone); draft.timezoneUnresolved = !zones[zone.toLowerCase()] && !validMessagingTimezone(zone); delete draft.dueAt; }
+  const repeated = text.match(/\bevery\s+(?:(\d+)\s+)?(days?|weeks?)\b/i);
+  if (repeated || /\b(daily|weekly|every weekday|every weekend|every (?:sunday|monday|tuesday|wednesday|thursday|friday|saturday))\b/i.test(text)) {
+    const weekly = repeated ? /^week/i.test(repeated[2]) : /\bweekly|every (?!day)(?:weekday|weekend|sunday|monday|tuesday|wednesday|thursday|friday|saturday)/i.test(text);
+    const selectedDays = weekdays.flatMap((day, index) => new RegExp(`\\b${day}\\b`, "i").test(text) ? [index] : []);
+    draft.repeat = { frequency: weekly ? "weekly" : "daily", interval: repeated?.[1] ? Number(repeated[1]) : 1,
+      ...(weekly && (/every weekday/i.test(text) || /every weekend/i.test(text) || selectedDays.length) ? { weekdays: /every weekday/i.test(text) ? [1, 2, 3, 4, 5] : /every weekend/i.test(text) ? [0, 6] : selectedDays } : {}) };
+    delete draft.needsDate;
+  }
   const offset = text.match(/\b(?:UTC|GMT)\s*([+-])(\d{1,2})(?::(\d{2}))?\b/i);
   if (offset) {
     const candidate = Number(offset[2]) ? `Etc/GMT${offset[1] === "+" ? "-" : "+"}${Number(offset[2])}` : "UTC";
@@ -108,14 +135,15 @@ export function reminderConversation(message: string, previous: ReminderDraft | 
   const afterTo = reminderText.match(/^(?:at|on|in|tomorrow|today|tonight|\d)[\s\S]*?\b(?:to|about)\s+(.+)$/i);
   if (afterTo) reminderText = afterTo[1];
   reminderText = reminderText.replace(new RegExp(`\\s+\\b(?:at\\s+(?:\\d|noon|midnight)|in\\s+(?:\\d|an?\\b|half)|on\\s+(?:\\d|${months.join("|")}|(?:next )?(?:${weekdays.join("|")}))|tomorrow\\b|today\\b|tonight\\b).*`, "i"), "").replace(/^(?:to|about)\s+/i, "").trim();
+  reminderText = reminderText.replace(/\s+\b(?:every|daily|weekly|repeat)\b.*$/i, "").trim();
   if (fresh && reminderText && !/^(?:at|in|on|tomorrow|today|tonight|\d)/i.test(reminderText)) draft.text = reminderText.slice(0, 2000);
   else if (!fresh && /^to\s+/i.test(text)) draft.text = text.replace(/^to\s+/i, "").slice(0, 2000);
   else if (!fresh && !draft.text && !followup) draft.text = text.slice(0, 2000);
   const result = (question: string): ReminderTurn => ({ kind: "reminder", draft, question });
   if (draft.timezoneUnresolved) return result("Which timezone should I use? For example, ET or America/New_York.");
   if (/\b(?:next month|next year|this weekend|after work|later)\b/i.test(text) && !draft.date) return result("Which day and time should I use?");
-  if (/\b(?:every|daily|weekly|repeat)\b/i.test(text)) draft.needsDate = true;
-  if (draft.needsDate) return result("I can schedule one-time text reminders. Which day should this one be for?");
+  if (/\b(?:every|daily|weekly|repeat)\b/i.test(text) && !draft.repeat) return result("Should this repeat daily or weekly, and at what time?");
+  if (draft.repeat && (!Number.isInteger(draft.repeat.interval) || draft.repeat.interval < 1 || draft.repeat.interval > 52)) return result("Use a repeat interval from 1 to 52 days or weeks.");
   if (!draft.text) return result("What should I remind you to do?");
   if (draft.dueAt === undefined && draft.hour === undefined) return result(`When should I text you to ${draft.text}?`);
   if (draft.dueAt === undefined && (draft.hour! > 23 || draft.minute! > 59)) return result("What time should I use? For example, 12:30 AM.");
@@ -140,5 +168,13 @@ export function reminderConversation(message: string, previous: ReminderDraft | 
     draft.dueAt = dueAt;
   }
   if (draft.dueAt <= clock.now || draft.dueAt > clock.now + 366 * 86400000) { delete draft.dueAt; return result("Choose a future time within the next year."); }
+  if (draft.repeat) {
+    if (draft.hour === undefined || draft.minute === undefined) return result("What local time should the repeating reminder use?");
+    const hour = draft.meridiem ? draft.hour! % 12 + (draft.meridiem === "PM" ? 12 : 0) : draft.hour!;
+    draft.recurrence = { ...draft.repeat, timezone: draft.timezone, hour, minute: draft.minute! };
+    const next = nextReminderOccurrence(draft.recurrence, draft.dueAt, clock.now);
+    if (!next) return result("No future occurrence matches that schedule. Choose another time.");
+    draft.dueAt = next;
+  }
   return { kind: "reminder", draft, dueAt: draft.dueAt, label: reminderTimeLabel(draft.dueAt, draft.timezone) };
 }

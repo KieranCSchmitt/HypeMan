@@ -38,12 +38,37 @@ export function messageParts(text: string): MessagePart[] {
   return parts;
 }
 
-export function MessageContent({ text, onDocumentPage }: { text: string; onDocumentPage: (documentId: string, page: number) => void }) {
-  const content: ReactNode[] = messageParts(text).map((part, index) => {
+/** Keep the answer visible while making a long explanation an optional expansion. */
+export function messagePreview(text: string): { preview: string; rest: string } {
+  if (text.length <= 600) return { preview: text, rest: "" };
+  const paragraph = text.indexOf("\n\n");
+  let split = paragraph >= 80 && paragraph <= 400 ? paragraph : text.lastIndexOf(" ", 350);
+  if (split < 80) split = 350;
+  // Do not cut a source reference in half.
+  for (const match of text.matchAll(/\[((?:\\[\\\[\]]|[^\]\\\n]){1,600})\]\(([^()\s]{1,800})\)/g)) {
+    if (match.index < split && match.index + match[0].length > split) split = match.index >= 80 ? match.index : match.index + match[0].length;
+  }
+  return { preview: text.slice(0, split).trimEnd(), rest: text.slice(split).trimStart() };
+}
+
+export function MessageContent({ text, compact = false, onDocumentPage }: { text: string; compact?: boolean; onDocumentPage: (documentId: string, page: number) => void }) {
+  const renderParts = (parts: MessagePart[]): ReactNode[] => parts.map((part, index) => {
     if (part.kind === "text") return part.text;
     if (part.kind === "web") return <a key={index} href={part.href} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>{part.label}</a>;
     return <a key={index} href={`#document-${encodeURIComponent(part.documentId)}-page-${part.page}`} onAuxClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
       onClick={(event) => { event.preventDefault(); event.stopPropagation(); onDocumentPage(part.documentId, part.page); }}>{part.label}</a>;
   });
-  return <p>{content}</p>;
+  const { preview, rest } = compact ? messagePreview(text) : { preview: text, rest: "" };
+  if (!rest) return <p>{renderParts(messageParts(text))}</p>;
+  const visibleSources = new Set(messageParts(preview).filter(part => part.kind !== "text").map(part => part.kind === "web" ? part.href : `${part.documentId}:${part.page}`));
+  const hiddenSources = messageParts(rest).filter(part => {
+    if (part.kind === "text") return false;
+    const key = part.kind === "web" ? part.href : `${part.documentId}:${part.page}`;
+    if (visibleSources.has(key)) return false;
+    visibleSources.add(key); return true;
+  });
+  return <><p>{renderParts(messageParts(preview))}</p>
+    {!!hiddenSources.length && <div className="chat-sources" aria-label="Sources">{hiddenSources.map((part, index) => <span key={index}>{renderParts([part])}</span>)}</div>}
+    <details className="chat-more"><summary>More</summary><p>{renderParts(messageParts(rest))}</p></details>
+  </>;
 }

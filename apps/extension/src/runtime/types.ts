@@ -12,6 +12,15 @@ export interface RuntimeMessage {
   text: string;
   at: number;
 }
+/** A tool observation feeds the next decision; strings remain compatible with older adapters. */
+export interface RuntimeToolResult {
+  ok?: boolean;
+  message: string;
+  changed?: boolean;
+  data?: unknown;
+  /** False means the tool needs the user; true explicitly requests another decision. */
+  continue?: boolean;
+}
 export interface CompanionSnapshot {
   conversationId?: string;
   phase: "idle" | "thinking" | "acting" | "confirming" | "paused" | "error";
@@ -19,7 +28,7 @@ export interface CompanionSnapshot {
   /** Fresh only after a browser finish action passes completion verification. */
   completionId?: string;
   messages: RuntimeMessage[];
-  confirmation: { message: string } | null;
+  confirmation: { message: string; label?: string } | null;
   task: BrowserTask | null;
   video: (VideoState & { available?: boolean; summary?: string }) | null;
   learning: {
@@ -37,12 +46,13 @@ export interface CompanionSnapshot {
 }
 export interface CompanionRuntime {
   setConversationId?(id: string): void;
-  setToolHandler?(handler: ((action: ToolAction) => Promise<string | void>) | null): void;
+  setToolHandler?(handler: ((action: ToolAction) => Promise<string | void | RuntimeToolResult>) | null): void;
   setSelectedContent?(selected: SelectedContent | null): void;
   attachImage?(image: string | null): void;
   attachVideoCaptions?(segments: TranscriptSegment[] | null): void;
   start(): Promise<void>;
   send(message: string): Promise<void>;
+  retry?(): Promise<void>;
   confirm(answer: boolean): void;
   stop(): void;
   subscribe(listener: () => void): () => void;

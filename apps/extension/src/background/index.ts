@@ -17,11 +17,16 @@ import {
   type ChatGPTStatus,
   validMessagingTimezone,
   type MessagingPairingResult,
+  parseReminderRecurrence,
+  type LearningPlanAssessment,
 } from "@core";
 import { GatewayClient } from "./client";
 import { MESSAGING_ALARM, PhoneSync } from "./messaging";
 import { workbenchMessage, type Conversation } from "./workbench";
-import { handleDocumentMessage } from "./documents";
+import { handleDocumentMessage, documentRepository } from "./documents";
+import { BackupService } from "./backup";
+import { recallSearch } from "./recall";
+import { LearningPracticeService } from "./learning-practice";
 import { handleFrameGrantMessage } from "./frame-grants";
 import { ConversationAssistance } from "./conversation-assistance";
 import {
@@ -32,6 +37,9 @@ import {
   learn,
   savePlan,
   clearLearning,
+  currentPractice,
+  savePracticeAttempt,
+  mergeLearning,
 } from "./storage";
 
 const workspace = new WorkspaceHost({
@@ -43,6 +51,8 @@ const workspace = new WorkspaceHost({
   },
 });
 const gateway = new GatewayClient(settings, globalThis.fetch.bind(globalThis), saveConnection);
+const backup = new BackupService({ workspace: () => workspace.snapshot(), restoreWorkspace: value => workspace.restore(value), workbench: workbenchMessage, learning: graph, restoreLearning: mergeLearning, documents: documentRepository });
+const practice = new LearningPracticeService({ graph, enabled: async () => (await settings()).learningEnabled, save: savePracticeAttempt });
 const phone = new PhoneSync(
   chrome.storage.local,
   () => workspace.snapshot(),
@@ -58,7 +68,7 @@ const conversationAssistance = new ConversationAssistance({
   draft: (conversationId) => workbenchMessage({ type: "artifact.get", conversationId, kind: "reminder-draft" }),
   saveDraft: async (conversationId, draft) => { await workbenchMessage({ type: "artifact.put", conversationId, kind: "reminder-draft", value: draft }); },
   phoneStatus: async () => phone.rememberStatus(await gateway.post("/api/messaging/status", {}, crypto.randomUUID(), null, 15000)),
-  schedule: async (text, dueAt, idempotencyKey) => phone.rememberStatus(await gateway.post("/api/messaging/remind", { text, dueAt, idempotencyKey }, crypto.randomUUID(), null, 15000)),
+  schedule: async (text, dueAt, idempotencyKey, recurrence) => phone.rememberStatus(await gateway.post("/api/messaging/remind", { text, dueAt, idempotencyKey, ...(recurrence ? { recurrence } : {}) }, crypto.randomUUID(), null, 15000)),
 });
 const ready = (async () => {
   const raw = await chrome.storage.session.get("hypeman.session");
@@ -340,6 +350,10 @@ async function handle(
   const tabId = sender.tab?.id ?? null;
   const config = await settings();
   if (typeof type !== "string") throw new Error("Invalid request");
+  if (type.startsWith("backup.")) {
+    if (sender.id !== chrome.runtime.id) throw new Error("Unknown backup caller.");
+    return backup.handle(message, `${sender.id}:${sender.tab?.id ?? "extension"}:${sender.frameId ?? 0}:${sender.documentId ?? sender.url ?? ""}`);
+  }
   const frameResult = handleFrameGrantMessage(message, sender);
   if (frameResult) return frameResult;
   if ((type.startsWith("chatgpt.") || type === "connection.ensure") && !isExtensionPage(sender))
@@ -371,6 +385,16 @@ async function handle(
       return workbenchMessage(message);
     case "workspace.get":
       return workspace.snapshot();
+    case "recall.search": {
+      if (typeof message.query !== "string" || message.kinds !== undefined && (!Array.isArray(message.kinds) || message.kinds.some(kind => kind !== "note" && kind !== "conversation"))) throw new Error("Choose a valid saved-work search.");
+      const [saved, conversations] = await Promise.all([workspace.snapshot(), workbenchMessage({ type: "conversation.list" }) as Promise<Conversation[]>]);
+      return recallSearch(message.query, saved.notes, conversations, { kinds: message.kinds as ("note" | "conversation")[] | undefined, limit: message.limit as number | undefined }, input => gateway.post("/api/recall/rank", input, id, tabId, 15000));
+    }
+    case "recall.get": {
+      if (!["note", "conversation"].includes(String(message.kind)) || typeof message.id !== "string" || !/^[\w.:-]{1,160}$/.test(message.id)) throw new Error("Choose a saved source.");
+      if (message.kind === "note") return (await workspace.snapshot()).notes.find(note => note.id === message.id) || null;
+      return ((await workbenchMessage({ type: "conversation.list" })) as Conversation[]).find(conversation => conversation.id === message.id) || null;
+    }
     case "settings.get":
       return config;
     case "settings.patch": {
@@ -433,19 +457,20 @@ async function handle(
       if (!isExtensionPage(sender) && isPaused(config, sender.tab?.url ?? sender.url ?? ""))
         throw new Error("HypeMan is paused on this site.");
       // The gateway always uses the paired owner; callers cannot choose another recipient.
-      await phone.rememberStatus(await gateway.post("/api/messaging/send", { text: message.text.trim() }, id, tabId, 30000));
-      return { ok: true };
+      return phone.rememberStatus(await gateway.post("/api/messaging/send", { text: message.text.trim() }, id, tabId, 30000));
     }
     case "messaging.remind": {
       if (typeof message.text !== "string" || !message.text.trim() || message.text.length > 2000 ||
           typeof message.dueAt !== "number" || !Number.isFinite(message.dueAt) || message.dueAt <= Date.now() || message.dueAt > Date.now() + 366 * 86400000)
         throw new Error("Give a reminder and a future time within one year.");
-      return phone.rememberStatus(await gateway.post("/api/messaging/remind", { text: message.text.trim(), dueAt: message.dueAt }, id, tabId, 15000));
+      const recurrence = message.recurrence === undefined ? undefined : parseReminderRecurrence(message.recurrence);
+      if (message.recurrence !== undefined && !recurrence) throw new Error("Choose a valid repeating reminder schedule.");
+      return phone.rememberStatus(await gateway.post("/api/messaging/remind", { text: message.text.trim(), dueAt: message.dueAt, ...(recurrence ? { recurrence } : {}) }, id, tabId, 15000));
     }
     case "messaging.reminders": {
       const minutes = message.minutes ?? 30;
       if (typeof message.id !== "string" || !message.id.trim() || message.id.length > 300 ||
-          !["cancel", "snooze"].includes(String(message.operation)) ||
+          !["cancel", "snooze", "pause", "resume", "skip"].includes(String(message.operation)) ||
           (message.operation === "snooze" && (!Number.isInteger(minutes) || Number(minutes) < 1 || Number(minutes) > 10080)))
         throw new Error("Choose a reminder and a valid snooze time.");
       return phone.rememberStatus(await gateway.post("/api/messaging/reminders", {
@@ -575,7 +600,7 @@ async function handle(
       const conversation = await workbenchMessage({ type: "conversation.open", conversationId: message.conversationId }) as Conversation;
       const input = parseAgentRequest({
         requestId: id, surface: "conversation", conversationId: conversation.id,
-        goal: message.message.slice(0, 2000), message: message.message, history: [], task: null, mode: "browse",
+        goal: message.goal === undefined ? message.message.slice(0, 2000) : message.goal, message: message.message, history: message.history ?? [], task: null, mode: "browse",
         ...(message.toolContext ? { toolContext: message.toolContext } : {}),
         ...(message.image ? { screenshot: message.image } : {}),
         page: { url: "", title: conversation.title, headings: [], elements: [], errors: [], successes: [], selection: "",
@@ -702,7 +727,7 @@ async function handle(
       const task = state.tasks.find((item) => item.id === message.taskId);
       if (!task || task.id !== state.activeTaskId || task.status !== "running" || task.tabId !== tabId || tabId === null)
         throw new Error("This tab does not own the running project.");
-      const input = parseTaskAssessmentRequest({ requestId: id, task, page: message.page });
+      const input = parseTaskAssessmentRequest({ requestId: id, task, page: message.page, ...(message.completion ? { completion: message.completion } : {}) });
       if (!input) throw new Error("Invalid project page context.");
       if (isPaused(config, input.page.url)) throw new Error("HypeMan is paused on this site.");
       const source = await chrome.tabs.get(tabId);
@@ -854,7 +879,7 @@ async function handle(
         handoff = current.handoff as SessionHandoff | undefined;
       const state = await workspace.snapshot();
       const task = state.tasks.find((item) => item.id === state.activeTaskId && item.status === "running" && item.tabId === tabId) ?? null;
-      if (handoff && handoff.at && Date.now() - handoff.at > 120000) {
+      if (handoff && !handoff.checkpoint && handoff.at && Date.now() - handoff.at > 10 * 60000) {
         await setSession(tabId, { handoff: null });
         return { ...current, handoff: null, task };
       }
@@ -868,6 +893,8 @@ async function handle(
           typeof message.handoff.goal !== "string" ||
           !Array.isArray(message.handoff.history) ||
           message.handoff.history.length > 40
+          || (message.handoff.checkpoint !== undefined && typeof message.handoff.checkpoint !== "boolean")
+          || (message.handoff.message !== undefined && (typeof message.handoff.message !== "string" || message.handoff.message.length > 3000))
         )
           throw new Error("Invalid continuation.");
       }
@@ -986,6 +1013,13 @@ async function handle(
       return learn(message.event as never);
     case "learn.plan":
       return savePlan(message.plan);
+    case "learn.current":
+      if (message.planId !== undefined && (typeof message.planId !== "string" || !/^[\w.-]{1,100}$/.test(message.planId))) throw new Error("Choose a saved practice plan.");
+      return currentPractice(message.planId as string | undefined);
+    case "learn.step.attempt": {
+      if (!/^[\w.-]{1,160}$/.test(id) || typeof message.planId !== "string" || !/^[\w.-]{1,100}$/.test(message.planId) || !Number.isInteger(message.stepIndex) || typeof message.explanation !== "string" || !message.explanation.trim() || message.explanation.length > 4000) throw new Error("Explain the current practice step in 4,000 characters or fewer.");
+      return practice.attempt({ planId: message.planId, stepIndex: Number(message.stepIndex), explanation: message.explanation, requestId: id }, current => gateway.post<LearningPlanAssessment>("/api/learn/teachback", { concept: current.step.concept, goal: `${current.step.concept}\nExercise: ${current.step.exercise}`, explanation: message.explanation }, id, tabId, 120000), checkConversation);
+    }
     case "learn.clear":
       await clearLearning();
       return { ok: true };

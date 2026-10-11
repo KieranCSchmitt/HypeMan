@@ -6,6 +6,7 @@ import type {
   HistoryEntry,
   SketchShape,
   TaskAssessmentRequest,
+  CompletionBinding,
 } from "./contracts";
 import { parseWorkspace, safePageUrl } from "./workspace";
 import { parseToolAction } from "./tools";
@@ -15,6 +16,17 @@ export const isRecord = (v: unknown): v is Record<string, unknown> =>
 const text = (v: unknown, max = 4000): v is string => typeof v === "string" && v.length <= max;
 const target = (v: unknown): v is string => text(v, 80) && v.length > 0;
 const finite = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const validCompletionBinding = (value: Record<string, unknown>) =>
+  (value.subject === undefined || text(value.subject, 200) && !!value.subject.trim()) &&
+  (value.control === undefined || text(value.control, 300)) &&
+  (value.fromUrl === undefined || !!safePageUrl(value.fromUrl)) &&
+  (value.destination === undefined || !!safePageUrl(value.destination));
+const completionBinding = (value: Record<string, unknown>): CompletionBinding => ({
+  ...(typeof value.subject === "string" ? { subject: value.subject } : {}),
+  ...(typeof value.control === "string" ? { control: value.control } : {}),
+  ...(value.fromUrl ? { fromUrl: safePageUrl(value.fromUrl) } : {}),
+  ...(value.destination ? { destination: safePageUrl(value.destination) } : {}),
+});
 export function parseAction(value: unknown): Action | null {
   if (!isRecord(value) || !text(value.type, 40)) return null;
   const v = value;
@@ -279,12 +291,18 @@ export function parseAgentRequest(value: unknown): AgentRequest | null {
       !isRecord(raw.result) ||
       typeof raw.result.ok !== "boolean" ||
       typeof raw.result.changed !== "boolean" ||
-      !text(raw.result.message, 2000) ||
+      !text(raw.result.message, 12000) ||
       !finite(raw.at)
     )
       return null;
     const action = parseAction(raw.action);
     if (!action) return null;
+    const completion = raw.result.completion;
+    const pending = raw.result.pendingCompletion;
+    if (completion !== undefined && (!isRecord(completion) || !text(completion.kind, 40) || !completion.kind.trim() ||
+      !text(completion.evidence, 600) || completion.evidence.trim().length < 8 || !safePageUrl(completion.url) || !validCompletionBinding(completion))) return null;
+    if (pending !== undefined && (!isRecord(pending) || !text(pending.kind, 40) || !pending.kind.trim() ||
+      !Array.isArray(pending.previous) || pending.previous.length > 30 || !pending.previous.every((item) => text(item, 600)) || !validCompletionBinding(pending))) return null;
     history.push({
       action,
       result: {
@@ -293,6 +311,8 @@ export function parseAgentRequest(value: unknown): AgentRequest | null {
         message: raw.result.message,
         ...(safePageUrl(raw.result.url) ? { url: safePageUrl(raw.result.url) } : {}),
         ...(raw.result.navigation === true ? { navigation: true } : {}),
+        ...(isRecord(completion) ? { completion: { kind: String(completion.kind), evidence: String(completion.evidence), url: safePageUrl(completion.url), ...completionBinding(completion) } } : {}),
+        ...(isRecord(pending) ? { pendingCompletion: { kind: String(pending.kind), previous: pending.previous as string[], ...completionBinding(pending) } } : {}),
       },
       at: raw.at,
     });
@@ -386,7 +406,7 @@ export function parseAgentRequest(value: unknown): AgentRequest | null {
 export function parseTaskAssessmentRequest(value: unknown): TaskAssessmentRequest | null {
   if (
     !isRecord(value) ||
-    Object.keys(value).some((key) => !["requestId", "task", "page"].includes(key)) ||
+    Object.keys(value).some((key) => !["requestId", "task", "page", "completion"].includes(key)) ||
     !text(value.requestId, 128) ||
     !/^[\w.-]+$/.test(value.requestId) ||
     !isRecord(value.task)
@@ -426,5 +446,9 @@ export function parseTaskAssessmentRequest(value: unknown): TaskAssessmentReques
     const url = new URL(request.page.url);
     if (url.username || url.password) return null;
   } catch { return null; }
-  return { requestId: request.requestId, task: request.task, page: request.page };
+  const completion = value.completion;
+  if (completion !== undefined && (!isRecord(completion) || !text(completion.kind, 40) || !completion.kind.trim() ||
+    !text(completion.evidence, 600) || completion.evidence.trim().length < 8 || !safePageUrl(completion.url) || !validCompletionBinding(completion))) return null;
+  return { requestId: request.requestId, task: request.task, page: request.page,
+    ...(isRecord(completion) ? { completion: { kind: String(completion.kind), evidence: String(completion.evidence), url: safePageUrl(completion.url), ...completionBinding(completion) } } : {}) };
 }

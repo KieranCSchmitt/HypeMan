@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import type { DocumentMetadata } from "../../../../packages/core/src/documents";
+import type { DocumentMetadata, DocumentAnalysisReply } from "../../../../packages/core/src/documents";
 import { request } from "../bridge";
-import { useToolHandler, useWorkbench, invokeFrameTool } from "./WorkbenchContext";
+import { useToolHandler, useWorkbench, invokeFrameTool, type ToolResult, toolResultMessage } from "./WorkbenchContext";
 import { uploadDocument } from "./document-client";
 import { ToolButton } from "./common";
+import { documentPageLink } from "./MessageContent";
 
 /** The privileged PDF reader stays in an extension frame on both webpages and the rooftop. */
 export function Documents({ conversationId: supplied, active = true }: { conversationId?: string; active?: boolean } = {}) {
@@ -12,6 +13,7 @@ export function Documents({ conversationId: supplied, active = true }: { convers
   const [documents, setDocuments] = useState<DocumentMetadata[]>([]);
   const [current, setCurrent] = useState<string>("");
   const [error, setError] = useState("");
+  const currentRef = useRef(current); currentRef.current = current;
   const frame = useRef<HTMLIFrameElement>(null);
   const picker = useRef<HTMLInputElement>(null), uploadAbort = useRef<AbortController | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -27,17 +29,18 @@ export function Documents({ conversationId: supplied, active = true }: { convers
   const scope = useRef(conversationId); scope.current = conversationId;
   const authorization = useRef<{ scope: string; createdAt: number; promise: Promise<string> } | null>(null);
   const getAuthorization = () => {
-    const selectedScope = `${conversationId}:${current}`;
+    const selectedScope = `${conversationId}:${currentRef.current}`;
     if (authorization.current?.scope !== selectedScope || Date.now() - authorization.current.createdAt > 30 * 60_000) {
       authorization.current = { scope: selectedScope, createdAt: Date.now(), promise: request<{ token: string }>({ type: "frame.grant", tool: "documents", channel, conversationId }).then((value) => value.token) };
     }
     return authorization.current.promise;
   };
   const authorizeFrame = async () => {
-    if (!current) return;
+    const selectedId = currentRef.current;
+    if (!selectedId) return;
     const selectedFrame = frame.current, token = await getAuthorization();
-    if (frame.current !== selectedFrame || !selectedFrame) return;
-    selectedFrame.contentWindow?.postMessage({ type: "hypeman.frame-authorize", token, channel, conversationId, documentId: current }, chrome.runtime.getURL("").replace(/\/$/, ""));
+    if (frame.current !== selectedFrame || !selectedFrame || currentRef.current !== selectedId) return;
+    selectedFrame.contentWindow?.postMessage({ type: "hypeman.frame-authorize", token, channel, conversationId, documentId: selectedId }, chrome.runtime.getURL("").replace(/\/$/, ""));
   };
   const refresh = async () => {
     const list = await request<DocumentMetadata[]>({ type: "document.list", conversationId });
@@ -120,15 +123,41 @@ export function Documents({ conversationId: supplied, active = true }: { convers
     if (!active) cancel();
     return () => window.removeEventListener("hypeman.cancel-tools", cancel);
   }, [active, conversationId]);
-  useToolHandler("documents", async (operation, args) => {
+  const handleDocument = async (operation: string, args: Record<string, unknown>): Promise<ToolResult> => {
     operationVersion.current++;
     const version = cancellation.current;
     const check = () => { if (version !== cancellation.current) throw new DOMException("Cancelled", "AbortError"); };
     const list = await refresh();
     check();
-    const selectedId = typeof args.documentId === "string" ? args.documentId : typeof args.artifactId === "string" ? args.artifactId : typeof args.id === "string" ? args.id : current || workbench.selected?.artifactId;
+    const previous = args.resume === true && !args.documentId && !args.artifactId ? await request<{ question: string; ids: string[]; analyses: Record<string, unknown>[]; nextIndex: number } | null>({ type: "artifact.get", conversationId, kind: "documents", id: "comparison-progress" }) : null;
+    const question = previous?.question || String(args.question || args.message || "Compare these PDFs, including agreements, differences and uncertainty.");
+    const multi = previous?.ids || (Array.isArray(args.documentIds) ? args.documentIds : /\bcompare\b/i.test(question) && !args.documentId && !args.artifactId ? list.map((document) => document.id) : []);
+    if (["analyze", "summarize", "read", "explain"].includes(operation) && multi.length > 1) {
+      const ids = [...new Set(multi)];
+      if (ids.length > 6 || ids.some((id) => typeof id !== "string" || !list.some((document) => document.id === id))) throw new Error("Choose two to six PDFs from this conversation to compare.");
+      const analyses: Record<string, unknown>[] = previous?.analyses || [];
+      for (let index = previous?.nextIndex || 0; index < ids.length; index++) {
+        const id = ids[index];
+        check(); const result = await handleDocument("summarize", { documentId: id, question, ...(previous ? { resume: true } : {}) }); check();
+        if (!result || typeof result !== "object" || !result.data || typeof result.data !== "object") throw new Error(toolResultMessage(result) || "One PDF could not be read. Inspect its pages before comparing.");
+        const data = result.data as Record<string, unknown>;
+        if (data.pendingSummary === true) { await request({ type: "artifact.put", conversationId, kind: "documents", id: "comparison-progress", value: { question, ids, analyses, nextIndex: index } }); check(); return result; }
+        if (typeof data.text !== "string" || !Array.isArray(data.citations)) throw new Error("One PDF needs readable text before it can be compared.");
+        analyses.push(data);
+        await request({ type: "artifact.put", conversationId, kind: "documents", id: "comparison-progress", value: { question, ids, analyses, nextIndex: index + 1 } }); check();
+      }
+      const controller = new AbortController();
+      const cancel = () => controller.abort(); window.addEventListener("hypeman.cancel-tools", cancel);
+      try {
+        const result = await request<DocumentAnalysisReply>({ type: "api", path: "/api/document", body: { question, analyses } }, controller.signal); check();
+        await request({ type: "artifact.put", conversationId, kind: "documents", id: `comparison-${ids.join("-").slice(0, 140)}`, value: { analysis: result, documentIds: ids } }, controller.signal); check();
+        await request({ type: "artifact.put", conversationId, kind: "documents", id: "comparison-progress", value: null }, controller.signal); check();
+        return { message: `${result.text}\n${result.citations.map((citation) => documentPageLink(citation.artifactId, citation.page, list.find((document) => document.id === citation.artifactId)?.name || "PDF")).join(" · ")}${result.partial ? "\nSome pages were unreadable or truncated." : ""}`, changed: true, data: result, continue: true };
+      } finally { window.removeEventListener("hypeman.cancel-tools", cancel); }
+    }
+    const selectedId = typeof args.documentId === "string" ? args.documentId : typeof args.artifactId === "string" ? args.artifactId : typeof args.id === "string" ? args.id : currentRef.current || workbench.selected?.artifactId;
     const document = list.find((item) => item.id === selectedId) || (!selectedId ? list.at(-1) : undefined);
-    if (!document) return "Drop a PDF into the conversation to open it. PDFs up to 25 MiB stay saved with this chat.";
+    if (!document) return { message: "Drop a PDF here to continue.", changed: false, continue: false };
     if (["remove", "delete"].includes(operation)) {
       await request({ type: "document.remove", conversationId, documentId: document.id });
       await request({ type: "artifact.put", conversationId, kind: "documents", id: document.id, value: null });
@@ -139,7 +168,7 @@ export function Documents({ conversationId: supplied, active = true }: { convers
     const navigationPage = ["page", "open", "show"].includes(operation) && Number.isInteger(args.page) ? Number(args.page) : undefined;
     workbench.selectContent({ ...(selected || {}), kind: "pdf", id: document.id, artifactId: document.id, title: document.name,
       ...(navigationPage ? { page: navigationPage, ...(selected?.page !== navigationPage ? { text: undefined, quote: undefined } : {}) } : {}) });
-    if (document.id !== current) { ready.current = ""; setCurrent(document.id); }
+    if (document.id !== currentRef.current) { ready.current = ""; currentRef.current = document.id; setCurrent(document.id); }
     if (["open", "show"].includes(operation) && args.page === undefined) return `Opened ${document.name}.`;
     if (ready.current !== document.id) await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("The PDF is still opening. Try again when it is ready.")), 20_000);
@@ -149,7 +178,8 @@ export function Documents({ conversationId: supplied, active = true }: { convers
     if (!frame.current) throw new Error("The PDF reader is still opening.");
     check(); const token = await getAuthorization(); check(); await authorizeFrame(); check();
     return invokeFrameTool(frame.current, "documents", operation, args, conversationId, token);
-  });
+  };
+  useToolHandler("documents", handleDocument);
   const parentOrigin = location.origin;
   const choose = (id: string) => { const document = documents.find((item) => item.id === id); if (!document) return; ready.current = ""; setCurrent(id); workbench.selectContent({ kind: "pdf", id, artifactId: id, title: document.name }); };
   const upload = async (file?: File) => {

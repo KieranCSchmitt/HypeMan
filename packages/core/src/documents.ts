@@ -42,4 +42,8 @@ export interface DocumentAnalysisReply {
   coveredPages: number[];
   partial: boolean;
   provider: string;
+  /** At least one supplied physical page was cut at the extraction/context boundary. */
+  truncated?: boolean;
+  basis?: "page summaries";
+  documents?: { artifactId: string; title: string; pageCount: number; coveredPages: number[]; partial: boolean }[];
 }

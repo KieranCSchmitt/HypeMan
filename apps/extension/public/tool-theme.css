@@ -504,3 +504,16 @@ html:has(> body.overlay-utility) { min-width: 0; background: #f1f5f5; background
 :is(.pixel-workspace, .overlay-utility) .phone-messaging { overflow: auto; }
 :is(.pixel-workspace, .overlay-utility) .phone-messaging > .tool-content { flex: 1 0 auto; overflow: visible; }
 .pixel-workspace-bar > span:first-child { flex: 0 1 auto; max-width: 58%; }
+/* Keep progress, recovery and exact reviews compact within the existing pixel window. */
+.conversation-working { align-items: center; min-width: 0; }
+.conversation-working small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 17px/1.3 Tiny5, monospace; }
+.conversation-recovery { display: flex; gap: 6px; margin-top: 6px; }
+.conversation-recovery .button { min-height: 30px; padding: 3px 8px; }
+.conversation-pane .confirmation { flex: 0 1 auto; min-height: 0; max-height: min(300px, 55dvh); overflow: auto; }
+.conversation-pane .confirmation p { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; }
+.conversation-pane .confirmation button:focus-visible { outline: 3px solid var(--violet); outline-offset: 2px; }
+.pixel-workspace .video-original { padding: 10px 12px; color: var(--violet); font: 18px/1.3 Tiny5, monospace; overflow-wrap: anywhere; }
+.conversation-pane .chat-more { margin-top: 6px; }
+.conversation-pane .chat-more summary { cursor: pointer; color: var(--violet); font: 18px/1.3 Tiny5, monospace; }
+.conversation-pane .chat-more[open] p { margin-top: 6px; }
+.conversation-pane .chat-sources { display: flex; gap: 4px 10px; flex-wrap: wrap; margin-top: 6px; font-size: 17px; }

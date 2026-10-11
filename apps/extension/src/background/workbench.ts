@@ -108,6 +108,22 @@ async function handle(message: Record<string, unknown>): Promise<unknown> {
   const type = message.type;
   if (type === "conversation.list") return read("conversations");
   if (type === "workbench.export") return { version: 1, conversations: await read("conversations"), artifacts: await read("artifacts") };
+  if (type === "workbench.restore") {
+    if (!isRecord(message.value) || !Array.isArray(message.value.conversations) || !Array.isArray(message.value.artifacts)) throw new Error("Invalid saved conversation restore.");
+    const snapshot = message.value as { conversations: Array<Record<string, unknown>>; artifacts: Array<Record<string, unknown>> };
+    const database = await db(), current = database.transaction(["conversations", "artifacts"], "readwrite");
+    let conversations = 0, artifacts = 0;
+    return new Promise((resolve, reject) => {
+      current.oncomplete = () => resolve({ conversations, artifacts }); current.onerror = () => reject(new Error("Saved conversations could not be restored; retry the backup.")); current.onabort = current.onerror;
+      for (const [storeName, values, keyName] of [["conversations", snapshot.conversations, "id"], ["artifacts", snapshot.artifacts, "key"]] as const) {
+        const store = current.objectStore(storeName);
+        for (const value of values as Array<Record<string, unknown>>) {
+          const request = store.get(value[keyName] as IDBValidKey);
+          request.onsuccess = () => { if (request.result) return; store.put(value); if (storeName === "conversations") conversations++; else artifacts++; };
+        }
+      }
+    });
+  }
   if (!identifier(message.conversationId)) throw new Error("Choose a saved conversation.");
   const id = message.conversationId;
   if (type === "workbench.ui.get") return readUIState(id);

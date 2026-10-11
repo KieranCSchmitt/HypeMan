@@ -9,8 +9,9 @@ import {
   requireObject,
   stringList,
 } from "./media";
-import { validateDocumentInput } from "./documents";
+import { validateDocumentRequest } from "./documents";
 import { GatewayError } from "./errors";
+import { validateRecallRequest } from "./recall";
 const maybe = (value: unknown, check: (value: unknown) => boolean) =>
   value === undefined || check(value);
 /** Core parsers are shared with the extension, so wire contracts cannot drift. */
@@ -36,8 +37,11 @@ export function validateRoute(path: string, value: unknown) {
     return input;
   }
   switch (path) {
+    case "/api/recall/rank":
+      validateRecallRequest(input);
+      break;
     case "/api/document":
-      validateDocumentInput(input);
+      validateDocumentRequest(input);
       break;
     case "/api/task/assess":
       validateTaskAssessment(input);

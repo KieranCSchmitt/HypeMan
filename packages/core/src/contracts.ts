@@ -76,6 +76,12 @@ export type Action =
   | { type: "switchTab"; tabId: number }
   | { type: "back" }
   | { type: "observe"; target?: string };
+export interface CompletionBinding {
+  subject?: string;
+  fromUrl?: string;
+  control?: string;
+  destination?: string;
+}
 export interface ActionResult {
   ok: boolean;
   changed: boolean;
@@ -83,6 +89,8 @@ export interface ActionResult {
   error?: string;
   url?: string;
   navigation?: boolean;
+  completion?: CompletionBinding & { kind: string; evidence: string; url: string };
+  pendingCompletion?: CompletionBinding & { kind: string; previous: string[] };
 }
 export interface HistoryEntry {
   action: Action;
@@ -127,6 +135,7 @@ export interface TaskAssessmentRequest {
   requestId: string;
   task: BrowserTask;
   page: PageSnapshot;
+  completion?: ActionResult["completion"];
 }
 export interface TaskAssessment {
   completed: boolean;
@@ -176,6 +185,8 @@ export interface SessionHandoff {
   history: HistoryEntry[];
   step: number;
   at?: number;
+  checkpoint?: boolean;
+  message?: string;
 }
 export interface RuntimeEvent {
   type: string;
