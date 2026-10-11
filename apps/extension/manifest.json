@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzGgEDLhJrnLB3uIXiOOlCm9/KUoJWvRFipqL0Hd8CjsBzUkFrkcfGMpjB4sxdI3hIEPyWcgc6B6LgKWS4r1W8jv3x2GgdaPv5/xU1pZhFkIQqJroqnmi4dwDIXobgh247Aeqp3HygPAd2mydCl3fRuCRWsGayUrJowTBJXv5uzfJdRTh86s41OaY9l+Lj0Jw7Y1qnwVZXLJqLs2zSRzAG1+E6064/05z9WKVbm7qMviXHRnymJxkggRlqr9sWme77KnILoQ+7mArZC3yP2UEZUXQOuUphRLMTlAEjES35X+cRNAQJLk6fT21gEFOwWSH2XGKBCox8pwoJmJXGz6hiQIDAQAB",
+  "name": "HypeMan \u2014 your browser companion",
+  "version": "0.2.0",
+  "description": "A pixel companion for browser tasks, source-backed notes, and optional learning.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "activeTab", "tabs", "scripting", "contextMenus", "alarms"],
+  "optional_permissions": ["debugger"],
+  "optional_host_permissions": ["<all_urls>"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "HypeMan",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "options_page": "onboarding.html",
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "commands": {
+    "toggle-companion": {
+      "suggested_key": {
+        "default": "Alt+Shift+H"
+      },
+      "description": "Open HypeMan"
+    },
+    "open-control": {
+      "description": "Open HypeMan conversation"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*", "fonts/*", "ui.css", "documents.html", "documents.js", "documents.css", "connection.html", "connection.js", "preferences.html", "preferences.js"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
