@@ -2,7 +2,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, open
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { emptyWorkspace, parseWorkspace, parseMessagingSettings, safePageUrl, type CompanionSnapshot, type DailyCommitment, type DeliverySummary, type MessagingCapture, type MessagingSettings, type PhoneReminder, type PhoneBrowserRequest } from "@core";
+import { emptyWorkspace, parseWorkspace, parseMessagingSettings, safePageUrl, parseReminderRecurrence, parseReminderDraft, type ReminderDraft, type CompanionSnapshot, type DailyCommitment, type DeliverySummary, type MessagingCapture, type MessagingSettings, type PhoneReminder, type PhoneBrowserRequest } from "@core";
 import type { IncomingPhoneMessage } from "./photon";
 import { GatewayError } from "./errors";
 
@@ -32,6 +32,7 @@ export interface MessagingState {
   baseline: boolean;
   notifications: { id: string; text: string; createdAt: number }[];
   checkIns: string[];
+  reminderDraft?: ReminderDraft | null;
 }
 export const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -76,7 +77,10 @@ export class MessagingStore {
           (r.claimId === undefined || boundedText(r.claimId, 300)) && (r.claimedAt === undefined || finite(r.claimedAt)) &&
           (r.status !== "claimed" || boundedText(r.claimId, 300) && finite(r.claimedAt)))) throw new Error("Invalid browser requests");
         if (!arrays.captures.every(c => object(c) && boundedText(c.id, 300) && ["idea", "goal", "link"].includes(c.kind) && boundedText(c.text, 6000) && finite(c.createdAt) && (c.url === undefined || (boundedText(c.url, 4096) && /^https?:\/\//.test(c.url))) && (c.importedAt === undefined || finite(c.importedAt)))) throw new Error("Invalid captures");
-        if (!arrays.reminders.every(r => object(r) && boundedText(r.id, 300) && boundedText(r.text, 2000) && finite(r.dueAt) && finite(r.createdAt) && ["pending", "sent", "cancelled", "failed", "unknown"].includes(r.status))) throw new Error("Invalid reminders");
+        if (!arrays.reminders.every(r => object(r) && boundedText(r.id, 300) && boundedText(r.text, 2000) && finite(r.dueAt) && finite(r.createdAt) && ["pending", "sent", "cancelled", "failed", "unknown"].includes(r.status) &&
+          (r.recurrence === undefined || !!parseReminderRecurrence(r.recurrence)) && (r.anchorAt === undefined || finite(r.anchorAt)) && (r.paused === undefined || typeof r.paused === "boolean") && (r.seriesId === undefined || boundedText(r.seriesId, 300)) && (r.ownerPhone === undefined || phone(r.ownerPhone)) && (r.requestSignature === undefined || typeof r.requestSignature === "string" && /^[a-f0-9]{64}$/.test(r.requestSignature)) &&
+          (r.lastDelivery === undefined || object(r.lastDelivery) && finite(r.lastDelivery.dueAt) && ["sent", "failed", "unknown"].includes(r.lastDelivery.status)))) throw new Error("Invalid reminders");
+        if (arrays.reminderDraft !== undefined && arrays.reminderDraft !== null && !parseReminderDraft(arrays.reminderDraft)) throw new Error("Invalid reminder draft");
         if (!arrays.commitments.every(c => object(c) && boundedText(c.id, 300) && /^\d{4}-\d{2}-\d{2}$/.test(c.date) && boundedText(c.text, 2000) && typeof c.done === "boolean" && finite(c.createdAt))) throw new Error("Invalid commitments");
         if (!arrays.outbox.every(d => object(d) && boundedText(d.id, 300) && boundedText(d.text, 8000) && phone(d.phone) && finite(d.at) && ["pending", "sent", "failed", "unknown"].includes(d.status) && (d.spaceId === undefined || boundedText(d.spaceId, 4096)))) throw new Error("Invalid outbox");
         if (!arrays.received.every(r => object(r) && typeof r.done === "boolean" && object(r.message) && boundedText(r.message.id, 200) && phone(r.message.sender) && boundedText(r.message.spaceId, 4096) && boundedText(r.message.text, 6000) && finite(r.message.at) && typeof r.message.fromMe === "boolean" && typeof r.message.isGroup === "boolean")) throw new Error("Invalid inbound receipts");
@@ -87,6 +91,7 @@ export class MessagingStore {
       // A crash after dispatch may have delivered. Never replay such sends automatically.
       for (const delivery of this.state.outbox)
         if (delivery.status === "pending") { delivery.status = "unknown"; delivery.error = "Gateway restarted before delivery was confirmed."; }
+      if (this.state.owner) for (const reminder of this.state.reminders) reminder.ownerPhone ??= this.state.owner.phone;
       this.save();
     } catch {
       throw new GatewayError(503, "Phone storage could not be opened. Check ~/.config/hypeman/messaging.json; existing data was preserved.", "messaging_storage_error");

@@ -24,6 +24,7 @@ import { video } from "./video";
 import { analyzeDocument } from "./documents";
 import { lookup } from "./lookup";
 import { assessTask, groundedAssessment } from "./task-assessment";
+import { rankRecall, validateRecallRequest } from "./recall";
 import { PhotonAdapter } from "./photon";
 import { MessagingService } from "./messaging";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -364,6 +365,8 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions) {
       response.setHeader("x-request-id", id);
       const signal = controller.signal;
       const run = async (): Promise<unknown> => {
+        if (url.pathname === "/api/recall/rank")
+          return rankRecall(validateRecallRequest(input), providers, config.demo, signal);
         if (url.pathname === "/api/agent")
           return options.agent
             ? options.agent(validateAgent(input), signal)

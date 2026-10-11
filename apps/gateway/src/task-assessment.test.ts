@@ -53,6 +53,50 @@ describe("read-only project progress", () => {
     request.page.successes = [answer.evidence];
     expect(groundedAssessment(answer, request).completed).toBe(false);
   });
+  it("does not infer a consequential milestone from an old visible confirmation", async () => {
+    const request = input();
+    request.task.steps[0].title = "Confirm the workshop registration";
+    request.page.text = "Registration confirmed";
+    request.page.successes = [request.page.text];
+    const providers = { json: vi.fn(async () => ({ ...answer, evidence: request.page.text })) } as unknown as Providers;
+    expect(await assessTask(request, providers, false, new AbortController().signal)).toMatchObject({ completed: false });
+    expect(providers.json).not.toHaveBeenCalled();
+    expect(groundedAssessment({ ...answer, evidence: request.page.text }, request).completed).toBe(false);
+  });
+  it("requires the fresh observation to match both the milestone and the exact current source", async () => {
+    const request = input();
+    request.task.steps[0].title = "Confirm the workshop registration";
+    request.page.text = "Registration confirmed. Changes saved successfully.";
+    request.completion = { kind: "registration", evidence: "Registration confirmed.", url: request.page.url };
+    const valid = { ...answer, evidence: "Registration confirmed." };
+    expect(groundedAssessment(valid, request).completed).toBe(true);
+    expect(groundedAssessment({ ...valid, evidence: "Changes saved successfully." }, request).completed).toBe(false);
+    request.completion.kind = "account";
+    expect(groundedAssessment(valid, request).completed).toBe(false);
+    request.completion.kind = "registration";
+    request.completion.url = "https://example.com/earlier-registration";
+    expect(groundedAssessment(valid, request).completed).toBe(false);
+  });
+  it("keeps draft preparation separate from a consequential submission", () => {
+    const request = input();
+    request.task.steps[0].title = "Prepare the workshop registration";
+    request.page.text = "Sample attendee: Alex Morgan · alex@example.com";
+    expect(groundedAssessment({ ...answer, evidence: request.page.text }, request).completed).toBe(true);
+  });
+  it("refuses a same-kind receipt belonging to another named milestone subject", async () => {
+    const request = input();
+    request.task.steps[0].title = "Register for Pottery Basics";
+    request.page.text = "Registration confirmed for Photography Workshop";
+    request.completion = { kind: "registration", subject: "Photography Workshop", evidence: request.page.text, url: request.page.url };
+    const providers = { json: vi.fn(async () => ({ ...answer, evidence: request.page.text })) } as unknown as Providers;
+    expect(await assessTask(request, providers, false, new AbortController().signal)).toMatchObject({ completed: false });
+    expect(providers.json).not.toHaveBeenCalled();
+    request.completion.subject = "Pottery Basics";
+    expect(groundedAssessment({ ...answer, evidence: request.page.text }, request).completed).toBe(false);
+    request.page.text = request.completion.evidence = "Registration confirmed";
+    expect(groundedAssessment({ ...answer, evidence: request.page.text }, request).completed).toBe(true);
+    expect(parseTaskAssessmentRequest(request)?.completion?.subject).toBe("Pottery Basics");
+  });
   it("does not assess paused, completed, or future milestones", () => {
     const request = input();
     request.task.status = "paused";

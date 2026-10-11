@@ -6,7 +6,7 @@ import type { Action, InkReview } from "@core";
 import { emptyBoard, type BoardDocument } from "../packages/core/src/board";
 import { Board } from "../apps/extension/src/ui/Board";
 import { request } from "../apps/extension/src/bridge";
-import { WorkbenchContext, type ToolHandler, type WorkbenchState } from "../apps/extension/src/ui/WorkbenchContext";
+import { WorkbenchContext, type ToolHandler, type WorkbenchState, type ToolResult } from "../apps/extension/src/ui/WorkbenchContext";
 vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn() }));
 let root: Root, container: HTMLDivElement, handler: ToolHandler, context: WorkbenchState;
 let stored: Map<string, BoardDocument>;
@@ -16,7 +16,7 @@ function render(conversationId = "conversation-one", sketch: Extract<Action, { t
   return act(async () => { root.render(createElement(WorkbenchContext.Provider, { value: { ...context, conversationId } }, createElement(Board, { conversationId, sketch }))); });
 }
 async function command(operation: string, args: Record<string, unknown> = {}) {
-  let result: string | void, error: unknown;
+  let result: ToolResult, error: unknown;
   await act(async () => { try { result = await handler(operation, args); } catch (reason) { error = reason; } });
   if (error) throw error;
   return result!;
@@ -126,10 +126,23 @@ describe("conversation whiteboard", () => {
     let resolve!: (value: InkReview) => void;
     const delayed = new Promise<InkReview>((done) => { resolve = done; });
     vi.mocked(request).mockImplementationOnce(async () => delayed);
-    let checking!: Promise<string | void>;
+    let checking!: Promise<ToolResult>;
     await act(async () => { checking = Promise.resolve(handler("check", {})); });
     const rejected = expect(checking).rejects.toMatchObject({ name: "AbortError" });
     await act(async () => { window.dispatchEvent(new CustomEvent("hypeman.cancel-tools")); resolve(review); await rejected; });
     expect(container.querySelector(".ink-feedback")).toBeNull();
+  });
+});
+
+describe("verified board receipts", () => {
+  it("returns persisted revision and changed IDs for a diagram and deduplicates its retry", async () => {
+    await render();
+    const sketch: Extract<Action, { type: "sketch" }> = { type: "sketch", title: "Balance", lines: ["Add 2 to both sides"], shapes: [] };
+    const result = await command("add", { sketch });
+    expect(result).toMatchObject({ changed: true, data: { artifactId: "board:conversation-one", revision: 1, changedIds: expect.any(Array) }, continue: true });
+    expect(stored.get("conversation-one")?.revision).toBe(1);
+    const again = await command("add", { sketch });
+    expect(again).toMatchObject({ changed: false, data: { revision: 1 } });
+    expect(stored.get("conversation-one")?.objects).toHaveLength(2);
   });
 });

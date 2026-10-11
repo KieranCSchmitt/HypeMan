@@ -18,6 +18,8 @@ export interface DocumentRepository {
   complete(document: StoredDocument, uploadId: string): Promise<void>;
   document(id: string): Promise<StoredDocument | undefined>;
   list(conversationId: string): Promise<StoredDocument[]>;
+  all?(): Promise<StoredDocument[]>;
+  merge?(documents: StoredDocument[]): Promise<number>;
   save(document: StoredDocument): Promise<void>;
   remove(id: string): Promise<void>;
   page(id: string, page: number): Promise<DocumentPage | undefined>;
@@ -229,6 +231,12 @@ export function indexedDocumentRepository(name = "hypeman-documents"): DocumentR
     }),
     document: (id) => transaction(["documents"], "readonly", (current) => requestValue(current.objectStore("documents").get(id))),
     list: (conversationId) => transaction(["documents"], "readonly", (current) => requestValue(current.objectStore("documents").index("conversationId").getAll(conversationId))),
+    all: () => transaction(["documents"], "readonly", current => requestValue(current.objectStore("documents").getAll())),
+    merge: (documents) => transaction(["documents"], "readwrite", async current => {
+      const store = current.objectStore("documents"); let added = 0;
+      for (const document of documents) if (!(await requestValue(store.get(document.id)))) { await requestValue(store.put(document)); added++; }
+      return added;
+    }),
     save: (document) => transaction(["documents"], "readwrite", async (current) => { await requestValue(current.objectStore("documents").put(document)); }),
     remove: (id) => transaction(["documents", "pages"], "readwrite", async (current) => {
       current.objectStore("documents").delete(id);
@@ -243,9 +251,10 @@ export function indexedDocumentRepository(name = "hypeman-documents"): DocumentR
     savePage: (page) => transaction(["pages"], "readwrite", async (current) => { await requestValue(current.objectStore("pages").put({ ...page, id: `${page.documentId}:${page.page}` })); }),
   };
 }
+export const documentRepository = indexedDocumentRepository();
 let handler: ReturnType<typeof createDocumentHandler> | undefined;
 export function handleDocumentMessage(message: Message, sender: chrome.runtime.MessageSender): Promise<unknown> | undefined {
   if (typeof message.type !== "string" || !message.type.startsWith("document.")) return undefined;
-  handler ??= createDocumentHandler(indexedDocumentRepository());
+  handler ??= createDocumentHandler(documentRepository);
   return handler(message, sender);
 }

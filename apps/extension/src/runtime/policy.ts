@@ -8,9 +8,21 @@ export interface ActionPolicy {
   reason?: string;
 }
 const CONSEQUENTIAL =
-  /\b(submit|send|buy|purchase|checkout|pay|place order|delete|remove|discard|publish|post|share|register|enroll|subscribe|unsubscribe|sign up|create account|accept terms|save changes|confirm (?:order|registration|payment))\b/i;
+  /\b(submit|send|invite|buy|purchase|checkout|pay|place order|delete|remove|discard|publish|post|share|register|enroll|book|reserve|subscribe|unsubscribe|sign up|create account|accept terms|save changes|cancel (?:booking|reservation|subscription)|confirm (?:order|registration|payment|booking|reservation))\b/i;
 const ENTER = /(^|\+)(enter|return)$/i;
 const PAYMENT_TEXT = /^(?:\d[ -]?){13,19}$/;
+const VIEW_CHANGE = /^(?:remove|clear|reset)(?: all)? (?:the )?(?:filters?|sort|selection|search|highlights?)$/i;
+function review(label: string, page: PageSnapshot, form?: HTMLFormElement | null): string {
+  const fields = form ? Array.from(form.elements).flatMap((control) => {
+    if (!(control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement) ||
+      privateField(control) || !control.value || ["submit", "button", "hidden", "password", "file"].includes(control.type)) return [];
+    const name = control.getAttribute("aria-label") || control.labels?.[0]?.textContent || control.name;
+    return name ? [`${name.trim().slice(0, 40)}: ${control.value.slice(0, 80)}`] : [];
+  }).slice(0, 3) : [];
+  let site = "this website";
+  try { site = new URL(page.url).hostname; } catch { /* Keep the local fallback. */ }
+  return `${label.slice(0, 120)} · ${site}${fields.length ? `\n${fields.join(" · ")}` : ""}`;
+}
 function registrationFormLink(item: Target, node: Element | null | undefined): boolean {
   if (!(node instanceof HTMLAnchorElement) || !item.href || node.hasAttribute("download"))
     return false;
@@ -46,6 +58,16 @@ function destination(url: string): string | null {
 export function actionTarget(action: Action): string | undefined {
   return "target" in action ? action.target : undefined;
 }
+export function confirmationLabel(action: Action, page: PageSnapshot): string {
+  const name = page.elements.find((item) => item.id === actionTarget(action))?.name ?? "";
+  for (const [pattern, label] of [
+    [/\b(send|invite)\b/i, "Send"], [/\b(delete|remove|discard)\b/i, "Delete"],
+    [/\b(pay|buy|purchase|place order|checkout)\b/i, "Pay"], [/\b(register|enroll|sign up)\b/i, "Register"],
+    [/\b(book|reserve)\b/i, "Book"], [/\b(publish|post|share)\b/i, "Publish"],
+    [/\bunsubscribe\b/i, "Unsubscribe"], [/\bsubscribe\b/i, "Subscribe"], [/\bsave\b/i, "Save"],
+  ] as const) if (pattern.test(name)) return label;
+  return action.type === "navigate" ? "Continue" : "Submit";
+}
 export function checkPolicy(
   action: Action,
   page: PageSnapshot,
@@ -69,7 +91,7 @@ export function checkPolicy(
     const reason = destination(action.url);
     if (reason) return { allowed: false, reason };
     if (/checkout|payment|unsubscribe|delete/i.test(new URL(action.url).pathname))
-      return { allowed: true, confirmation: "Open this sensitive page?" };
+      return { allowed: true, confirmation: review(`Open ${new URL(action.url).pathname}`, page) };
   }
   const click =
     action.type === "click" || (action.type === "pointer" && action.command === "doubleClick");
@@ -79,9 +101,10 @@ export function checkPolicy(
     item &&
     CONSEQUENTIAL.test(item.name) &&
     !/^save draft$/i.test(item.name.trim()) &&
+    !VIEW_CHANGE.test(item.name.trim()) &&
     !registrationFormLink(item, node)
   )
-    return { allowed: true, confirmation: `This will activate “${item.name}”. Continue?` };
+    return { allowed: true, confirmation: review(item.name, page, (node as HTMLButtonElement | undefined)?.form) };
   if (click || enter) {
     const control = (node ?? (enter ? document.activeElement : null))?.closest(
       "button,input,textarea,select",
@@ -104,7 +127,7 @@ export function checkPolicy(
             (!(control instanceof HTMLTextAreaElement) ||
               (action.type === "key" && /(?:Control|Meta|Ctrl|Cmd)\+/i.test(action.key)))))
       )
-        return { allowed: true, confirmation: "This sends the form. Continue?" };
+        return { allowed: true, confirmation: review(item?.role === "button" ? item.name : "Submit form", page, form) };
     }
   }
   return { allowed: true };

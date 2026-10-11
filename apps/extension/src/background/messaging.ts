@@ -2,6 +2,7 @@ import {
   isRecord,
   safePageUrl,
   validMessagingTimezone,
+  parseReminderRecurrence,
   type CompanionSnapshot,
   type MessagingCapture,
   type MessagingStatus,
@@ -102,8 +103,10 @@ export function safeMessagingStatus(value: unknown): MessagingStatus {
       if (!isRecord(item) || !id(item.id) || !text(item.text, 8000) || !stamp(item.dueAt) ||
           !stamp(item.createdAt) || !["pending", "sent", "cancelled", "failed", "unknown"].includes(String(item.status)))
         throw new Error("The local server returned an invalid phone reminder.");
+      const recurrence = item.recurrence === undefined ? undefined : parseReminderRecurrence(item.recurrence);
+      if (recurrence === null || item.paused !== undefined && typeof item.paused !== "boolean" || item.anchorAt !== undefined && !stamp(item.anchorAt) || item.seriesId !== undefined && !id(item.seriesId) || item.lastDelivery !== undefined && (!isRecord(item.lastDelivery) || !stamp(item.lastDelivery.dueAt) || !["sent", "failed", "unknown"].includes(String(item.lastDelivery.status)))) throw new Error("The local server returned an invalid reminder schedule.");
       return { id: item.id, text: item.text, dueAt: item.dueAt, createdAt: item.createdAt,
-        status: item.status as MessagingStatus["reminders"][number]["status"] };
+        status: item.status as MessagingStatus["reminders"][number]["status"], ...(recurrence ? { recurrence } : {}), ...(item.paused !== undefined ? { paused: item.paused } : {}), ...(item.anchorAt !== undefined ? { anchorAt: item.anchorAt } : {}), ...(item.seriesId !== undefined ? { seriesId: item.seriesId } : {}), ...(item.lastDelivery ? { lastDelivery: item.lastDelivery as MessagingStatus["reminders"][number]["lastDelivery"] } : {}) };
     }),
     commitments: list(value.commitments, (item) => {
       if (!isRecord(item) || !id(item.id) || !text(item.text, 8000) || !stamp(item.createdAt) ||

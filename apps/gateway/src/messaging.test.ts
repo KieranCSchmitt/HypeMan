@@ -137,6 +137,45 @@ describe("personal phone pairing and permissions", () => {
     expect(f.transport.sent[0]).toMatchObject({ destination: { phone: "+14155551234", spaceId: "owner-thread" }, text: expect.stringContaining("Reminder: Check the kiln") });
     expect(new MessagingStore(f.directory).state.reminders[0].status).toBe("sent");
   });
+  it("delivers a recurring wall-clock reminder across DST and never repeats an uncertain occurrence", async () => {
+    const f = fixture("2026-03-07T13:00:00Z"); await f.pair();
+    await f.service.route("settings", { patch: { coachingEnabled: false } });
+    const recurrence = { frequency: "daily", interval: 1, timezone: "America/New_York", hour: 9, minute: 0 };
+    const dueAt = Date.parse("2026-03-07T14:00:00Z"), request = { text: "Practice", dueAt, recurrence, idempotencyKey: "daily-practice" };
+    await f.service.route("remind", request); f.at(dueAt); f.transport.fail = true;
+    await f.service.tick(); await f.service.tick();
+    expect(f.transport.sent).toHaveLength(1);
+    expect(f.service.status().reminders[0]).toMatchObject({ status: "pending", dueAt: Date.parse("2026-03-08T13:00:00Z"), lastDelivery: { dueAt, status: "unknown" } });
+    await f.service.route("remind", request); // lost response retry after the first due date
+    expect(f.service.status().reminders).toHaveLength(1);
+    await f.service.close(); f.transport.fail = false;
+    const restarted = new MessagingService({ transport: f.transport, directory: f.directory, now: () => f.now }); services.push(restarted);
+    await restarted.tick(); expect(f.transport.sent).toHaveLength(1);
+    f.at("2026-03-08T13:00:00Z"); await restarted.tick(); await restarted.tick();
+    expect(f.transport.sent).toHaveLength(2); expect(restarted.status().reminders[0].dueAt).toBe(Date.parse("2026-03-09T13:00:00Z"));
+  });
+  it("pauses, resumes, skips and snoozes an occurrence without shifting the recurring series", async () => {
+    const f = fixture("2026-10-12T12:00:00Z"); await f.pair(); await f.service.route("settings", { patch: { coachingEnabled: false } });
+    const recurrence = { frequency: "weekly", interval: 1, timezone: "America/New_York", hour: 9, minute: 0, weekdays: [1, 3] }, id = "desktop:weekdays";
+    const request = { text: "Practice", dueAt: Date.parse("2026-10-12T13:00:00Z"), recurrence, idempotencyKey: "weekdays" };
+    await f.service.route("remind", request);
+    await f.service.route("reminders", { operation: "pause", id }); f.at("2026-10-12T13:01:00Z"); await f.service.tick(); expect(f.transport.sent).toHaveLength(0);
+    await f.service.route("reminders", { operation: "resume", id }); expect(f.service.status().reminders[0].dueAt).toBe(Date.parse("2026-10-14T13:00:00Z"));
+    await f.service.receive(f.incoming(`SKIP ${id}`)); expect(f.service.status().reminders[0]).toMatchObject({ dueAt: Date.parse("2026-10-19T13:00:00Z"), recurrence: { exceptions: ["2026-10-14"] } });
+    await f.service.route("remind", request); expect(f.service.status().reminders).toHaveLength(1);
+    f.at("2026-10-19T13:00:00Z"); await f.service.route("reminders", { operation: "snooze", id, minutes: 15 });
+    expect(f.service.status().reminders).toMatchObject([{ id, dueAt: Date.parse("2026-10-21T13:00:00Z") }, { seriesId: id, dueAt: Date.parse("2026-10-19T13:15:00Z") }]);
+    await f.service.route("reminders", { operation: "cancel", id }); expect(f.service.status().reminders.every(reminder => reminder.status === "cancelled")).toBe(true);
+  });
+  it("persists phone reminder clarification and chooses the first eligible weekday without AI", async () => {
+    const f = fixture("2026-10-11T12:00:00Z"); await f.pair();
+    await f.service.receive(f.incoming("remind me to practice at 9 every weekday"));
+    expect(f.transport.sent.at(-1)?.text).toBe("9:00 AM or PM?"); expect(f.service.status().reminders).toHaveLength(0);
+    await f.service.close();
+    const restarted = new MessagingService({ transport: f.transport, directory: f.directory, now: () => f.now }); services.push(restarted);
+    await restarted.receive(f.incoming("AM ET"));
+    expect(restarted.status().reminders[0]).toMatchObject({ text: "practice", dueAt: Date.parse("2026-10-12T13:00:00Z"), recurrence: { timezone: "America/New_York", weekdays: [1, 2, 3, 4, 5] } });
+  });
   it("rejects invalid route fields and keeps send recipient fixed", async () => {
     const f = fixture(); await f.pair();
     await expect(f.service.route("send", { text: "hello", phone: "+14155559999" })).rejects.toThrow("Invalid phone request field");

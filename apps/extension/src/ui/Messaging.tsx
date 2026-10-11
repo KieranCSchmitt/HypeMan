@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { validMessagingTimezone, type MessagingCapture, type MessagingPairingResult, type MessagingSettings, type MessagingStatus } from "@core";
+import { nextReminderOccurrence, validMessagingTimezone, type MessagingCapture, type MessagingPairingResult, type MessagingSettings, type MessagingStatus, type ReminderRecurrence } from "@core";
 import { request, subscribe } from "../bridge";
 import { Notice, ToolButton } from "./common";
 import { message, relativeTime } from "./hooks";
 import { useToolHandler, useWorkbench } from "./WorkbenchContext";
+import { reminderFormTime } from "./reminder-form";
+import { phoneMessageText } from "./phone-review";
 interface PhoneInboxResult { captures: MessagingCapture[]; status: MessagingStatus | null; error?: string }
 function useMessaging(connectionKey = "") {
   const [status, setStatus] = useState<MessagingStatus | null>(null);
@@ -47,6 +49,7 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
   const [tab, setTab] = useState("Inbox"), [number, setNumber] = useState("");
   const [sending, setSending] = useState(false), [text, setText] = useState("");
   const [addingReminder, setAddingReminder] = useState(false), [reminderText, setReminderText] = useState(""), [reminderTime, setReminderTime] = useState("");
+  const [repeat, setRepeat] = useState<"once" | "daily" | "weekly" | "weekdays">("once");
   const abort = useRef<AbortController | null>(null);
   const status = phone.status;
   useEffect(() => { if (status?.settings) setDraft({ ...status.settings }); }, [status?.settings.coachingEnabled, status?.settings.morningTime, status?.settings.eveningTime, status?.settings.timezone, status?.settings.projectUpdates, status?.settings.proactiveEnabled]);
@@ -64,7 +67,13 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
     const controller = new AbortController(); abort.current?.abort(); abort.current = controller;
     const started = Date.now();
     setBusy(true); setError(""); setNotice("");
-    try { const result = await request<{ status?: string }>({ type, ...values }, controller.signal); if (type === "messaging.send" && ["unknown", "failed"].includes(String(result?.status))) throw new Error(result.status === "unknown" ? "Delivery is uncertain. Check your phone before sending again." : "Text delivery failed."); await phone.refresh(undefined, false); return result; }
+    try {
+      const result = await request<{ status?: string; deliveries?: MessagingStatus["deliveries"] }>({ type, ...values }, controller.signal);
+      const receipt = type === "messaging.send" ? [...(result?.deliveries || [])].reverse().find((delivery) => delivery.text === values.text && delivery.at >= started) : undefined;
+      const deliveryStatus = receipt?.status || result?.status;
+      if (type === "messaging.send" && ["unknown", "failed"].includes(String(deliveryStatus))) throw new Error(deliveryStatus === "unknown" ? "Delivery is uncertain. Check your phone before sending again." : "Text delivery failed.");
+      await phone.refresh(undefined, false); return type === "messaging.send" ? { ...result, status: deliveryStatus || "pending" } : result;
+    }
     catch (cause) {
       let reported = cause;
       if (type === "messaging.send" && !controller.signal.aborted) {
@@ -92,22 +101,20 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
     }
     if (operation === "unpair") { await act("messaging.unpair"); setPairing(null); return "Phone unpaired."; }
     if (operation === "test" || operation === "send") {
-      let raw = operation === "test" ? "HypeMan is connected. Text me an idea, goal, or reminder." : String(args.text || selected?.text || "");
-      if (operation === "send" && selected?.url && ["note", "project", "video"].includes(selected.kind) && !raw.includes(selected.url)) raw += `\n\nSource: ${selected.url}`;
-      const text = raw.length > 6000 ? `${raw.slice(0, 5980)}\n[Text shortened]` : raw;
+      const text = phoneMessageText(operation, args, selected);
       if (!text.trim()) throw new Error("Select the content to text, or say what to send.");
-      await act("messaging.send", { text }); return "Text requested for your paired phone.";
+      const result = await act("messaging.send", { text }); return { message: result?.status === "sent" ? "Text sent to your paired phone." : "Text requested for your paired phone.", changed: true, data: { status: result?.status || "pending", text, recipient: status?.ownerPhone ? `•••• ${status.ownerPhone.slice(-4)}` : "paired phone" } };
     }
     if (operation === "settings") { const changes = args.patch && typeof args.patch === "object" ? args.patch as Partial<MessagingSettings> : Object.fromEntries(Object.entries(args).filter(([key]) => !["conversationId", "selected"].includes(key))) as Partial<MessagingSettings>; await save(changes); return "Phone preferences saved."; }
     if (operation === "continue" || operation === "dismiss") {
       const id = String(args.id || (selected?.kind === "phone-capture" ? selected.id : "")); if (!id) throw new Error("Select a phone idea first.");
       await act(`messaging.${operation}`, { id }); return operation === "continue" ? "Continuing that idea in Chrome." : "Phone idea dismissed.";
     }
-    if (operation === "snooze" || operation === "cancel") {
+    if (["snooze", "cancel", "pause", "resume", "skip"].includes(operation)) {
       const id = String(args.id || (selected?.kind === "reminder" ? selected.id : "")); if (!id) throw new Error("Select a reminder first.");
-      await act("messaging.reminders", { operation, id, ...(operation === "snooze" ? { minutes: Number(args.minutes || 60) } : {}) }); return operation === "snooze" ? "Reminder snoozed." : "Reminder cancelled.";
+      await act("messaging.reminders", { operation, id, ...(operation === "snooze" ? { minutes: Number(args.minutes || 60) } : {}) }); return ({ snooze: "Reminder snoozed.", cancel: "Reminder cancelled.", pause: "Reminder series paused.", resume: "Reminder series resumed.", skip: "Next reminder skipped." } as Record<string, string>)[operation];
     }
-    if (operation === "remind") { await act("messaging.remind", { text: args.text, dueAt: args.dueAt }); setTab("Reminders"); return "Reminder scheduled."; }
+    if (operation === "remind") { await act("messaging.remind", { text: args.text, dueAt: args.dueAt, ...(args.recurrence ? { recurrence: args.recurrence } : {}) }); setTab("Reminders"); return { message: "Reminder scheduled.", changed: true, data: { text: args.text, dueAt: args.dueAt, timezone: status?.settings.timezone, recurrence: args.recurrence } }; }
     throw new Error("That phone action is unavailable.");
   };
   useToolHandler("phone", handlePhone);
@@ -115,8 +122,18 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
   const formatTime = (at: number) => new Date(at).toLocaleString(undefined, { timeZone: validMessagingTimezone(status?.settings.timezone) ? status!.settings.timezone : "America/New_York", dateStyle: "medium", timeStyle: "short" });
   const update = (changes: Partial<MessagingSettings>) => void save(changes).catch((cause) => setError(message(cause)));
   const run = async (operation: string, args: Record<string, unknown> = {}) => {
-    try { await handlePhone(operation, args); if (["send", "remind"].includes(operation)) setNotice(operation === "send" ? "Text requested" : "Reminder saved"); return true; }
+    try { const result = await handlePhone(operation, args); if (["send", "remind"].includes(operation)) setNotice(operation === "send" ? typeof result === "object" && result.message.startsWith("Text sent") ? "Text sent" : "Text requested" : "Reminder saved"); return true; }
     catch (cause) { setError(message(cause)); return false; }
+  };
+  const saveReminder = async () => {
+    try {
+      const timezone = status?.settings.timezone || "America/New_York";
+      let dueAt = reminderFormTime(reminderTime, timezone);
+      const parts = reminderTime.split("T")[1].split(":").map(Number);
+      const recurrence: ReminderRecurrence | undefined = repeat === "once" ? undefined : { frequency: repeat === "daily" ? "daily" : "weekly", interval: 1, timezone, hour: parts[0], minute: parts[1], ...(repeat === "weekdays" ? { weekdays: [1, 2, 3, 4, 5] } : {}) };
+      if (recurrence) dueAt = nextReminderOccurrence(recurrence, dueAt, dueAt - 1) ?? dueAt;
+      if (await run("remind", { text: reminderText, dueAt, ...(recurrence ? { recurrence } : {}) })) { setAddingReminder(false); setReminderText(""); setReminderTime(""); }
+    } catch (cause) { setError(message(cause)); }
   };
   return <section className="phone-messaging" aria-label="Phone companion" aria-busy={busy || phone.loading}>
     <div className="tool-toolbar"><span className={`connection-dot ${status?.paired ? "connected" : ""}`} aria-hidden="true" /><span title={status?.ownerPhone || ""}>{phone.loading ? "Connecting…" : status?.paired ? `Paired · •••• ${status.ownerPhone?.slice(-4) || ""}` : stateLabel}</span><ToolButton icon="rewind" label="Sync phone" disabled={busy} onClick={() => void phone.refresh().catch((cause) => setError(message(cause)))} />{status?.paired && <ToolButton icon="close" label="Unpair phone" disabled={busy} onClick={() => void run("unpair")} />}</div>
@@ -128,7 +145,7 @@ export function Messaging({ connectionKey }: { connectionKey: string }) {
     <div className="tool-tabs" role="tablist" aria-label="Phone views">{["Inbox", "Reminders", "Check-ins"].map((name) => <button key={name} type="button" role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}</div>
     <div className="tool-content">
       <div hidden={tab !== "Inbox"}><Captures captures={phone.captures} onAction={(operation, args) => void run(operation, args)} /></div>
-      <section hidden={tab !== "Reminders"} aria-label="Phone reminders"><div className="tool-toolbar"><ToolButton icon="plus" label="New reminder" disabled={!status?.paired} onClick={() => setAddingReminder(!addingReminder)} /></div>{addingReminder && <form className="tool-form" onSubmit={(event) => { event.preventDefault(); void run("remind", { text: reminderText, dueAt: new Date(reminderTime).getTime() }).then((saved) => { if (saved) setAddingReminder(false); }); }}><input aria-label="Reminder" placeholder="Remind me…" value={reminderText} onChange={(event) => setReminderText(event.target.value)} required /><input aria-label="Reminder time" type="datetime-local" value={reminderTime} onChange={(event) => setReminderTime(event.target.value)} required /><button type="submit" className="button primary" disabled={busy}>Save</button></form>}{status?.reminders.filter((reminder) => reminder.status !== "cancelled").slice(-20).reverse().map((reminder) => { const select = () => workbench.selectContent({ kind: "reminder", id: reminder.id, text: reminder.text, title: "Reminder" }); return <article key={reminder.id} className="phone-item" tabIndex={0} onFocus={select} onClick={select}><p>{reminder.text}</p><time>{formatTime(reminder.dueAt)} · {reminder.status === "pending" && reminder.dueAt < Date.now() ? "overdue" : reminder.status === "unknown" ? "delivery uncertain" : reminder.status}</time>{reminder.status === "pending" && <div className="tool-actions"><button className="button" disabled={busy} onClick={() => void run("snooze", { id: reminder.id, minutes: 60 })}>+1h</button><ToolButton icon="close" label="Cancel reminder" disabled={busy} onClick={() => void run("cancel", { id: reminder.id })} /></div>}</article>; })}{!status?.reminders.some((reminder) => reminder.status !== "cancelled") && <div className="tool-empty">No reminders</div>}</section>
+      <section hidden={tab !== "Reminders"} aria-label="Phone reminders"><div className="tool-toolbar"><ToolButton icon="plus" label="New reminder" disabled={!status?.paired} onClick={() => setAddingReminder(!addingReminder)} /></div>{addingReminder && <form className="tool-form" onSubmit={(event) => { event.preventDefault(); void saveReminder(); }}><input aria-label="Reminder" placeholder="Remind me…" value={reminderText} onChange={(event) => setReminderText(event.target.value)} required /><label className="field">{status?.settings.timezone}<input aria-label="Reminder time" type="datetime-local" value={reminderTime} onChange={(event) => setReminderTime(event.target.value)} required /></label><select aria-label="Reminder repeat" value={repeat} onChange={(event) => setRepeat(event.target.value as typeof repeat)}><option value="once">Once</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="weekdays">Weekdays</option></select><button type="submit" className="button primary" disabled={busy}>Save</button></form>}{status?.reminders.filter((reminder) => reminder.status !== "cancelled").slice(-20).reverse().map((reminder) => { const select = () => workbench.selectContent({ kind: "reminder", id: reminder.id, text: reminder.text, title: "Reminder" }); return <article key={reminder.id} className="phone-item" tabIndex={0} onFocus={select} onClick={select}><p>{reminder.text}</p><time>{formatTime(reminder.dueAt)} · {reminder.paused ? "paused" : reminder.status === "pending" && reminder.dueAt < Date.now() ? "overdue" : reminder.status === "unknown" ? "delivery uncertain" : reminder.status}</time>{reminder.recurrence && <small>Repeats {reminder.recurrence.frequency}</small>}{reminder.status === "pending" && <div className="tool-actions">{reminder.recurrence && <><ToolButton icon={reminder.paused ? "play" : "pause"} label={reminder.paused ? "Resume reminder series" : "Pause reminder series"} disabled={busy} onClick={() => void run(reminder.paused ? "resume" : "pause", { id: reminder.id })} /><button className="button" disabled={busy || reminder.paused} onClick={() => void run("skip", { id: reminder.id })}>Skip</button></>}<button className="button" disabled={busy || reminder.paused} onClick={() => void run("snooze", { id: reminder.id, minutes: 60 })}>+1h</button><ToolButton icon="close" label="Cancel reminder" disabled={busy} onClick={() => void run("cancel", { id: reminder.id })} /></div>}</article>; })}{!status?.reminders.some((reminder) => reminder.status !== "cancelled") && <div className="tool-empty">No reminders</div>}</section>
       <div hidden={tab !== "Check-ins"}>{draft && <fieldset disabled={busy || !status?.paired}><legend>Check-ins</legend>
         <label><input type="checkbox" checked={draft.proactiveEnabled} onChange={(event) => update({ proactiveEnabled: event.target.checked })} /> Proactive texts</label>
         <label><input type="checkbox" checked={draft.coachingEnabled} onChange={(event) => update({ coachingEnabled: event.target.checked })} /> Daily planning</label>

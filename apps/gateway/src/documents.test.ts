@@ -43,3 +43,24 @@ describe("page-grounded PDF analysis", () => {
     await expect(analyzeDocument(input(), provider, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 });
+
+describe("staged and multi-document synthesis", () => {
+  const stage = (artifactId: string, pages: number[], pageCount = 4, truncated = false) => ({ artifactId, title: `${artifactId}.pdf`, pageCount, text: `Facts from ${artifactId} pages ${pages.join(", ")}`, coveredPages: pages, citations: [{ artifactId, page: pages[0], quote: "Actual words" }], partial: pages.length !== pageCount || truncated, truncated, provider: "openai" });
+  it("combines all staged coverage without calling a partial prefix a full review", async () => {
+    const model = providers({ text: "Combined main ideas and conclusion.", citations: [{ artifactId: "pdf-one", page: 3 }] });
+    const result = await analyzeDocument({ question: "Summarize the whole PDF", analyses: [stage("pdf-one", [1, 2]), stage("pdf-one", [3, 4])] }, model, new AbortController().signal);
+    expect(result).toMatchObject({ coveredPages: [1, 2, 3, 4], partial: false, basis: "page summaries" });
+  });
+  it("retains partial coverage when one physical page was truncated", async () => {
+    const result = await analyzeDocument({ question: "Summarize", analyses: [stage("pdf-one", [1, 2], 4, true), stage("pdf-one", [3, 4])] }, providers({ text: "Partial answer", citations: [] }), new AbortController().signal);
+    expect(result).toMatchObject({ partial: true, truncated: true });
+  });
+  it("keeps document identities in comparisons and rejects cross-document invented citations", async () => {
+    const value = { question: "Compare the two PDFs", analyses: [stage("pdf-one", [1, 2], 2), stage("pdf-two", [1, 2], 2)] };
+    const result = await analyzeDocument(value, providers({ text: "They differ.", citations: [{ artifactId: "pdf-two", page: 1, quote: "Actual words" }] }), new AbortController().signal);
+    expect(result.citations).toEqual([{ artifactId: "pdf-two", page: 1, quote: "Actual words" }]);
+    expect(result.documents?.map((document) => document.artifactId)).toEqual(["pdf-one", "pdf-two"]);
+    await expect(analyzeDocument(value, providers({ text: "Bad citation", citations: [{ artifactId: "pdf-one", page: 2 }] }), new AbortController().signal)).rejects.toMatchObject({ code: "ungrounded_document_citation" });
+    await expect(analyzeDocument(value, providers({ text: "Bad quote", citations: [{ artifactId: "pdf-two", page: 1, quote: "Made up" }] }), new AbortController().signal)).rejects.toMatchObject({ code: "ungrounded_document_citation" });
+  });
+});

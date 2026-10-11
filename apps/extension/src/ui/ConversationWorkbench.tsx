@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { parseAction, type Action, type SelectedContent } from "@core";
+import { parseAction, type Action, type SelectedContent, type HistoryEntry, type SourceNote } from "@core";
+import { normalizeToolResult } from "../runtime/reliability";
 import type { CompanionRuntime } from "../runtime/types";
 import { request, subscribe } from "../bridge";
-import { WorkbenchContext, type ToolHandler } from "./WorkbenchContext";
+import { WorkbenchContext, toolResultMessage, type ToolHandler, type ToolResult } from "./WorkbenchContext";
 import { toolIntent } from "./tool-intents";
 import { ToolOverlay } from "./ToolOverlay";
 import { isOverlaySection, type OverlaySection } from "./overlay-sections";
 import { uploadDocument } from "./document-client";
 import { Icon } from "./Icon";
 import { Notice } from "./common";
-import { useSettings } from "./hooks";
+import { useSettings, exportWorkspace } from "./hooks";
+import { restoreWorkspaceBackup } from "./workspace-backup";
 import { ScreenRegion } from "./ScreenRegion";
 import { parseCaptions } from "./Video";
 import { MessageContent } from "./MessageContent";
@@ -19,7 +21,9 @@ import { useConversationUI } from "./useConversationUI";
 import { WindowGeometryProvider, type WindowGeometryPersistence } from "./WindowGeometryPersistence";
 import type { AvatarActivity } from "./useAvatarAnimation";
 import { useChatScroll } from "./useChatScroll";
+import { phoneMessageText, phoneReview } from "./phone-review";
 
+interface RecoveryContext { conversationId: string; text: string; selected: SelectedContent | null; tool: OverlaySection | null; image: string | null; runtimeAttempt: boolean }
 interface Message { id: string; role: "user" | "assistant" | "status"; text: string; at: number }
 const sections: Record<string, string> = { projects: "tasks", pdf: "documents" };
 const resolveSection = (tool: string | null): OverlaySection | null => {
@@ -75,18 +79,27 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const [selected, setSelected] = useState<SelectedContent | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
+  const [failedRequest, setFailedRequest] = useState("");
+  const recoveryContext = useRef<RecoveryContext | null>(null);
+  const conversationCheckpoint = useRef<{ conversationId: string; text: string; history: HistoryEntry[]; observed: Set<string> } | null>(null);
+  const [toolStatus, setToolStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [celebration, setCelebration] = useState("");
   const [image, setImage] = useState<string | null>(null);
   const [saved, setSaved] = useState<Array<{ id: string; title: string; messages: Message[] }>>([]);
   const [confirmation, setConfirmation] = useState<string | null>(null);
+  const [confirmationLabel, setConfirmationLabel] = useState("Continue");
+  const approval = useRef<HTMLDivElement>(null);
+  const hadApproval = useRef(false);
+  const [narrow, setNarrow] = useState(() => window.innerWidth < 760);
+  useEffect(() => { const resize = () => setNarrow((window.visualViewport?.width || window.innerWidth) < 760); window.addEventListener("resize", resize); window.visualViewport?.addEventListener("resize", resize); return () => { window.removeEventListener("resize", resize); window.visualViewport?.removeEventListener("resize", resize); }; }, []);
   const confirmationAnswer = useRef<((answer: boolean) => void) | null>(null);
   const [captureRegion, setCaptureRegion] = useState(false);
   const regionAnswer = useRef<((image: string | null) => void) | null>(null);
   const [snapshot, setSnapshot] = useState(() => runtime?.getSnapshot());
   const [sketch, setSketch] = useState<Extract<Action, { type: "sketch" }> | null>(null);
   const field = useRef<HTMLTextAreaElement>(null), files = useRef<HTMLInputElement>(null);
-  const preferredHeight = Math.min(400, messages.length ? 360 : confirmation || snapshot?.confirmation ? 240 : image ? 220 : error ? 180 : 120);
+  const preferredHeight = narrow && windows.open.length && !confirmation && !snapshot?.confirmation ? 180 : Math.min(400, messages.length ? 360 : confirmation || snapshot?.confirmation ? 240 : image ? 220 : error ? 180 : 120);
   const chatWindow = useWindowGeometry({
     id: "chat", minSize: { width: 300, height: 120 }, preferredHeight, persistence,
     initialRect: (viewport) => clampWindow({ x: viewport.x + viewport.width - 368, y: viewport.y + viewport.height - 105 - preferredHeight, width: 340, height: preferredHeight }, viewport, { width: 300, height: 120 }),
@@ -157,12 +170,23 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const executeTool = useCallback(async (name: string, operation: string, args: Record<string, unknown> = {}) => {
     const signal = pending.current?.signal; signal?.throwIfAborted();
     setTool(resolveSection(name));
-    if ((operation === "open" || operation === "show") && !Object.keys(args).length) return;
+    setToolStatus(`${operation === "summarize" || operation === "analyze" || operation === "ask" ? "Reading" : operation === "find" ? "Finding" : "Using"} ${name === "board" ? "whiteboard" : name}…`);
+    if ((operation === "open" || operation === "show") && !Object.keys(args).length && !["board", "video", "documents"].includes(name)) return;
+    if (name === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(operation)) {
+      const selected = args.selected && typeof args.selected === "object" ? args.selected as SelectedContent : state.current.selected;
+      if (["send", "test"].includes(operation) && !phoneMessageText(operation, args, selected).trim()) throw new Error("Select content or tell me what to send.");
+      const inbox = await request<{ status?: { ownerPhone?: string; settings?: { timezone?: string } } }>({ type: "messaging.inbox", refresh: false }, signal).catch(() => null);
+      signal?.throwIfAborted();
+      const answer = await new Promise<boolean>((resolve) => { confirmationAnswer.current = resolve; setConfirmationLabel(({ send: "Send text", test: "Send test", pair: "Pair phone", unpair: "Unpair", remind: "Schedule", settings: "Save preferences", continue: "Continue idea" } as Record<string, string>)[operation] || "Continue"); setConfirmation(phoneReview(operation, args, selected, inbox?.status?.ownerPhone, inbox?.status?.settings?.timezone)); });
+      confirmationAnswer.current = null; setConfirmation(null); signal?.throwIfAborted();
+      if (!answer) return { ok: false, message: "Cancelled.", changed: false, continue: false };
+    }
     // React mounts the tool before its registered operation can execute.
     for (let attempt = 0; attempt < 100 && !handlers.current.has(name); attempt++) { signal?.throwIfAborted(); await new Promise((resolve) => setTimeout(resolve, 30)); }
     signal?.throwIfAborted();
     const handler = handlers.current.get(name);
     if (!handler) throw new Error("The tool is still opening. Try your request again.");
+
     const result = await handler(operation, { ...args, conversationId: state.current.conversationId, ...(!args.selected && state.current.selected ? { selected: state.current.selected } : {}) });
     signal?.throwIfAborted(); return result;
   }, [setTool]);
@@ -190,8 +214,8 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       if (busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting") void cancelPending().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-      else if (confirmation) { confirmationAnswer.current?.(false); setConfirmation(null); }
-      else if (snapshot?.confirmation) runtime?.confirm(false);
+      else if (confirmation) { confirmationAnswer.current?.(false); setConfirmation(null); field.current?.focus(); }
+      else if (snapshot?.confirmation) { runtime?.confirm(false); field.current?.focus(); }
       else if (state.current.tool) { window.dispatchEvent(new Event("hypeman.cancel-tools")); setTool(null); field.current?.focus(); }
       else onClose?.();
     };
@@ -218,28 +242,28 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   useEffect(() => {
     onAvatarActivity?.({ phase: avatarPhase, conversationId, task: snapshot?.task, hintId: snapshot?.learning.autoHint?.id, celebration: avatarCompletion });
   }, [onAvatarActivity, avatarPhase, conversationId, snapshot?.task, snapshot?.learning.autoHint?.id, avatarCompletion]);
-  const applyReply = async (action: Action, say?: string, requestSelection = state.current.selected, submittedText = draft) => {
+  const applyReply = async (action: Action, say?: string, requestSelection = state.current.selected, submittedText = draft): Promise<ToolResult> => {
     if (action.type === "tool") {
-      const sensitive = (action.tool === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(action.operation)) || (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) || (action.tool === "settings" && action.operation === "permissions");
+      const sensitive = (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) || (action.tool === "settings" && action.operation === "permissions");
       if (sensitive) {
-        const answer = await new Promise<boolean>((resolve) => { confirmationAnswer.current = resolve; setConfirmation(`Allow HypeMan to ${action.operation} using ${action.tool}?`); });
+        const answer = await new Promise<boolean>((resolve) => { confirmationAnswer.current = resolve; setConfirmationLabel(action.tool === "settings" ? "Allow access" : action.operation === "logout" ? "Sign out" : action.operation === "model" ? "Switch model" : action.operation === "account" ? "Switch account" : "Sign in"); setConfirmation(action.tool === "settings" ? `Allow ${action.args?.permission === "input" ? "browser input" : "screen capture"} access?` : action.operation === "logout" ? "Sign out of the connected account?" : action.operation === "account" ? `Switch to account ${String(action.args?.account || "selected")}?` : action.operation === "model" ? `Use model ${String(action.args?.model || "selected")}?` : "Open ChatGPT sign-in?"); });
         confirmationAnswer.current = null; setConfirmation(null);
         if (!answer) return;
         pending.current?.signal.throwIfAborted();
       }
       const targetedBoard = action.tool === "board" && ["update", "erase", "color"].includes(action.operation) && requestSelection?.kind === "board";
       const args = { ...(action.args || {}), ...(requestSelection ? { selected: requestSelection } : {}), ...(targetedBoard ? { id: action.args?.id || requestSelection.id, revision: requestSelection.revision } : {}) };
-      const result = await executeTool(action.tool, action.operation, args); if (result) await append("assistant", result);
+      const result = await executeTool(action.tool, action.operation, args); if (toolResultMessage(result)) await append("assistant", toolResultMessage(result)); return result;
     }
-    else if (action.type === "sketch") { setSketch(action); setTool("board"); await append("assistant", say || `I've shown ${action.title} on the whiteboard.`); }
-    else if (action.type === "say") await append("assistant", action.text);
-    else if (action.type === "ask") await append("assistant", action.question);
+    else if (action.type === "sketch") { const result = await executeTool("board", "add", { sketch: action }); await append("assistant", say || `Shown ${action.title} on the whiteboard.`); return result; }
+    else if (action.type === "say") { await append("assistant", action.text); return { message: action.text, continue: false }; }
+    else if (action.type === "ask") { await append("assistant", action.question); return { message: action.question, continue: false }; }
     else if (action.type === "finish") {
       const signal = pending.current?.signal;
       await append("assistant", action.summary); signal?.throwIfAborted();
       if (alive.current) setCelebration(crypto.randomUUID());
     }
-    else if (action.type === "note") await saveNote(action.text, action.excerpt);
+    else if (action.type === "note") { const saved = await saveNote(action.text, action.excerpt); return { message: "Note saved.", changed: true, data: { id: saved.id, text: saved.text, updatedAt: saved.updatedAt, url: saved.url }, continue: true }; }
     else {
       await request({ type: "assistant.run", goal: submittedText, ...(action.type === "navigate" ? { url: action.url } : {}), conversationId: state.current.conversationId });
       await append("assistant", say || "Continuing this request in the browser.");
@@ -250,20 +274,53 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     const value = text || content?.text || state.current.messages.filter((m) => m.role === "assistant").at(-1)?.text;
     if (!value) throw new Error("Select something or tell me what to remember.");
     const web = content?.url && /^https?:/.test(content.url);
-    await request({ type: "note.save", note: { text: value.slice(0, 4000), excerpt: excerpt || content?.text || "", url: web ? content.url : "", title: content?.title || "Conversation note", ...(!web ? { origin: { kind: content?.artifactId || content?.kind === "document" ? "document" : "conversation", conversationId: state.current.conversationId, ...(content?.artifactId ? { documentId: content.artifactId, page: content.page || 1 } : {}) } } : {}) } });
-    setTool("notes"); await append("assistant", "Saved to your notes.");
+    const saved = await request<SourceNote>({ type: "note.save", note: { text: value.slice(0, 4000), excerpt: excerpt || content?.text || "", url: web ? content.url : "", title: content?.title || "Conversation note", ...(!web ? { origin: { kind: content?.artifactId || content?.kind === "document" ? "document" : "conversation", conversationId: state.current.conversationId, ...(content?.artifactId ? { documentId: content.artifactId, page: content.page || 1 } : {}) } } : {}) } });
+    setTool("notes"); await append("assistant", "Saved to your notes."); return saved;
   };
-  const send = async (raw: string) => {
+  const runConversation = async (text: string, signal: AbortSignal, resume = false, attachment = image) => {
+    const previous = resume && conversationCheckpoint.current?.conversationId === state.current.conversationId && conversationCheckpoint.current.text === text ? conversationCheckpoint.current : null;
+    const history: HistoryEntry[] = previous?.history || [], observed = previous?.observed || new Set<string>();
+    conversationCheckpoint.current = { conversationId: state.current.conversationId, text, history, observed };
+    for (let step = 0; step < 8; step++) {
+      signal.throwIfAborted();
+      const requestSelection = state.current.selected;
+      const reply = await request<{ action: Action; say?: string; done?: boolean }>({ type: "assistant.turn", conversationId: state.current.conversationId, message: text, goal: text.slice(0, 2000), history,
+        toolContext: { activeTool: state.current.tool, selected: requestSelection }, ...(attachment ? { image: attachment } : {}) }, signal);
+      signal.throwIfAborted();
+      const action = parseAction(reply.action); if (!action) throw new Error("That action was invalid. Your saved work is safe.");
+      const fingerprint = JSON.stringify(action);
+      if (observed.has(fingerprint) && !["say", "ask", "finish"].includes(action.type)) throw new Error("I paused because the same action was requested twice. Edit the request to continue.");
+      const result = await applyReply(action, reply.say, requestSelection, text);
+      signal.throwIfAborted(); observed.add(fingerprint);
+      const structured = result && typeof result === "object" ? result : undefined;
+      const normalized = normalizeToolResult(result, action.type === "tool" ? action : { type: "tool", tool: action.type === "note" ? "notes" : "board", operation: action.type === "note" ? "save" : "draw" });
+      history.push({ action, result: normalized.result, at: Date.now() });
+      // Keep older receipts and IDs while leaving the latest full source available to the next step.
+      if (history.reduce((size, entry) => size + entry.result.message.length, 0) > 32_000)
+        for (const entry of history.slice(0, -2)) entry.result.message = entry.result.message.slice(0, 1000) + "\n[Older observation excerpt; retrieve source by ID if needed.]";
+      if (["say", "ask", "finish"].includes(action.type) || structured?.ok === false || structured?.continue === false || reply.done === true || (!structured?.continue && reply.done !== false)) { conversationCheckpoint.current = null; return; }
+      setToolStatus("Continuing…");
+    }
+    throw new Error("I paused after eight actions. Your completed work is saved; ask me to continue.");
+  };
+  const send = async (raw: string, recovery?: RecoveryContext) => {
     const text = raw.trim(); if (!text || !state.current.conversationId) return;
     if (/^(?:stop|cancel|never mind)[.!]?$/i.test(text)) { await cancelPending(); return; }
     if (confirmation) { if (/^(?:yes|continue|go ahead|no|cancel)[.!]?$/i.test(text)) { confirmationAnswer.current?.(/^(?:yes|continue|go ahead)/i.test(text)); setConfirmation(null); } else throw new Error("Confirm or cancel the pending action first."); return; }
     if (snapshot?.confirmation) { if (/^(?:yes|continue|go ahead|no|cancel)[.!]?$/i.test(text)) runtime?.confirm(/^(?:yes|continue|go ahead)/i.test(text)); else throw new Error("Confirm or cancel the pending browser action first."); return; }
     if (pending.current) stop();
-    const controller = new AbortController(); pending.current = controller; setBusy(true); setError("");
+    if (recovery && recovery.conversationId !== state.current.conversationId) throw new Error("Open the original conversation to retry this request.");
+    const attachment = recovery ? recovery.image : image;
+    if (recovery) { state.current.selected = recovery.selected; state.current.tool = recovery.tool; setSelected(recovery.selected); setTool(recovery.tool); setImage(attachment); runtime?.setSelectedContent?.(recovery.selected); runtime?.attachImage?.(attachment); }
+    else conversationCheckpoint.current = null;
+    recoveryContext.current = recovery || { conversationId: state.current.conversationId, text, selected: state.current.selected, tool: state.current.tool, image: attachment, runtimeAttempt: false };
+    const controller = new AbortController(); pending.current = controller; setBusy(true); setError(""); setFailedRequest(""); setToolStatus("Thinking…");
     try {
       window.dispatchEvent(new Event("hypeman.flush-window-geometry"));
       await ui.flush(); controller.signal.throwIfAborted();
-      await append("user", text);
+      if (!recovery) await append("user", text);
+      if (recovery?.runtimeAttempt && runtime?.retry) { await runtime.retry(); if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Request failed."); return; }
+      if (recovery && !runtime && conversationCheckpoint.current) { await runConversation(text, controller.signal, true, attachment); return; }
       const dismiss = text.match(/^(?:close|dismiss|hide)(?: this| the)?(?: (tool|board|whiteboard|documents?|pdf|notes|video|projects|settings|preferences|practice|phone|connection))?$/i);
       if (dismiss) {
         const names: Record<string, OverlaySection> = { board: "board", whiteboard: "board", document: "documents", documents: "documents", pdf: "documents", notes: "notes", video: "video", projects: "tasks", settings: "settings", preferences: "settings", practice: "learning", phone: "phone", connection: "connection" };
@@ -272,7 +329,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         return;
       }
       if (/^(?:new (?:chat|conversation)|start over)$/i.test(text)) { await switchConversation(crypto.randomUUID()); return; }
-      if (/^(?:show|open|find|list)(?: my| the)? (?:saved work|conversations|chats)(?: about .+)?$/i.test(text)) { const all = await request<Array<{ id: string; title: string; messages: Message[] }>>({ type: "conversation.list" }); const query = text.split(/ about /i)[1]?.toLowerCase(); setSaved(all.filter((c) => !query || c.title.toLowerCase().includes(query)).sort((a,b) => (b.messages.at(-1)?.at || 0) - (a.messages.at(-1)?.at || 0))); await append("assistant", "Select a conversation to continue its saved work."); return; }
+      if (/^(?:show|open|find|list)(?: my| the)? (?:saved work|conversations|chats)(?: about .+)?$/i.test(text)) { const all = await request<Array<{ id: string; title: string; messages: Message[] }>>({ type: "conversation.list" }); const query = text.split(/ about /i)[1]; const hits = query ? await request<Array<{ id: string; conversationId?: string }>>({ type: "recall.search", query, kinds: ["conversation"], limit: 30 }) : null; setSaved(all.filter((c) => !hits || hits.some((hit) => (hit.conversationId || hit.id) === c.id)).sort((a,b) => (b.messages.at(-1)?.at || 0) - (a.messages.at(-1)?.at || 0))); await append("assistant", "Select a conversation to continue its saved work."); return; }
       if (/^(?:help|what can you do)[?!]?$/i.test(text)) { await append("assistant", "Ask me a question, drop a PDF, or select something on the page. I can draw explanations, save notes, manage projects, help with videos and practice, and manage settings or your phone."); return; }
       if (/^(?:capture|screenshot|attach)(?: a| the)? (?:screen region|region of (?:the|my) screen|part of (?:the|my) screen)$/i.test(text)) {
         if (!runtime) throw new Error("Open the conversation on the webpage you want to capture, then ask to capture a screen region.");
@@ -283,44 +340,36 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         return;
       }
       if (/^(?:export|download)(?: my| the)? workspace$/i.test(text)) {
-        const [workspace, saved] = await Promise.all([request({ type: "workspace.get" }), request({ type: "workbench.export" })]);
-        const url = URL.createObjectURL(new Blob([JSON.stringify({ workspace, workbench: saved }, null, 2)], { type: "application/json" }));
-        const anchor = document.createElement("a"); anchor.href = url; anchor.download = "hypeman-workspace.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); await append("assistant", "Exported your conversations, notes, projects, and saved tool content. Ask to export a PDF to download its original file."); return;
+        await exportWorkspace(undefined, controller.signal); await append("assistant", "Workspace backup downloaded."); return;
       }
+      if (/^(?:restore|import)(?: my| the)? (?:workspace|backup)$/i.test(text)) { const restored = await restoreWorkspaceBackup(undefined, controller.signal); if (restored) await append("assistant", "Workspace restored."); return; }
       const assisted = await request<{ reply?: { action: Action; say?: string } | null; contextTool?: "documents" | "video" | null }>({ type: "conversation.assist", conversationId: state.current.conversationId, message: text, toolContext: { activeTool: state.current.tool, selected: state.current.selected } }, controller.signal);
       controller.signal.throwIfAborted();
       if (assisted?.reply) { await applyReply(assisted.reply.action, assisted.reply.say, null, text); return; }
       const local = toolIntent(text, state.current.tool, state.current.selected);
       if (local) {
-        if (local.tool === "video" && runtime && snapshot?.video && ["play", "pause", "seek", "speed", "summarize", "ask"].includes(local.operation)) {
-          setTool("video");
-          const command = local.operation === "seek" ? `seek to ${local.args?.value || 0} seconds` : local.operation === "speed" ? `set speed to ${local.args?.value || 1}x` : text;
-          await runtime.send(command); if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Video request failed."); setImage(null); return;
-        }
         if (local.tool === "notes" && local.operation === "save") { await saveNote(typeof local.args?.text === "string" ? local.args.text : undefined); return; }
-        if (local.tool === "learning" && ["hint", "plan", "teach", "check"].includes(local.operation) && runtime) {
+        if (local.tool === "learning" && ["hint", "teach"].includes(local.operation) && runtime) {
           setTool("learning"); if (!settings.learningEnabled) runtime.setSettings(await request({ type: "settings.patch", patch: { learningEnabled: true } }));
-          if (local.operation === "teach" && snapshot?.learning.teaching) runtime.teach(true); else await runtime.send(text); return;
+          if (local.operation === "teach" && snapshot?.learning.teaching) runtime.teach(true); else { if (recoveryContext.current) recoveryContext.current.runtimeAttempt = true; await runtime.send(text); } return;
         }
-        const result = await executeTool(local.tool, local.operation, local.args); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return;
+        const result = await executeTool(local.tool, local.operation, local.args); controller.signal.throwIfAborted(); if (toolResultMessage(result)) await append("assistant", toolResultMessage(result)); return;
       }
       if (state.current.tool === "documents" && assisted?.contextTool === "documents") {
         const documentSelection = state.current.selected;
-        const result = await executeTool("documents", "analyze", { question: text, ...(documentSelection?.page ? { page: documentSelection.page, quote: documentSelection.quote } : {}) });
-        controller.signal.throwIfAborted(); if (result) await append("assistant", result);
+        const result = await executeTool("documents", "analyze", { question: text, ...(documentSelection?.page && documentSelection.quote && /\b(this|selection|passage|quote|highlighted)\b/i.test(text) ? { page: documentSelection.page, quote: documentSelection.quote } : {}) });
+        controller.signal.throwIfAborted(); if (toolResultMessage(result)) await append("assistant", toolResultMessage(result));
         if (/\b(draw|diagram|whiteboard|show (?:the |your )?work)\b/i.test(text)) {
-          const selectedDocument = { ...documentSelection, kind: "pdf", id: documentSelection?.id || "document", text: String(result || documentSelection?.text || "").slice(0, 4000) };
+          const selectedDocument = { ...documentSelection, kind: "pdf", id: documentSelection?.id || "document", text: (toolResultMessage(result) || documentSelection?.text || "").slice(0, 4000) };
           const reply = await request<{ action: Action; say?: string }>({ type: "assistant.turn", conversationId: state.current.conversationId, message: `${text}\nUse the whiteboard to explain the supplied PDF analysis.`, toolContext: { activeTool: "documents", selected: selectedDocument } }, controller.signal);
           controller.signal.throwIfAborted(); const action = parseAction(reply.action); if (!action) throw new Error("The whiteboard explanation was invalid. Your PDF is still saved."); await applyReply(action, reply.say, selectedDocument, text);
         }
         return;
       }
-      if (state.current.tool === "video" && assisted?.contextTool === "video" && !runtime) { const result = await executeTool("video", "ask", { question: text }); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return; }
-      if (runtime) { await runtime.send(text); if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Request failed. Try again."); setImage(null); }
+      if (state.current.tool === "video" && assisted?.contextTool === "video") { const result = await executeTool("video", "ask", { question: text }); controller.signal.throwIfAborted(); if (toolResultMessage(result)) await append("assistant", toolResultMessage(result)); return; }
+      if (runtime) { if (recoveryContext.current) recoveryContext.current.runtimeAttempt = true; await runtime.send(text); if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Request failed. Try again."); setImage(null); }
       else {
-        const requestSelection = state.current.selected;
-        const reply = await request<{ action: Action; say?: string }>({ type: "assistant.turn", conversationId: state.current.conversationId, message: text, toolContext: { activeTool: state.current.tool, selected: requestSelection }, ...(image ? { image } : {}) }, controller.signal);
-        controller.signal.throwIfAborted(); const action = parseAction(reply.action); if (!action) throw new Error("HypeMan returned an invalid action. Nothing changed."); await applyReply(action, reply.say, requestSelection, text); setImage(null);
+        await runConversation(text, controller.signal, false, attachment); setImage(null);
       }
     } finally { if (pending.current === controller) { pending.current = null; setBusy(false); } }
   };
@@ -342,7 +391,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     if (!text.trim() || !state.current.conversationId || hydrating) return;
     setDraft("");
     try { await send(text); }
-    catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); }
+    catch (e) { if ((e as Error).name !== "AbortError") { setError((e as Error).message); setFailedRequest(text); } }
   };
   const acceptFiles = async (files: FileList | File[]) => {
     const controller = new AbortController(); pending.current?.abort(); pending.current = controller; setBusy(true); setError("");
@@ -362,6 +411,20 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     } catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); }
     finally { if (pending.current === controller) { pending.current = null; setBusy(false); } }
   };
+  useEffect(() => {
+    const visible = !!(confirmation || snapshot?.confirmation);
+    if (visible) { if (chatWindow.minimized) chatWindow.toggleMinimized(); approval.current?.querySelector<HTMLButtonElement>("button:last-child")?.focus(); }
+    else if (hadApproval.current) field.current?.focus();
+    hadApproval.current = visible;
+  }, [confirmation, snapshot?.confirmation]);
+  const approvalKeys = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab") return;
+    const buttons = event.currentTarget.querySelectorAll<HTMLButtonElement>("button");
+    if (buttons.length < 2) return;
+    const first = buttons[0], last = buttons[buttons.length - 1];
+    if (event.shiftKey && event.target === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && event.target === last) { event.preventDefault(); first.focus(); }
+  };
   const working = busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting";
   return <WorkbenchContext.Provider value={{ conversationId: conversationId || "default", selected, selectContent: setSelected, openTool, register, executeTool, send }}><WindowGeometryProvider {...persistence}>
     <div className={`conversation-workbench ${tool ? "has-tool" : ""}`} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }}
@@ -379,16 +442,17 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
           {messages.map((message) => <article key={message.id} className={`chat-message ${message.role}${selected?.kind === "message" && selected.id === message.id ? " is-selected" : ""}`} aria-label={message.role === "user" ? "You" : "HypeMan"} tabIndex={0}
             onClick={(event) => { if (!(event.target as Element).closest("a,button")) setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" }); }}
             onKeyDown={(event) => { if (event.target === event.currentTarget && ["Enter", " "].includes(event.key)) { event.preventDefault(); setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" }); } }}>
-            <MessageContent text={message.text} onDocumentPage={(documentId, page) => { void executeTool("documents", "page", { documentId, page }).catch((cause) => setError(cause.message)); }} />
+            <MessageContent text={message.text} compact={message.role === "assistant"} onDocumentPage={(documentId, page) => { void executeTool("documents", "page", { documentId, page }).catch((cause) => setError(cause.message)); }} />
+            {message === messages.at(-1) && message.role === "assistant" && /^PDF summary paused\./.test(message.text) && <button type="button" className="button" disabled={working} onClick={() => void send("Continue PDF summary").catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}>Continue summary</button>}
             {message === messages.at(-1) && message.role === "assistant" && /^\d{1,2}:\d{2} AM or PM\?$/.test(message.text) && <div className="tool-actions" style={{ marginTop: 8 }} aria-label="Choose reminder time">{["AM", "PM"].map((period) => <button key={period} type="button" className="button" disabled={working} onClick={(event) => { event.stopPropagation(); void send(`${message.text.split(" ")[0]} ${period}`).catch((cause) => setError(cause.message)); }}>{message.text.split(" ")[0]} {period}</button>)}</div>}
           </article>)}
           {saved.length > 0 && <div className="saved-conversations" aria-label="Saved conversations">{saved.map((c) => <article key={c.id} tabIndex={0} onClick={() => void switchConversation(c.id)} onKeyDown={(e) => { if (e.key === "Enter") void switchConversation(c.id); }}>{c.title}</article>)}</div>}
-          {working && <div className="conversation-working" role="status" aria-label={snapshot?.status || "Working"}><span /><span /><span /></div>}
+          {working && <div className="conversation-working" role="status"><span /><span /><span /><small>{snapshot?.phase === "thinking" || snapshot?.phase === "acting" ? snapshot.status || "Working…" : toolStatus || "Working…"}</small></div>}
         </div>
-        {snapshot?.confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm browser action"><p>{snapshot.confirmation.message}</p><button type="button" className="button primary" onClick={() => runtime?.confirm(true)}>Allow</button><button type="button" className="button" onClick={() => runtime?.confirm(false)}>Cancel</button></div>}
-        {confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm action"><p>{confirmation}</p><button type="button" className="button primary" onClick={() => { confirmationAnswer.current?.(true); setConfirmation(null); }}>Allow</button><button type="button" className="button" onClick={() => { confirmationAnswer.current?.(false); setConfirmation(null); }}>Cancel</button></div>}
-        <Notice tone="error">{error}</Notice>
-        {selected && ["pdf", "document", "documents"].includes(selected.kind) && <div className="conversation-attachment-chip" aria-label="Attached document"><Icon name="documents" /><span>{selected.title || "PDF"}{selected.page ? ` · p. ${selected.page}` : ""}</span><button type="button" className="icon-button" aria-label="Remove document context" title="Remove document context" onClick={() => setSelected(null)}><Icon name="close" /></button></div>}
+        {snapshot?.confirmation && <div ref={approval} className="confirmation" role="alertdialog" aria-modal="true" aria-label="Confirm browser action" onKeyDown={approvalKeys}><p>{snapshot.confirmation.message}</p><button type="button" className="button primary" onClick={() => runtime?.confirm(true)}>{snapshot.confirmation.label || "Continue"}</button><button type="button" className="button" onClick={() => { runtime?.confirm(false); field.current?.focus(); }}>Cancel</button></div>}
+        {confirmation && <div ref={approval} className="confirmation" role="alertdialog" aria-modal="true" aria-label="Confirm action" onKeyDown={approvalKeys}><p>{confirmation}</p><button type="button" className="button primary" onClick={() => { confirmationAnswer.current?.(true); setConfirmation(null); field.current?.focus(); }}>{confirmationLabel}</button><button type="button" className="button" onClick={() => { confirmationAnswer.current?.(false); setConfirmation(null); field.current?.focus(); }}>Cancel</button></div>}
+        {error && <Notice tone="error">{error}{failedRequest && <span className="conversation-recovery"><button type="button" className="button" disabled={working} onClick={() => void send(failedRequest, recoveryContext.current || undefined).catch((cause) => { setError(cause instanceof Error ? cause.message : String(cause)); setFailedRequest(failedRequest); })}>Retry</button><button type="button" className="button" disabled={working} onClick={() => { setDraft(failedRequest); if (recoveryContext.current) { const original = recoveryContext.current; setSelected(original.selected); state.current.selected = original.selected; setTool(original.tool); setImage(original.image); runtime?.setSelectedContent?.(original.selected); runtime?.attachImage?.(original.image); } setError(""); setFailedRequest(""); field.current?.focus(); }}>Edit</button></span>}</Notice>}
+        {selected && selected.kind !== "message" && <div className="conversation-attachment-chip" aria-label="Selected context"><Icon name={["pdf", "document", "documents"].includes(selected.kind) ? "documents" : selected.kind === "video" ? "video" : selected.kind === "board" ? "sketch" : "notes"} /><span title={selected.text || selected.quote}>{selected.title || (selected.kind === "page" ? "Page selection" : selected.kind === "message" ? "Selected message" : selected.kind)}{selected.page ? ` · p. ${selected.page}` : ""}</span><button type="button" className="icon-button" aria-label="Clear selected context" title="Clear selected context" onClick={() => setSelected(null)}><Icon name="close" /></button></div>}
         {image && <div className="conversation-attachment-wrapper"><img className="conversation-attachment" src={image} alt="Attached image" /><button type="button" className="icon-button" aria-label="Remove image attachment" title="Remove image attachment" onClick={() => { setImage(null); runtime?.attachImage?.(null); }}><Icon name="close" /></button></div>}
         <form className="conversation-composer" onSubmit={submit} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void acceptFiles(event.clipboardData.files); } }}>
           <button type="button" className="conversation-attach" aria-label="Attach a file" title="Attach a file" onClick={() => files.current?.click()}><Icon name="paperclip" /></button>
@@ -403,6 +467,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         onNativeVideoCommand={async (operation, args) => {
           if (!runtime) return;
           const text = operation === "seek" ? `seek to ${args.seconds ?? args.value ?? 0} seconds` : operation === "speed" ? `set speed to ${args.rate ?? args.value ?? 1}x` : operation === "summarize" ? "Summarize this video" : operation === "ask" ? String(args.question || args.text || "Explain this part of the video") : `${operation} video`;
+          if (recoveryContext.current && pending.current) recoveryContext.current.runtimeAttempt = true;
           await runtime.send(text);
           if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Video request failed.");
           return operation === "summarize" || operation === "ask" ? runtime.getSnapshot().video?.summary : undefined;

@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, emptyWorkspace } from "@core";
+import { currentLearningStep, DEFAULT_SETTINGS, emptyLearningGraph, emptyWorkspace, recordPlanAttempt } from "@core";
 import { CompanionTools } from "../apps/extension/src/ui/CompanionTools";
 import { request } from "../apps/extension/src/bridge";
 const state = vi.hoisted(() => ({ handlers: new Map<string, (operation: string, args: Record<string, unknown>) => Promise<string | void>>() }));
@@ -16,6 +16,57 @@ beforeEach(() => { vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); state.handle
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function assess() { await act(async () => root.render(createElement(CompanionTools, { section: "learning", onClose: () => {} }))); let response: string | void; await act(async () => { response = await state.handlers.get("learning")!("teach", { concept: "Balanced equations", explanation }); }); return response!; }
 describe("evidence-backed conversational learning", () => {
+  it("keeps an answer bound to its displayed exercise when another window advances the plan", async () => {
+    const graph = emptyLearningGraph(); graph.plans.push({ id: "shared-plan", goal: "Fractions", createdAt: 1, steps: [{ title: "Equal parts", concept: "Fractions", exercise: "Explain equal parts.", done: false }, { title: "Add fractions", concept: "Fractions", exercise: "Add one half and one quarter.", done: false }] });
+    vi.mocked(request).mockImplementation(async (input) => input.type === "graph.get" ? structuredClone(graph) : input.type === "learn.current" ? currentLearningStep(graph, input.planId as string | undefined) : null);
+    await act(async () => root.render(createElement(CompanionTools, { section: "learning", onClose: () => {} })));
+    graph.plans[0].steps[0].done = true;
+    await act(async () => { await expect(state.handlers.get("learning")!("attempt", { planId: "shared-plan", stepIndex: 0, explanation: "Equal parts have the same size." })).rejects.toThrow("exercise changed"); });
+    expect(request).not.toHaveBeenCalledWith(expect.objectContaining({ type: "learn.step.attempt" }), expect.anything());
+    expect(container.textContent).toContain("Step 2/2");
+    graph.plans[0].steps[1].exercise = "Explain why quarters must be equal sized.";
+    await act(async () => { await state.handlers.get("learning")!("continue", { planId: "shared-plan" }); });
+    expect(container.textContent).toContain("Explain why quarters must be equal sized.");
+  });
+  it("reuses the same attempt ID after a lost response instead of assessing the next exercise", async () => {
+    let graph = emptyLearningGraph(); graph.plans.push({ id: "retry-plan", goal: "Fractions", createdAt: 1, steps: [{ title: "Equal parts", concept: "Fractions", exercise: "Explain equal parts.", done: false }, { title: "Add fractions", concept: "Fractions", exercise: "Add one half and one quarter.", done: false }] });
+    let recorded: Record<string, unknown> | undefined;
+    vi.mocked(request).mockImplementation(async (input) => {
+      if (input.type === "graph.get") return structuredClone(graph);
+      if (input.type === "learn.current") return currentLearningStep(graph, input.planId as string | undefined);
+      if (input.type === "learn.step.attempt") {
+        if (recorded) return recorded;
+        const assessment = { status: "correct" as const, hint: "Try the next exercise.", evidence: "equal parts", provider: "openai" };
+        const result = recordPlanAttempt(graph, String(input.planId), Number(input.stepIndex), { id: String(input.requestId), text: String(input.explanation), at: Date.now() }, assessment);
+        graph = result.graph; recorded = { ...result, ...assessment };
+        throw new Error("Response lost after saving.");
+      }
+      return null;
+    });
+    await act(async () => root.render(createElement(CompanionTools, { section: "learning", onClose: () => {} })));
+    const answer = { planId: "retry-plan", stepIndex: 0, explanation: "Fractions describe equal parts of a whole." };
+    await act(async () => { await expect(state.handlers.get("learning")!("attempt", answer)).rejects.toThrow("Response lost"); });
+    await act(async () => { await state.handlers.get("learning")!("attempt", answer); });
+    const attempts = vi.mocked(request).mock.calls.filter(([input]) => input.type === "learn.step.attempt");
+    expect(attempts).toHaveLength(2); expect(attempts[1][0].requestId).toBe(attempts[0][0].requestId);
+    expect(attempts[1][0].stepIndex).toBe(0); expect(graph.plans[0].steps[0].attempts).toHaveLength(1);
+    expect(container.textContent).toContain("Step 2/2");
+  });
+  it("advances a grounded attempt and resumes the durable next exercise", async () => {
+    let graph = emptyLearningGraph(); graph.plans.push({ id: "fractions-plan", goal: "Fractions", createdAt: 1, steps: [{ title: "Equal parts", concept: "Fractions", exercise: "Explain equal parts.", done: false }, { title: "Add fractions", concept: "Common denominators", exercise: "Add one half and one quarter.", done: false }] });
+    vi.mocked(request).mockImplementation(async (input) => {
+      if (input.type === "graph.get") return structuredClone(graph);
+      if (input.type === "learn.current") return currentLearningStep(graph, input.planId as string | undefined);
+      if (input.type === "learn.step.attempt") { const assessment = { status: "correct" as const, hint: "Try the next exercise.", evidence: "equal parts", provider: "openai" }; const result = recordPlanAttempt(graph, String(input.planId), Number(input.stepIndex), { id: String(input.requestId), text: String(input.explanation), at: Date.now() }, assessment); graph = result.graph; return { ...result, ...assessment }; }
+      return null;
+    });
+    await act(async () => root.render(createElement(CompanionTools, { section: "learning", onClose: () => {} })));
+    expect(container.textContent).toContain("Step 1/2"); expect(container.textContent).toContain("Explain equal parts.");
+    await act(async () => { await state.handlers.get("learning")!("attempt", { explanation: "Fractions describe equal parts of a whole." }); });
+    expect(container.textContent).toContain("Step 2/2"); expect(container.textContent).toContain("Add one half and one quarter.");
+    await act(async () => root.render(createElement(CompanionTools, { key: "reopen", section: "learning", onClose: () => {} })));
+    expect(container.textContent).toContain("Step 2/2"); expect(graph.plans[0].steps[0].attempts?.[0].evidence).toBe("equal parts");
+  });
   it("creates a saved practice plan directly and keeps review evidence in its own view", async () => {
     const graph = { plans: [] as Array<{ id: string; goal: string; steps: { title: string; concept: string; done: boolean }[] }>, nodes: [{ id: "fractions", label: "Fractions", attempts: 3, explanations: 0, correct: 3, lastPractice: Date.now(), recalls: 0, evidence: ["Explained equal-sized parts"] }] };
     vi.mocked(request).mockImplementation(async (input) => {

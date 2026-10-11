@@ -19,9 +19,15 @@ export interface LearningNode {
 export interface LearningPlan {
   id: string;
   goal: string;
-  steps: { title: string; concept: string; done: boolean }[];
+  steps: { title: string; concept: string; done: boolean; exercise?: string; attempts?: LearningPlanAttempt[] }[];
   createdAt: number;
 }
+export interface LearningPlanAttempt {
+  id: string; text: string; evidence: string; status: "correct" | "needs-work" | "uncertain";
+  hint: string; at: number; grounded: boolean;
+}
+export interface LearningCurrentStep { plan: LearningPlan; stepIndex: number; step: LearningPlan["steps"][number] }
+export interface LearningPlanAssessment { status: "correct" | "needs-work" | "uncertain"; hint: string; evidence: string; provider: string }
 export interface LearningGraph {
   version: 1;
   nodes: LearningNode[];
@@ -101,6 +107,9 @@ export function parseLearningGraph(value: unknown): LearningGraph {
             title: String(s.title).slice(0, 200),
             concept: String(s.concept).slice(0, 120),
             done: s.done === true,
+            ...(typeof s.exercise === "string" ? { exercise: s.exercise.slice(0, 2000) } : {}),
+            ...(Array.isArray(s.attempts) ? { attempts: s.attempts.filter(object).filter((a) => typeof a.id === "string" && typeof a.text === "string" && typeof a.evidence === "string" && typeof a.hint === "string" && ["correct", "needs-work", "uncertain"].includes(String(a.status)) && Number.isFinite(a.at))
+              .slice(-20).map((a) => ({ id: String(a.id).slice(0, 160), text: String(a.text).slice(0, 4000), evidence: String(a.evidence).slice(0, 1000), hint: String(a.hint).slice(0, 2000), status: a.status as LearningPlanAttempt["status"], at: Number(a.at), grounded: a.grounded === true })) } : {}),
           })),
       });
     }
@@ -108,6 +117,29 @@ export function parseLearningGraph(value: unknown): LearningGraph {
     ? value.seenEvents.filter((v): v is string => typeof v === "string").slice(-2000)
     : [];
   return g;
+}
+export function currentLearningStep(graph: LearningGraph, planId?: string): LearningCurrentStep | null {
+  const plan = planId ? graph.plans.find((item) => item.id === planId) : [...graph.plans].reverse().find((item) => item.steps.some((step) => !step.done));
+  if (!plan) return null;
+  const stepIndex = plan.steps.findIndex((step) => !step.done);
+  if (stepIndex < 0) return null;
+  return { plan, stepIndex, step: { ...plan.steps[stepIndex], exercise: plan.steps[stepIndex].exercise || `Explain ${plan.steps[stepIndex].concept} in your own words and give an example.` } };
+}
+/** Only the current step and exact evidence from a live assessment can advance a plan. */
+export function recordPlanAttempt(graph: LearningGraph, planId: string, stepIndex: number, attempt: { id: string; text: string; at: number }, assessment: LearningPlanAssessment): { graph: LearningGraph; advanced: boolean } {
+  if (!/^[\w.-]{1,160}$/.test(attempt.id) || !attempt.text.trim() || attempt.text.length > 4000 || !Number.isFinite(attempt.at) || attempt.at < 0 ||
+    !["correct", "needs-work", "uncertain"].includes(assessment.status) || typeof assessment.hint !== "string" || assessment.hint.length > 2000 || typeof assessment.evidence !== "string" || assessment.evidence.length > 1000)
+    throw new Error("Invalid practice attempt.");
+  const saved = graph.plans.find((plan) => plan.id === planId);
+  if (saved?.steps.some((step) => step.attempts?.some((item) => item.id === attempt.id))) return { graph, advanced: false };
+  const current = currentLearningStep(graph, planId);
+  if (!current || current.stepIndex !== stepIndex) throw new Error("Continue the current practice step before checking another step.");
+  const grounded = assessment.provider === "openai" && assessment.status !== "uncertain" && !!assessment.evidence.trim() && attempt.text.includes(assessment.evidence);
+  const next = structuredClone(graph), step = next.plans.find((plan) => plan.id === planId)!.steps[stepIndex];
+  step.attempts = [...(step.attempts || []).slice(-19), { ...attempt, status: grounded ? assessment.status : "uncertain", hint: grounded ? assessment.hint : "I could not verify this attempt from a live assessment. Try explaining the current exercise again.", evidence: grounded ? assessment.evidence : "", grounded }];
+  step.done = grounded && assessment.status === "correct";
+  const updated = grounded ? recordLearning(next, { id: attempt.id, concept: step.concept, kind: "attempt", correct: step.done, evidence: assessment.evidence, at: attempt.at }) : next;
+  return { graph: updated, advanced: step.done };
 }
 export function recordLearning(graph: LearningGraph, event: LearningEvent): LearningGraph {
   const g = structuredClone(graph);

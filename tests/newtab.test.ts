@@ -208,3 +208,22 @@ describe("shared conversation", () => {
     expect(request).toHaveBeenCalledWith({ type: "note.save", note: expect.objectContaining({ text: "Newton's first law", url: "", origin: { kind: "conversation", conversationId: "fixture-conversation" } }) });
   });
 });
+
+describe("request recovery", () => {
+  it("keeps the original image when retrying a failed request and renders no empty error", async () => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 100, height: 100, close: vi.fn() })));
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({ drawImage: vi.fn() } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/jpeg;base64,YQ==");
+    await render(); expect(container.querySelector(".notice.error")).toBeNull();
+    const picker = container.querySelector<HTMLInputElement>('[aria-label="Choose a file"]')!;
+    Object.defineProperty(picker, "files", { configurable: true, value: [new File(["image"], "source.png", { type: "image/png" })] });
+    await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
+    let calls = 0; decide = async () => { if (!calls++) throw new Error("Temporary failure"); return { action: { type: "finish", summary: "Done" }, done: true }; };
+    await fill("Explain this image"); await submit();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Remove image attachment"]')!.click());
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Retry")!.click());
+    const requests = vi.mocked(request).mock.calls.map(([message]) => message).filter((message) => message.type === "assistant.turn");
+    expect(requests).toHaveLength(2); expect(requests.every((message) => message.image === "data:image/jpeg;base64,YQ==")).toBe(true);
+    expect(saved.filter((message) => message.role === "user" && message.text === "Explain this image")).toHaveLength(1);
+  });
+});

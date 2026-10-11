@@ -3,6 +3,7 @@ import { createCompanion } from "../runtime";
 import { request, subscribe } from "../bridge";
 import { Companion } from "../ui/Companion";
 import { loadCompanionFonts } from "./fonts";
+import { isolateCompanionKeyboard } from "./keyboard";
 
 const mountId = "hypeman-companion-v2";
 if (!document.getElementById(mountId)) {
@@ -12,6 +13,7 @@ if (!document.getElementById(mountId)) {
   host.style.cssText =
     "position:fixed;inset:0;z-index:2147483646;pointer-events:none;contain:layout style;";
   const shadow = host.attachShadow({ mode: "open" });
+  const releaseKeyboard = isolateCompanionKeyboard(shadow);
   const css = document.createElement("link");
   css.rel = "stylesheet";
   css.href = chrome.runtime.getURL("ui.css");
@@ -46,6 +48,7 @@ if (!document.getElementById(mountId)) {
     documentGuard.disconnect();
     if (!event.persisted) {
       root.unmount();
+      releaseKeyboard();
       window.removeEventListener("pagehide", hide);
       window.removeEventListener("pageshow", show);
     }

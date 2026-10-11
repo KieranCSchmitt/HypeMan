@@ -5,6 +5,10 @@ import {
   parseAction,
   contextScope,
   conversationTurns,
+  matchesCompletion,
+  freshCompletion,
+  pendingCompletion,
+  verifiedCompletion,
   type Action,
   type ActionResult,
   type AgentReply,
@@ -23,7 +27,7 @@ import {
   type TranscriptSegment,
 } from "@core";
 import { PageObserver, sameTarget } from "./page";
-import { checkPolicy, actionTarget } from "./policy";
+import { checkPolicy, actionTarget, confirmationLabel } from "./policy";
 import { execute } from "./executor";
 import { Highlight } from "./overlay";
 import { videoIntent } from "./video";
@@ -31,9 +35,11 @@ import { cancelled, check, delay } from "./async";
 import { PreparedHints } from "./prepared-hints";
 import { getPracticeContext, getSelectionContext, type PracticeContext } from "./assistance-context";
 import { confirmsMilestone, currentMilestone, projectIntent, projectPageKey, projectShouldWait } from "./projects";
-import type { CompanionRuntime, CompanionSnapshot, RuntimeApi } from "./types";
+import { actionSignature, normalizeToolResult, pageState } from "./reliability";
+import type { CompanionRuntime, CompanionSnapshot, RuntimeApi, RuntimeToolResult } from "./types";
 export type { CompanionRuntime, CompanionSnapshot, RuntimeApi } from "./types";
 const MAX_STEPS = 18;
+const HANDOFF_LIFETIME = 10 * 60_000;
 // Allow time to read the revealed hint before showing another automatic one.
 const hintReadingTime = (text: string) => Math.min(60_000, Math.max(12_000, text.length * 80));
 const wrongAnswer = /\b(incorrect|wrong(?: answer)?|try again|not correct|not quite|not right)\b/i;
@@ -42,8 +48,6 @@ const uid = () => crypto.randomUUID();
 const stopWords = /^(?:stop|cancel|never mind|nevermind|quiet|pause)(?: please)?[.!]?$/i;
 const teachingWords =
   /^(?:I (?:learned|think|understand) (?:that )?|let me explain[: ,]+)(.{12,800})$/i;
-const consequentialGoal =
-  /\b(submit|register|registration|enroll|buy|purchase|pay|checkout|delete|remove|send|publish|post|sign up|subscribe)\b/i;
 const HINT_RUNGS = [
   "Ask one orienting question about what is given.",
   "Identify one relevant relationship or useful operation without solving.",
@@ -54,7 +58,7 @@ const HINT_RUNGS = [
 /** Independent orchestration. UI, background transport, and provider implementations are adapters. */
 class Companion implements CompanionRuntime {
   private conversationId: string | undefined;
-  private toolHandler: ((action: ToolAction) => Promise<string | void>) | null = null;
+  private toolHandler: ((action: ToolAction) => Promise<string | void | RuntimeToolResult>) | null = null;
   private selectedContent: SelectedContent | null = null;
   private uploadedImage: string | null = null;
   private suppliedCaptions: { id: string; segments: TranscriptSegment[] } | null = null;
@@ -67,13 +71,13 @@ class Companion implements CompanionRuntime {
   setConversationId(id: string, preserveTask = false) {
     if (!/^[\w.-]{1,160}$/.test(id)) return;
     if (this.conversationId && this.conversationId !== id) {
-      this.stop(!preserveTask); this.history = []; this.pendingNavigation = null; this.cancelProjectObservation();
+      this.stop(!preserveTask); this.history = []; this.pendingNavigation = null; this.resumeCheckpoint = null; this.cancelProjectObservation();
       this.update({ messages: [], sketch: null, ...(!preserveTask ? { task: null } : {}) });
     }
     this.conversationId = id;
     if (this.state.conversationId !== id) this.update({ conversationId: id });
   }
-  setToolHandler(handler: ((action: ToolAction) => Promise<string | void>) | null) { this.toolHandler = handler; }
+  setToolHandler(handler: ((action: ToolAction) => Promise<string | void | RuntimeToolResult>) | null) { this.toolHandler = handler; }
   setSelectedContent(selected: SelectedContent | null) { this.selectedContent = selected; }
   attachImage(image: string | null) {
     if (image && (image.length > 2_000_000 || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(image))) throw new Error("Choose an image under 2 MB.");
@@ -125,12 +129,14 @@ class Companion implements CompanionRuntime {
   private userRequests = 0;
   private lastPage: PageSnapshot | null = null;
   private pendingNavigation: SessionHandoff | null = null;
+  private resumeCheckpoint: SessionHandoff | null = null;
   private generation = 0;
   private projectTimer: ReturnType<typeof setTimeout> | null = null;
   private projectAssessment: AbortController | null = null;
   private pendingProjectPage = "";
   private assessedPage = "";
   private lastAssessmentAt = -Infinity;
+  private milestoneBaseline: { key: string; pending: ActionResult["pendingCompletion"] } | null = null;
   private attemptedAt = 0;
   private recordedNotices = new Set<string>();
   private screenshot: { image: string; url: string } | null = null;
@@ -316,13 +322,18 @@ class Companion implements CompanionRuntime {
         this.scheduleProjectObservation();
       }
       const handoff = this.readHandoff(session?.handoff);
-      if (handoff && now() - (handoff.at ?? now()) < 30_000 && handoff.step < MAX_STEPS) {
+      if (handoff && (handoff.checkpoint || now() - (handoff.at ?? now()) < HANDOFF_LIFETIME)) {
         if (handoff.taskId) await this.loadTask(handoff.taskId);
         if (!handoff.taskId || this.state.task?.status === "running") {
           this.history = handoff.history;
+          if (handoff.checkpoint || handoff.step >= MAX_STEPS) {
+            this.resumeCheckpoint = { ...handoff, checkpoint: true, step: 0 };
+            this.update({ status: "Progress saved. Say Continue when ready." });
+            return;
+          }
           this.pendingNavigation = handoff;
           await delay(180, this.backgroundWork.signal);
-          if (this.allowed) void this.runTask(handoff.goal, handoff.goal, handoff.step);
+          if (this.allowed) void this.runTask(handoff.message ?? handoff.goal, handoff.goal, handoff.step);
         }
       }
     } catch (error) {
@@ -385,7 +396,7 @@ class Companion implements CompanionRuntime {
           const handoff = this.readHandoff(event.handoff);
           this.history = handoff?.history ?? [];
           this.pendingNavigation = handoff;
-          return this.runTask(String(event.goal), String(event.goal), handoff?.step ?? 0);
+          return this.runTask(handoff?.message ?? String(event.goal), String(event.goal), handoff?.step ?? 0);
         })
         .catch((error) => this.fail(error));
     } else if (event.type === "ask.selection" && typeof event.text === "string")
@@ -399,7 +410,7 @@ class Companion implements CompanionRuntime {
       input.goal.length > 2000 ||
       !Number.isInteger(input.step) ||
       input.step! < 0 ||
-      input.step! >= MAX_STEPS ||
+      input.step! > MAX_STEPS ||
       !Array.isArray(input.history) ||
       input.history.length > 40
     )
@@ -422,6 +433,8 @@ class Companion implements CompanionRuntime {
       step: input.step!,
       history: input.history,
       taskId: typeof input.taskId === "string" ? input.taskId : null,
+      ...(typeof input.message === "string" && input.message.length <= 3000 ? { message: input.message } : {}),
+      ...(input.checkpoint === true ? { checkpoint: true } : {}),
       at: typeof input.at === "number" && Number.isFinite(input.at) ? input.at : 0,
     };
   }
@@ -537,7 +550,7 @@ class Companion implements CompanionRuntime {
     return this.allowed && /^https?:$/.test(location.protocol) && window.top === window &&
       document.visibilityState === "visible" && document.hasFocus() &&
       !!currentMilestone(this.state.task) && !this.run && !this.userRequests &&
-      !this.confirmation && !this.pendingNavigation;
+      !this.confirmation && !this.pendingNavigation && !this.resumeCheckpoint;
   }
   private cancelProjectObservation(): void {
     if (this.projectTimer) clearTimeout(this.projectTimer);
@@ -548,6 +561,9 @@ class Companion implements CompanionRuntime {
     this.pendingProjectPage = "";
   }
   private scheduleProjectObservation(): void {
+    const task = this.state.task, step = currentMilestone(task);
+    if (task && step && this.milestoneBaseline?.key !== `${task.id}:${step.id}`)
+      this.milestoneBaseline = { key: `${task.id}:${step.id}`, pending: pendingCompletion(step.title, "", this.observer.snapshot()) };
     if (this.projectAssessment && this.allowed &&
       projectPageKey(this.observer.snapshot()) !== this.pendingProjectPage)
       this.cancelProjectObservation();
@@ -570,7 +586,11 @@ class Companion implements CompanionRuntime {
     try {
       const response = await this.api.request<{
         task: BrowserTask; assessment: TaskAssessment; assessmentId?: string;
-      }>({ type: "task.assess", taskId: task.id, page, requestId: uid() }, controller.signal);
+      }>({ type: "task.assess", taskId: task.id, page, requestId: uid(),
+        completion: [...this.history].reverse().filter(({ result }) => result.ok).map(({ result }) => result.completion)
+          .find((proof) => proof && matchesCompletion(step.title, proof) && proof.url === page.url &&
+            page.text.includes(proof.evidence)) ?? freshCompletion(this.milestoneBaseline?.pending, page),
+      }, controller.signal);
       check(controller.signal);
       if (!this.canObserveProject || currentMilestone(this.state.task)?.id !== step.id ||
         this.state.task?.id !== task.id || projectPageKey(this.observer.snapshot()) !== projectPageKey(page)) return;
@@ -850,6 +870,23 @@ Give one brief, grounded hint for the current question using only a say action. 
     const turn = this.generation;
     this.message("user", text);
     try {
+      if (this.resumeCheckpoint && /^(?:continue|resume|keep going|try again)[.!]?$/i.test(text)) {
+        const checkpoint = this.resumeCheckpoint;
+        if (checkpoint.taskId && this.state.task?.id !== checkpoint.taskId) {
+          this.resumeCheckpoint = null;
+          this.say("That project has moved. Open it to continue.");
+          return;
+        }
+        this.resumeCheckpoint = null;
+        this.history = checkpoint.history;
+        await this.api.request({ type: "session.set", handoff: null }, this.backgroundWork.signal);
+        await this.runTask(checkpoint.message ?? checkpoint.goal, checkpoint.goal);
+        return;
+      }
+      if (this.resumeCheckpoint) {
+        this.resumeCheckpoint = null;
+        await this.api.request({ type: "session.set", handoff: null }, this.backgroundWork.signal);
+      }
       if (
         /^(?:(?:show|list|what are)(?: me)? (?:my |the )?(?:other |open )?tabs|(?:show|list)(?: me)? (?:my |the )?open tabs)[?.!]?$/i.test(
           text,
@@ -903,12 +940,18 @@ Give one brief, grounded hint for the current question using only a say action. 
       this.scheduleProjectObservation();
     }
   }
+  async retry(): Promise<void> {
+    if (this.resumeCheckpoint) return this.send("Continue");
+    const previous = [...this.state.messages].reverse().find((message) => message.role === "user");
+    if (previous) await this.send(previous.text);
+  }
   private async runTask(message: string, goal: string, startStep = 0): Promise<void> {
     if (!this.allowed || startStep >= MAX_STEPS) return;
     this.stop(false);
     const controller = new AbortController();
     this.run = controller;
     const signal = controller.signal;
+    const attempts = new Map<string, number>();
     const learningMode = this.state.settings.learningEnabled &&
       this.state.task?.status !== "running" && !projectIntent(message);
     this.update({ phase: "thinking", status: "Reading the page…" });
@@ -927,13 +970,15 @@ Give one brief, grounded hint for the current question using only a say action. 
           page.video = this.state.video;
         if (this.pendingNavigation) {
           await this.api.request({ type: "session.set", handoff: null }, signal);
+          const last = this.history.at(-1);
+          const completion = freshCompletion(last?.result.pendingCompletion, page);
           const arrival: ActionResult = {
             ok: true,
             changed: true,
             message: "Destination document observed and verified",
             url: page.url,
+            ...(completion ? { completion } : {}),
           };
-          const last = this.history.at(-1);
           if (last) {
             last.result = arrival;
             await this.progress(last.action, arrival, page, signal);
@@ -980,25 +1025,56 @@ Give one brief, grounded hint for the current question using only a say action. 
           : await this.api.request<AgentReply>({ type: "agent.decide", input, requestId }, signal);
         check(signal);
         if (reply.error) throw new Error(reply.error);
-        const action = parseAction(reply.action);
+        let action = parseAction(reply.action);
         if (!action)
           throw new Error("The gateway returned an invalid action. Nothing was executed.");
+        if (action.type === "sketch" && this.toolHandler)
+          action = { type: "tool", tool: "board", operation: "add", args: { sketch: action } };
         if (["conversation", "selection"].includes(reply.contextScope || scope) && (action.type === "say" || action.type === "ask")) {
           this.say(action.type === "say" ? action.text : action.question);
           break;
         }
+        const attemptKey = `${actionSignature(action)}:${pageState(page)}`;
+        if (!["say", "ask", "finish", "point", "sketch", "plan"].includes(action.type)) {
+          const count = attempts.get(attemptKey) ?? 0;
+          if (count >= 2) {
+            await this.checkpoint(message, goal, signal, "This action is not making progress. Say Continue to retry.");
+            break;
+          }
+          attempts.set(attemptKey, count + 1);
+        }
         if (action.type === "tool") {
           if (!this.toolHandler) throw new Error("Open the conversation to use this tool.");
-          const sensitive = (action.tool === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(action.operation)) ||
-            (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) ||
+          // The phone handler reviews the exact recipient and payload once.
+          const sensitive = (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) ||
             (action.tool === "settings" && action.operation === "permissions");
-          if (sensitive && !await this.askConfirmation(`Allow HypeMan to ${action.operation} using ${action.tool}?`, signal)) break;
+          if (sensitive && !await this.askConfirmation(`${action.operation} · ${action.tool}`, signal,
+            action.operation === "send" ? "Send" : action.operation === "remind" ? "Save reminder" : "Continue")) break;
           check(signal);
-          const result = await this.toolHandler(action);
+          this.update({ phase: "acting", status: `Using ${action.tool}…` });
+          let observation: string | void | RuntimeToolResult;
+          try { observation = await this.toolHandler(action); }
+          catch (error) { check(signal); observation = { ok: false, message: error instanceof Error ? error.message : "This tool is unavailable.", continue: false }; }
           check(signal);
-          if (reply.say) this.say(reply.say);
-          if (result) this.say(result);
-          break;
+          const tool = normalizeToolResult(observation, action);
+          this.history.push({ action, result: tool.result, at: now() });
+          if ((reply.contextScope || scope) === "task") await this.progress(action, tool.result, page, signal);
+          check(signal);
+          if (!tool.result.ok || tool.continue === false || reply.done === true || (reply.done !== false && tool.continue !== true)) {
+            if (!tool.result.ok) {
+              await this.checkpoint(message, goal, signal, tool.display, false);
+              this.update({ phase: "error", status: tool.display });
+            }
+            if (tool.display) this.say(tool.display);
+            else if (reply.say) this.say(reply.say);
+            break;
+          }
+          if (step === MAX_STEPS - 1) {
+            await this.checkpoint(message, goal, signal, "Progress saved. Say Continue for the next steps.");
+            break;
+          }
+          this.update({ phase: "thinking", status: "Checking the result…" });
+          continue;
         }
         const targetId = actionTarget(action);
         const target = targetId
@@ -1037,8 +1113,8 @@ Give one brief, grounded hint for the current question using only a say action. 
         }
         await this.persistIntent(action, current, policy.confirmation, signal);
         check(signal);
-        if (policy.confirmation && !(await this.askConfirmation(policy.confirmation, signal))) {
-          this.message("status", "Action declined. The form has not been sent.");
+        if (policy.confirmation && !(await this.askConfirmation(policy.confirmation, signal, confirmationLabel(action, current)))) {
+          if (!signal.aborted) this.message("status", "Action cancelled.");
           break;
         }
         check(signal);
@@ -1083,10 +1159,15 @@ Give one brief, grounded hint for the current question using only a say action. 
           ...(this.conversationId ? { conversationId: this.conversationId } : {}),
           taskId: this.state.task?.id,
           goal,
+          message,
           history: [...this.history.slice(-11), intent],
           step: step + 1,
           at: now(),
         };
+        const pending = policy.confirmation && ["click", "key", "pointer"].includes(action.type)
+          ? pendingCompletion(currentMilestone(this.state.task)?.title ?? goal, target?.name ?? "", current, target?.href)
+          : undefined;
+        if (pending) intent.result.pendingCompletion = pending;
         let result = await execute(action, {
           api: this.api,
           companionHost: this.shadow.host as HTMLElement,
@@ -1120,16 +1201,15 @@ Give one brief, grounded hint for the current question using only a say action. 
           note: (text, excerpt) => this.saveNote(text, excerpt, signal),
         });
         check(signal);
-        const verifiedEffect = this.history.some(
-          (entry) =>
-            ["click", "key", "pointer"].includes(entry.action.type) &&
-            entry.result.ok &&
-            entry.result.changed,
-        );
+        const completion = result.ok && pending ? freshCompletion(pending, this.observer.snapshot()) : undefined;
+        if (completion) result = { ...result, completion };
+        else if (result.navigation && pending) result = { ...result, pendingCompletion: pending };
+        const completionGoal = currentMilestone(this.state.task)?.title ?? goal;
+        const laterMilestones = this.state.task?.steps.some((milestone) => milestone.status === "todo");
         const done =
           action.type === "finish" &&
           result.ok &&
-          (!consequentialGoal.test(goal) || (!!current.successes.length && verifiedEffect));
+          !laterMilestones && verifiedCompletion(completionGoal, this.history);
         if (action.type === "finish" && !done)
           result = {
             ok: false,
@@ -1190,21 +1270,21 @@ Give one brief, grounded hint for the current question using only a say action. 
         }
         if (reply.done && action.type !== "observe" && !currentMilestone(this.state.task)) break;
         if (step === MAX_STEPS - 1)
-          this.message(
-            "status",
-            "This task reached its step limit. Review progress and resume when ready.",
-          );
+          await this.checkpoint(message, goal, signal, "Progress saved. Say Continue for the next steps.");
         this.update({ phase: "thinking", status: "Checking the result…" });
       }
     } catch (error) {
-      this.fail(error);
+      if (!cancelled(error) && this.run === controller && this.allowed) {
+        await this.checkpoint(message, goal, signal, "Progress saved. Retry when ready.", false).catch(() => undefined);
+        if (this.run === controller && !signal.aborted) this.fail(error);
+      }
     } finally {
       if (this.run === controller) {
         this.run = null;
         if (this.allowed && this.state.phase !== "error")
           this.update({
             phase: "idle",
-            status: currentMilestone(this.state.task)?.title ?? "Ready when you are",
+            status: this.resumeCheckpoint ? "Progress saved. Say Continue when ready." : currentMilestone(this.state.task)?.title ?? "Ready when you are",
           });
         this.scheduleProjectObservation();
       }
@@ -1212,6 +1292,19 @@ Give one brief, grounded hint for the current question using only a say action. 
   }
   private say(text: string): void {
     this.message("assistant", text);
+  }
+  private async checkpoint(message: string, goal: string, signal: AbortSignal, status: string, announce = true): Promise<void> {
+    check(signal);
+    const handoff: SessionHandoff = {
+      ...(this.conversationId ? { conversationId: this.conversationId } : {}),
+      taskId: this.state.task?.id, goal, message, history: this.history.slice(-40),
+      step: 0, at: now(), checkpoint: true,
+    };
+    await this.api.request({ type: "session.set", handoff }, signal);
+    check(signal);
+    this.resumeCheckpoint = handoff;
+    if (announce) this.message("status", status);
+    this.update({ status });
   }
   private async persistIntent(
     action: Action,
@@ -1271,7 +1364,7 @@ Give one brief, grounded hint for the current question using only a say action. 
       taskId,
       eventId: uid(),
       action: action.type,
-      summary: result.message,
+      summary: result.message.slice(0, 2000),
       ok: result.ok,
       changed: result.changed,
       url: result.url ?? page.url,
@@ -1281,17 +1374,17 @@ Give one brief, grounded hint for the current question using only a say action. 
     check(signal);
     await this.loadTask(taskId, signal);
   }
-  private askConfirmation(message: string, signal: AbortSignal): Promise<boolean> {
+  private askConfirmation(message: string, signal: AbortSignal, label = "Continue"): Promise<boolean> {
     this.update({
       phase: "confirming",
-      confirmation: { message },
+      confirmation: { message, label },
       status: "Waiting for your confirmation",
     });
     return new Promise((resolve) => {
       const abort = () => finish(false);
-      const timer = setTimeout(() => finish(false), 60_000);
+      // The decision remains available while the user reviews it. Approval is never
+      // inferred from elapsed time; execution revalidates the exact control afterward.
       const finish = (answer: boolean) => {
-        clearTimeout(timer);
         signal.removeEventListener("abort", abort);
         if (this.confirmation === finish) this.confirmation = null;
         this.update({ confirmation: null });
@@ -1308,6 +1401,10 @@ Give one brief, grounded hint for the current question using only a say action. 
     this.cancelAutomaticHint(true);
     this.cancelProjectObservation();
     if (pauseTask) this.attachScreenshot(null);
+    if (pauseTask && this.resumeCheckpoint) {
+      this.resumeCheckpoint = null;
+      void this.api.request({ type: "session.set", handoff: null }).catch(() => undefined);
+    }
     this.generation++;
     this.backgroundWork.abort();
     if (this.allowed) this.backgroundWork = new AbortController();
@@ -1356,6 +1453,8 @@ Give one brief, grounded hint for the current question using only a say action. 
     const requested = normalize(excerpt).slice(0, 4000);
     // Store a substring captured from the page, never a model-authored quotation.
     const source = requested && [visible, selected].find((value) => value.includes(requested));
+    if (requested && !source)
+      throw new Error("That quote is not on this page. Read the source again before saving it.");
     const quote = source
       ? source.slice(source.indexOf(requested), source.indexOf(requested) + requested.length)
       : (selected || visible).slice(0, 1200);
@@ -1511,14 +1610,14 @@ Give one brief, grounded hint for the current question using only a say action. 
       if (
         handoff?.at &&
         handoff.at >= this.suspendedAt - 500 &&
-        now() - handoff.at < 10_000 &&
-        handoff.step < MAX_STEPS
+        now() - handoff.at < HANDOFF_LIFETIME &&
+        !handoff.checkpoint && handoff.step < MAX_STEPS
       ) {
         if (handoff.taskId) await this.loadTask(handoff.taskId);
         if (!handoff.taskId || this.state.task?.status === "running") {
           this.history = handoff.history;
           this.pendingNavigation = handoff;
-          void this.runTask(handoff.goal, handoff.goal, handoff.step);
+          void this.runTask(handoff.message ?? handoff.goal, handoff.goal, handoff.step);
         }
       }
     } catch (error) {

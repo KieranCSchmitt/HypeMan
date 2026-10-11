@@ -291,6 +291,18 @@ export class WorkspaceHost {
   snapshot(): Promise<CompanionSnapshot> {
     return this.transaction((s) => s, false);
   }
+  restore(value: CompanionSnapshot): Promise<{ notes: number; tasks: number; skipped: number }> {
+    return this.transaction((state) => {
+      const notes = value.notes.filter(note => !state.notes.some(current => current.id === note.id));
+      const tasks = value.tasks.filter(task => !state.tasks.some(current => current.id === task.id));
+      const events = value.events.filter(event => !state.events.some(current => current.id === event.id));
+      if (state.notes.length + notes.length > 500 || state.tasks.length + tasks.length > 100 || state.events.length + events.length > 1000) throw new Error("Restore exceeds local saved-work limits. Existing work was preserved.");
+      state.notes.push(...notes);
+      state.tasks.push(...tasks.map(task => ({ ...task, status: task.status === "running" ? "paused" as const : task.status, tabId: null })));
+      state.events.push(...events);
+      return { notes: notes.length, tasks: tasks.length, skipped: value.notes.length + value.tasks.length - notes.length - tasks.length };
+    });
+  }
   recover(): Promise<void> {
     return this.transaction((s) => {
       for (const t of s.tasks)

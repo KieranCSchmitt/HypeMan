@@ -11,7 +11,9 @@ export function FloatingToolWindow({ section, open, focused, cascade, onFocus, o
   const geometry = useWindowGeometry({ id: section, open, minSize: windowMinimum(section), onFocus: () => onFocus(section),
     initialRect: (viewport, host) => {
       const root = host?.getRootNode() as Document | ShadowRoot | undefined;
-      return initialWindow(section, viewport, root?.querySelector(".conversation-pane")?.getBoundingClientRect(), cascade);
+      const chat = root?.querySelector(".conversation-pane")?.getBoundingClientRect();
+      const compactChat = chat && viewport.width < 760 ? { left: chat.left, width: chat.width, top: chat.bottom - Math.min(chat.height, 180), height: Math.min(chat.height, 180) } : chat;
+      return initialWindow(section, viewport, compactChat, cascade);
     } });
   useEffect(() => { if (open && focused) geometry.focus(); }, [open, focused]);
   useEffect(() => {

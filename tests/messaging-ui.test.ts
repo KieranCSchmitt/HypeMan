@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unavailableMessagingStatus, type MessagingCapture, type MessagingStatus, type RuntimeEvent, type SelectedContent } from "@core";
 import { request, subscribe } from "../apps/extension/src/bridge";
 import { Messaging } from "../apps/extension/src/ui/Messaging";
-import { WorkbenchContext, type ToolHandler } from "../apps/extension/src/ui/WorkbenchContext";
+import { WorkbenchContext, type ToolHandler, type ToolResult } from "../apps/extension/src/ui/WorkbenchContext";
 vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn(), subscribe: vi.fn(), readSettings: vi.fn(), writeSettings: vi.fn() }));
 let root: Root, container: HTMLDivElement, status: MessagingStatus, captures: MessagingCapture[];
 let receive: (event: RuntimeEvent) => void;
@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function render() { await act(async () => root.render(createElement(Harness, null, createElement(Messaging, { connectionKey: "local" })))); }
-async function invoke(operation: string, args: Record<string, unknown> = {}) { let result: string | void, failure: unknown; await act(async () => { try { result = await handlers.get("phone")!(operation, args); } catch (cause) { failure = cause; } }); if (failure) throw failure; return result!; }
+async function invoke(operation: string, args: Record<string, unknown> = {}) { let result: ToolResult, failure: unknown; await act(async () => { try { result = await handlers.get("phone")!(operation, args); } catch (cause) { failure = cause; } }); if (failure) throw failure; return result!; }
 async function changeInput(label: string, value: string, blur = false) {
   const input = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!; expect(input).not.toBeNull();
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true })); });
@@ -88,6 +88,20 @@ describe("phone conversation tool", () => {
     await invoke("snooze", { id: "pending-1", minutes: 60 }); await invoke("cancel", { id: "pending-1" });
     expect(request).toHaveBeenCalledWith({ type: "messaging.reminders", operation: "snooze", id: "pending-1", minutes: 60 }, expect.any(AbortSignal)); expect(request).toHaveBeenCalledWith({ type: "messaging.reminders", operation: "cancel", id: "pending-1" }, expect.any(AbortSignal));
   });
+  it("schedules the form in the displayed phone zone and saves its repeat rule", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
+    status.settings.timezone = "America/New_York"; await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="New reminder"]')!.click());
+    await changeInput("Reminder", "Practice fractions"); await changeInput("Reminder time", "2026-01-02T09:00");
+    await act(async () => { const select = container.querySelector<HTMLSelectElement>('[aria-label="Reminder repeat"]')!; select.value = "daily"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Reminder time"]')!.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(request).toHaveBeenCalledWith({ type: "messaging.remind", text: "Practice fractions", dueAt: Date.parse("2026-01-02T14:00:00Z"), recurrence: { frequency: "daily", interval: 1, timezone: "America/New_York", hour: 9, minute: 0 } }, expect.any(AbortSignal));
+  });
+  it("lets the owner pause, resume and skip a repeating reminder", async () => {
+    status.reminders = [{ id: "repeat-1", text: "Practice", dueAt: Date.now() + 60000, status: "pending", createdAt: Date.now(), recurrence: { frequency: "daily", interval: 1, timezone: "America/New_York", hour: 9, minute: 0 } }];
+    await render(); await invoke("pause", { id: "repeat-1" }); await invoke("resume", { id: "repeat-1" }); await invoke("skip", { id: "repeat-1" });
+    for (const operation of ["pause", "resume", "skip"]) expect(request).toHaveBeenCalledWith({ type: "messaging.reminders", operation, id: "repeat-1" }, expect.any(AbortSignal));
+  });
   it("rejects sleeping-hour check-ins without limiting requested reminders", async () => {
     await render(); await changeInput("Morning planning time", "08:00"); expect(container.querySelector('[role="alert"]')?.textContent).toContain("between 9 AM and 9 PM"); expect(vi.mocked(request).mock.calls.some(([input]) => input.type === "messaging.settings")).toBe(false); expect(container.querySelector('[title^="Requested reminders"]')).not.toBeNull();
   });
@@ -107,6 +121,11 @@ describe("phone conversation tool", () => {
     await render(); const original = vi.mocked(request).getMockImplementation()!;
     vi.mocked(request).mockImplementation(async (input, signal) => input.type === "messaging.send" ? { status: "unknown" } : original(input, signal));
     await expect(invoke("send", { text: "Pottery notes" })).rejects.toThrow("Delivery is uncertain"); expect(container.textContent).toContain("Delivery is uncertain"); expect(vi.mocked(request).mock.calls.filter(([input]) => input.type === "messaging.send")).toHaveLength(1);
+  });
+  it("uses the matching fresh gateway receipt rather than an older sent message", async () => {
+    await render(); const original = vi.mocked(request).getMockImplementation()!;
+    vi.mocked(request).mockImplementation(async (input, signal) => input.type === "messaging.send" ? { ...status, deliveries: [{ id: "old", text: "Old text", status: "sent", at: Date.now() - 1000 }, { id: "fresh", text: input.text, status: "sent", at: Date.now() }] } : original(input, signal));
+    expect(await invoke("send", { text: "Fresh text" })).toMatchObject({ message: "Text sent to your paired phone.", data: { status: "sent", text: "Fresh text" } });
   });
   it("labels and shortens a long selected summary to the message limit", async () => {
     await render(); await invoke("send", { text: "a".repeat(7000) }); const sent = vi.mocked(request).mock.calls.find(([input]) => input.type === "messaging.send")![0].text as string; expect(sent.length).toBeLessThanOrEqual(6000); expect(sent).toContain("[Text shortened]");

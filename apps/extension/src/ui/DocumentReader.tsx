@@ -8,6 +8,8 @@ import { useToolHandler } from "./WorkbenchContext";
 import { startLocalPdf, pdfFailureMessage } from "./pdf-loading";
 import { documentPageLink } from "./MessageContent";
 import { ToolButton } from "./common";
+import { documentQuestionPages, documentBatches, pageList } from "./document-analysis";
+import { runDocumentSummary, type SummaryCheckpoint } from "./document-summary";
 
 GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("assets/pdfjs/worker.mjs");
 const parameters = new URLSearchParams(location.search);
@@ -33,11 +35,11 @@ function pageRange(args: Record<string, unknown>, current: number, count: number
   if (Array.isArray(args.pages)) pages = args.pages as number[];
   else if (typeof args.fromPage === "number" || typeof args.toPage === "number") {
     const from = Number(args.fromPage ?? current), to = Number(args.toPage ?? from);
-    if (!Number.isInteger(from) || !Number.isInteger(to) || from > to || to - from >= 20) throw new Error("Choose a range of at most 20 PDF pages.");
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from > to) throw new Error("Choose a valid PDF page range.");
     pages = Array.from({ length: to - from + 1 }, (_, index) => from + index);
   } else if (typeof args.page === "number") pages = [args.page];
-  else pages = summarize ? Array.from({ length: Math.min(20, count) }, (_, index) => index + 1) : [current];
-  if (!pages.length || pages.length > 20 || pages.some((page) => !Number.isInteger(page) || page < 1 || page > count)) throw new Error(`Choose pages between 1 and ${count}.`);
+  else pages = summarize ? Array.from({ length: count }, (_, index) => index + 1) : [current];
+  if (!pages.length || pages.some((page) => !Number.isInteger(page) || page < 1 || page > count)) throw new Error(`Choose pages between 1 and ${count}.`);
   return [...new Set(pages)];
 }
 export function DocumentReader() {
@@ -204,18 +206,41 @@ export function DocumentReader() {
     if (!["analyze", "summarize", "explain", "inspect", "read"].includes(operation)) throw new Error("Ask to show a page, summarize, or analyze this PDF.");
     const selected = args.selected && typeof args.selected === "object" ? args.selected as Record<string, unknown> : undefined;
     const targetedSelection = selected && (selected.artifactId === documentId || selected.id === documentId) ? selected : undefined;
-    const effectiveArgs = { ...args, ...(operation !== "summarize" && args.page === undefined && Number.isInteger(targetedSelection?.page) ? { page: targetedSelection!.page } : {}) };
+    const effectiveArgs: Record<string, unknown> = { ...args, ...(operation !== "summarize" && args.page === undefined && typeof targetedSelection?.quote === "string" && /\b(this|selection|passage|quote|highlighted)\b/i.test(String(args.question || args.message || "")) && Number.isInteger(targetedSelection?.page) ? { page: targetedSelection!.page } : {}) };
     processing.current?.abort(); const controller = new AbortController(); processing.current = controller;
     const aborted = () => controller.abort(); lifetime.current.signal.addEventListener("abort", aborted, { once: true });
     try {
-      const numbers = pageRange(effectiveArgs, page, pdf.numPages, operation === "summarize");
-      setStatus(`Reading ${numbers.length === 1 ? `page ${numbers[0]}` : `pages ${numbers[0]}–${numbers.at(-1)}`}…`);
-      const pages: DocumentAnalysisRequest["pages"] = []; let remaining = MAX_DOCUMENT_CONTEXT_TEXT;
-      for (const number of numbers) {
+      const question = typeof args.question === "string" ? args.question : typeof args.message === "string" ? args.message : operation === "summarize" ? "Summarize the document, including its main ideas and conclusion." : "Explain the supplied PDF page and its main ideas.";
+      const whole = operation === "summarize" || /\b(?:whole|entire|all pages|overall|complete document)\b/i.test(question);
+      const explicit = ["page", "pages", "fromPage", "toPage"].some((key) => effectiveArgs[key] !== undefined);
+      if (whole && !explicit && args.visual !== true && operation !== "inspect") {
+        const saved = await request<{ summaryCheckpoint?: SummaryCheckpoint; stages?: DocumentAnalysisReply[] } | null>({ type: "artifact.get", conversationId, kind: "documents", id: documentId }, controller.signal);
+        const source = `${documentId}:${metadata?.size}:${metadata?.createdAt}:${pdf.numPages}`;
+        const existing = saved?.summaryCheckpoint && (args.resume === true || saved.summaryCheckpoint.question === question) ? saved.summaryCheckpoint : null;
+        let summaryStages = existing?.stages || [];
+        const outcome = await runDocumentSummary({ source, question, pageCount: pdf.numPages, checkpoint: existing,
+          extract, signal: controller.signal, status: setStatus,
+          analyze: (pages, goal, signal) => request<DocumentAnalysisReply>({ type: "api", path: "/api/document", body: { artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages, question: `${goal.slice(0, 3600)}\nThis is one stage of a document review. Summarize these pages concisely, including facts relevant to the question and uncertainties; aim for 1,200 characters.`, pages } }, signal),
+          synthesize: (analyses, goal, signal) => request<DocumentAnalysisReply>({ type: "api", path: "/api/document", body: { question: goal, analyses: analyses.map((result) => ({ ...result, artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages })) } }, signal),
+          save: async (summaryCheckpoint, latest) => { if (summaryCheckpoint) summaryStages = summaryCheckpoint.stages; if (latest) setAnalysis(latest); await request({ type: "artifact.put", conversationId, kind: "documents", id: documentId, value: { ...metadata, analysis: latest, stages: summaryStages, summaryCheckpoint, currentPage: page } }, controller.signal); },
+        });
         controller.signal.throwIfAborted();
-        const source = await extract(number); const text = source.text.slice(0, remaining);
-        pages.push({ page: number, text, truncated: source.truncated || text.length < source.text.length }); remaining -= text.length;
+        if (outcome.paused) {
+          const reviewed = [...new Set(outcome.checkpoint.stages.flatMap((stage) => stage.coveredPages))].sort((a, b) => a - b);
+          return { message: `PDF summary paused. Reviewed p. ${pageList(reviewed) || "none yet"} / ${pdf.numPages}. Continue when ready.`, changed: reviewed.length > 0, data: { artifactId: documentId, coveredPages: reviewed, pageCount: pdf.numPages, pendingSummary: true }, continue: false };
+        }
+        if (!outcome.result) return { message: "This PDF needs visual reading. Ask to inspect a page.", changed: false, continue: false };
+        const result = outcome.result; relay("analysis", { result });
+        return { message: `${result.text}\n${result.citations.map((citation) => documentPageLink(documentId, citation.page, metadata?.name || "PDF")).join(" · ")}${result.partial ? `\nPartial · reviewed p. ${pageList(result.coveredPages)} / ${pdf.numPages}.` : ""}`, changed: true, data: { ...result, artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages }, continue: true };
       }
+      let numbers = pageRange(effectiveArgs, page, pdf.numPages, whole || (!explicit && args.visual !== true && operation !== "inspect"));
+      const extracted: DocumentPage[] = [];
+      for (let index = 0; index < numbers.length; index++) {
+        controller.signal.throwIfAborted(); setStatus(`Reading page ${numbers[index]} of ${pdf.numPages}…`);
+        extracted.push(await extract(numbers[index])); controller.signal.throwIfAborted();
+      }
+      if (!whole && !explicit && args.visual !== true && operation !== "inspect") numbers = documentQuestionPages(extracted, question, page);
+      const pages = extracted.filter((source) => numbers.includes(source.page));
       let image: string | undefined, imagePage: number | undefined;
       if (args.visual === true || operation === "inspect") {
         imagePage = Number(effectiveArgs.page ?? numbers[0]);
@@ -229,18 +254,39 @@ export function DocumentReader() {
         image = imageCanvas.toDataURL("image/jpeg", .8);
       }
       controller.signal.throwIfAborted();
-      if (!pages.some((page) => page.text.trim()) && !image) return "These PDF pages appear scanned or have no extractable text. Ask me to inspect a specific page visually; the original PDF remains saved locally.";
-      const question = typeof args.question === "string" ? args.question : typeof args.message === "string" ? args.message : operation === "summarize" ? "Summarize these supplied PDF pages. State clearly if they are only part of the document." : "Explain the supplied PDF page and its main ideas.";
+      if (!pages.some((page) => page.text.trim()) && !image) return { message: "These pages need visual reading. Ask to inspect a page.", changed: false, data: { artifactId: documentId, unreadablePages: numbers }, continue: false };
       const selection = targetedSelection && typeof targetedSelection.quote === "string" && numbers.includes(Number(targetedSelection.page))
         ? { page: Number(targetedSelection.page), quote: targetedSelection.quote.slice(0, 4000) } : undefined;
-      const result = await request<DocumentAnalysisReply>({ type: "api", path: "/api/document", body: {
-        artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages, question, pages,
-        ...(image ? { image, imagePage } : {}), ...(selection ? { selection } : {}),
-      } }, controller.signal);
+      const batches = documentBatches(pages);
+      if (!batches.length && image) batches.push([]);
+      const stages: DocumentAnalysisReply[] = [];
+      for (let index = 0; index < batches.length; index++) {
+        controller.signal.throwIfAborted(); setStatus(batches.length > 1 ? `Reading summary ${index + 1} of ${batches.length}…` : "Reading answer…");
+        const batch = batches[index];
+        const stage = await request<DocumentAnalysisReply>({ type: "api", path: "/api/document", body: {
+          artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages,
+          question: batches.length > 1 ? `${question.slice(0, 3600)}\nThis is one stage of a document review. Return a concise summary of these pages, including facts relevant to the question and uncertainties; aim for 1,200 characters.` : question,
+          pages: batch, ...(image && index === 0 ? { image, imagePage } : {}), ...(selection && batch.some((item) => item.page === selection.page) ? { selection } : {}),
+        } }, controller.signal);
+        stages.push(stage); controller.signal.throwIfAborted();
+        await request({ type: "artifact.put", conversationId, kind: "documents", id: documentId, value: { ...metadata, analysis: stage, stages, currentPage: page } }, controller.signal);
+      }
+      let combined = stages;
+      while (combined.length > 1) {
+        const next: DocumentAnalysisReply[] = [];
+        for (let index = 0; index < combined.length; index += 6) {
+          controller.signal.throwIfAborted(); setStatus("Reading combined summary…");
+          const group = combined.slice(index, index + 6);
+          if (group.length === 1) { next.push(group[0]); continue; }
+          next.push(await request<DocumentAnalysisReply>({ type: "api", path: "/api/document", body: { question, analyses: group.map((result) => ({ ...result, artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages })) } }, controller.signal));
+        }
+        combined = next;
+      }
+      const result = combined[0];
       controller.signal.throwIfAborted(); setAnalysis(result);
       await request({ type: "artifact.put", conversationId, kind: "documents", id: documentId, value: { ...metadata, analysis: result, currentPage: page } }, controller.signal);
       relay("analysis", { result });
-      return `${result.text}\nSources: ${result.citations.map((citation) => documentPageLink(documentId, citation.page, metadata?.name || "PDF")).join("; ") || "supplied pages"}.${result.partial ? `\nPartial coverage: reviewed pages ${result.coveredPages.join(", ")} of ${pdf.numPages}.` : ""}`;
+      return { message: `${result.text}\n${result.citations.map((citation) => documentPageLink(documentId, citation.page, metadata?.name || "PDF")).join(" · ")}${result.partial ? `\nPartial · reviewed p. ${pageList(result.coveredPages)} / ${pdf.numPages}.` : ""}`, changed: true, data: { ...result, artifactId: documentId, title: metadata?.name || "PDF", pageCount: pdf.numPages }, continue: true };
     } finally {
       lifetime.current.signal.removeEventListener("abort", aborted);
       if (processing.current === controller) { processing.current = null; setStatus(`Page ${page} of ${pdf.numPages} · Select text to discuss it in chat.`); }
@@ -266,7 +312,7 @@ export function DocumentReader() {
       <button type="button" className="tool-icon-button" aria-label="Zoom out" title="Zoom out" disabled={zoom <= .5} onClick={() => setZoom(Math.max(.5, zoom - .25))}>−</button><button type="button" aria-label="Reset zoom" title="Reset zoom" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><ToolButton icon="plus" label="Zoom in" disabled={zoom >= 2} onClick={() => setZoom(Math.min(2, zoom + .25))} />
     </nav><div ref={pageHost} className="pdf-page-host"><div className="pdf-page" data-pdf-page={page}><canvas ref={canvas} aria-label={`PDF page ${page}`} /><div ref={layer} className="textLayer" /></div></div></>}
     {analysis && <section className="pdf-analysis" aria-label="PDF answer"><p>{analysis.text}</p>
-      <p className="pdf-coverage">{analysis.partial ? "Partial · " : ""}p. {analysis.coveredPages.join(", ")} / {metadata?.pageCount}</p>
+      <p className="pdf-coverage">{analysis.partial ? "Partial · " : ""}p. {pageList(analysis.coveredPages)} / {metadata?.pageCount}</p>
       <div className="pdf-citations" aria-label="Page citations">{analysis.citations.map((citation, index) => <a key={index} href={`#page=${citation.page}`}
         onClick={(event) => { event.preventDefault(); show(citation.page); }} title={citation.quote}>p. {citation.page}</a>)}</div>
     </section>}

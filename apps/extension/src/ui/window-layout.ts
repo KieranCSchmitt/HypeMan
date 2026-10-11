@@ -26,14 +26,28 @@ export function clampWindow(rect: WindowRect, viewport: WindowViewport, minimum:
   return { width, height, x: bound(rect.x, viewport.x + inset, viewport.x + viewport.width - inset - width),
     y: bound(rect.y, viewport.y + inset, viewport.y + viewport.height - inset - height) };
 }
-export function initialWindow(tool: string, viewport: WindowViewport, chat?: { left: number }, cascade = 0): WindowRect {
-  const width = tool === "board" ? 860 : tool === "documents" ? 780 : tool === "video" ? 760 : 500;
-  const height = tool === "documents" ? 700 : ["board", "phone"].includes(tool) ? 640 : tool === "video" ? 610 : 560;
-  const minimum = windowMinimum(tool);
-  const size = clampWindow({ x: viewport.x, y: viewport.y, width, height }, viewport, minimum), step = cascade % 5 * 22;
-  const beside = chat && chat.left - size.width - 18 >= viewport.x + margin(viewport);
-  return clampWindow({ ...size, x: beside ? chat.left - size.width - 18 - step : viewport.x + (viewport.width - size.width) / 2 + step,
-    y: viewport.y + (viewport.height - size.height) / 2 + step }, viewport, minimum);
+export function initialWindow(tool: string, viewport: WindowViewport, chat?: { left: number; top?: number; width?: number; height?: number }, cascade = 0): WindowRect {
+  const preferredWidth = tool === "board" ? 860 : tool === "documents" ? 780 : tool === "video" ? 760 : 500;
+  const preferredHeight = tool === "documents" ? 700 : ["board", "phone"].includes(tool) ? 640 : tool === "video" ? 610 : 560;
+  const minimum = windowMinimum(tool), inset = margin(viewport), gap = 18, step = cascade % 5 * 22;
+  const leftSpace = chat ? chat.left - viewport.x - inset - gap : 0;
+  // On laptops, resize the new tool into the space beside chat before covering it.
+  if (chat && leftSpace >= minimum.width) {
+    const width = Math.min(preferredWidth, leftSpace), height = Math.min(preferredHeight, viewport.height - inset * 2);
+    return clampWindow({ width, height, x: Math.max(viewport.x + inset, chat.left - width - gap - step), y: viewport.y + (viewport.height - height) / 2 + step }, viewport, minimum);
+  }
+  const rightSpace = chat?.width ? viewport.x + viewport.width - inset - (chat.left + chat.width) - gap : 0;
+  if (chat && rightSpace >= minimum.width) {
+    const width = Math.min(preferredWidth, rightSpace), height = Math.min(preferredHeight, viewport.height - inset * 2);
+    return clampWindow({ width, height, x: chat.left + (chat.width || 0) + gap, y: viewport.y + (viewport.height - height) / 2 }, viewport, minimum);
+  }
+  if (chat?.top !== undefined) {
+    // Narrow screens stack floating tools above the compact chat, keeping its composer reachable.
+    const above = chat.top - viewport.y - inset - 12;
+    if (above >= minimum.height) return clampWindow({ width: preferredWidth, height: Math.min(preferredHeight, above), x: viewport.x + inset, y: viewport.y + inset }, viewport, minimum);
+  }
+  const size = clampWindow({ x: viewport.x, y: viewport.y, width: preferredWidth, height: preferredHeight }, viewport, minimum);
+  return clampWindow({ ...size, x: viewport.x + (viewport.width - size.width) / 2 + step, y: viewport.y + (viewport.height - size.height) / 2 + step }, viewport, minimum);
 }
 export function resizeWindowEdge(rect: WindowRect, edge: ResizeEdge, dx: number, dy: number, viewport: WindowViewport, minimum: WindowSize = defaultMinimum): WindowRect {
   const current = clampWindow(rect, viewport, minimum), inset = margin(viewport);

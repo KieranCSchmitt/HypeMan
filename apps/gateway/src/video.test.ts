@@ -96,7 +96,7 @@ describe("caption ingestion", () => {
     const modelCaptions = (supplied as { segments: { start: number; text: string }[] }).segments;
     expect(modelCaptions.length).toBeGreaterThan(0);
     expect(modelCaptions.length).toBeLessThan(result.segments.length);
-    expect(modelCaptions.at(-1)?.start).toBeLessThan(499);
+    expect(modelCaptions.at(-1)?.start).toBe(499);
     for (const cue of modelCaptions)
       expect(result.segments.find((original) => original.start === cue.start)?.text.startsWith(cue.text)).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(supplied))).toBeLessThanOrEqual(VIDEO_CONTEXT_BYTES);
@@ -201,5 +201,22 @@ describe("transcript absence and cancellation", () => {
     } finally {
       timeout.mockRestore();
     }
+  });
+});
+
+describe("question-relevant caption retrieval", () => {
+  const transcript = Array.from({ length: 1200 }, (_, index) => ({ start: index * 5, end: index * 5 + 5, text: index === 1190 ? "The final experiment demonstrates photosynthesis in shade." : `Caption ${index}: ${"background explanation ".repeat(20)}` }));
+  it.each(["What happens at 1:39:10?", "Explain the final photosynthesis experiment."])("finds late content for %s", async (question) => {
+    const model = providers(true);
+    await run({ url, question, segments: transcript.slice(600) }, noNetwork(), config, model);
+    const supplied = vi.mocked(model.json).mock.calls[0][1] as { segments: { start: number; text: string }[]; coverage: { partial: boolean } };
+    expect(supplied.segments.some((cue) => cue.start === 5950 && cue.text.includes("photosynthesis"))).toBe(true);
+    expect(supplied.coverage.partial).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(supplied))).toBeLessThanOrEqual(VIDEO_CONTEXT_BYTES);
+  });
+  it("rejects a generated timestamp outside the supplied caption evidence", async () => {
+    const model = providers(true);
+    vi.mocked(model.json).mockResolvedValue({ summary: "Answer", notes: [{ start: 1000, end: 1005, text: "Invented late note" }] });
+    await expect(run({ url, segments: [{ start: 0, end: 10, text: "Opening words" }] }, noNetwork(), config, model)).rejects.toThrow("invalid");
   });
 });

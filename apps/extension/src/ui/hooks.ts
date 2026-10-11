@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_SETTINGS, emptyWorkspace, type Settings, type WorkspaceSnapshot } from "@core";
 import { readSettings, request, subscribe, writeSettings } from "../bridge";
+import { downloadWorkspaceBackup } from "./workspace-backup";
 
 export function useWorkspace() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(emptyWorkspace);
@@ -111,13 +112,6 @@ export async function setScreenshotAccess(
     throw new Error("Screenshot access was not granted. You can keep using text assistance.");
   return patch({ screenshotEnabled: enabled });
 }
-export function exportWorkspace(workspace: WorkspaceSnapshot) {
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(workspace, null, 2)], { type: "application/json" }),
-  );
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `hypeman-workspace-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+export async function exportWorkspace(_workspace?: WorkspaceSnapshot, signal?: AbortSignal) {
+  return downloadWorkspaceBackup(signal);
 }

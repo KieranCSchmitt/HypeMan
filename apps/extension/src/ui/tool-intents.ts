@@ -1,7 +1,13 @@
 import type { CompanionTool, SelectedContent, ToolAction } from "@core";
 const aliases: Record<string, CompanionTool> = { whiteboard: "board", board: "board", notes: "notes", "saved notes": "notes", projects: "projects", tasks: "projects", missions: "projects", activity: "activity", "action history": "activity", settings: "settings", preferences: "settings", permissions: "settings", video: "video", "video companion": "video", documents: "documents", pdfs: "documents", pdf: "documents", learning: "learning", practice: "learning", progress: "learning", "learning progress": "learning", phone: "phone", "phone companion": "phone", "phone inbox": "phone", connection: "connection", account: "connection", "account settings": "connection" };
+/** Keep compound requests intact for the planner; a shortcut must not consume later work. */
+export function hasCompoundIntent(text: string): boolean {
+  const unquoted = text.replace(/"[^"\n]*"|'[^'\n]*'/g, "");
+  return /(?:\b(?:and then|then|also|after that)\b|\band\s+(?:(?:please|can you)\s+)?(?:save|remember|keep|send|text|draw|sketch|explain|summarize|compare|open|search|find|export|download|remind|create|make|add|show|plan|check|review|calculate)\b|;\s*\w)/i.test(unquoted);
+}
 export function toolIntent(raw: string, active: string | null, selected: SelectedContent | null): ToolAction | null {
   const text = raw.trim().replace(/[.!?]+$/, ""), lower = text.toLowerCase();
+  if (hasCompoundIntent(text)) return null;
   const action = (tool: CompanionTool, operation = "open", args: Record<string, unknown> = {}): ToolAction => ({ type: "tool", tool, operation, args });
   const open = lower.match(/^(?:(?:open|show|show me|list|let me see|go to|view)(?: my| the)? )?(.+)$/)?.[1];
   if (open && aliases[open]) return action(aliases[open], open === "phone inbox" ? "inbox" : "open");
@@ -45,6 +51,7 @@ export function toolIntent(raw: string, active: string | null, selected: Selecte
   if (/^(?:give me |another |next |a |small )*hint(?: please)?$/i.test(text)) return action("learning", "hint");
   if (/^(?:make|create)(?: me)? (?:a )?(?:learning|practice|study) plan/i.test(text)) return action("learning", "plan", { goal: text });
   if (/^(?:check|review) my explanation/i.test(text)) return action("learning", "teach", { explanation: text.replace(/^(?:check|review) my explanation[: ]*/i, "") || selected?.text });
+  if (/^continue(?: the| this)?(?: pdf| document)? summary$/i.test(text)) return action("documents", "summarize", { resume: true });
   const page = text.match(/^(?:go to|show|open) page (\d+)$/i); if (page && active === "documents") return action("documents", "page", { page: Number(page[1]) });
   if (/^(?:summarize|explain|analyse|analyze)(?: this| the)? (?:pdf|document)$/i.test(text)) return action("documents", /^summarize/i.test(text) ? "summarize" : "analyze", { question: text });
   if (/^(?:export|download)(?: this| my| the)? (?:pdf|document)$/i.test(text)) return action("documents", "export");
@@ -52,7 +59,7 @@ export function toolIntent(raw: string, active: string | null, selected: Selecte
   const checkin = text.match(/^(?:set|change)(?: my)? (morning|evening) check-in(?: to)? (\d{1,2}):(\d{2})(?: (am|pm))?$/i); if (checkin) { let hour = Number(checkin[2]); if (checkin[4]?.toLowerCase() === "pm" && hour < 12) hour += 12; if (checkin[4]?.toLowerCase() === "am" && hour === 12) hour = 0; return action("phone", "settings", { patch: { [checkin[1].toLowerCase() === "morning" ? "morningTime" : "eveningTime"]: `${String(hour).padStart(2,"0")}:${checkin[3]}` } }); }
   const inkWidth = text.match(/^(?:set|use|change)(?: the| my)? (?:pen |ink |stroke )?(?:width|size)(?: to)? (\d+)$/i); if (inkWidth && active === "board") return action("board", "width", { value: Number(inkWidth[1]) });
   if (/^(?:select objects|let me select|selection mode)$/i.test(text) && active === "board") return action("board", "mode", { value: "select" });
-  const videoUrl = text.match(/^(?:open|watch|summarize|play)(?: this| the)? video (https?:\/\/\S+)$/i); if (videoUrl) return action("video", "open", { url: videoUrl[1], question: /^summarize/i.test(text) ? text : undefined });
+  const videoUrl = text.match(/^(?:open|watch|summarize|play)(?: this| the)? video (https?:\/\/\S+)$/i); if (videoUrl) return action("video", /^summarize/i.test(text) ? "summarize" : "open", { url: videoUrl[1], ...(/^summarize/i.test(text) ? { question: "Summarize the video." } : {}), ...(/^play/i.test(text) ? { play: true } : {}) });
   const seek = text.match(/^(?:go to|seek to|jump to) (\d+)(?::(\d{2}))?(?: seconds?)?$/i); if (seek && active === "video") return action("video", "seek", { value: Number(seek[1]) * (seek[2] ? 60 : 1) + Number(seek[2] || 0) });
   const speed = text.match(/^(?:play at|set speed to|use) ([\d.]+)x$/i); if (speed && active === "video") return action("video", "speed", { value: Number(speed[1]) });
   if (/^(?:mark|confirm)(?: this| the current)? (?:project )?step(?: as)? (?:done|complete)$/i.test(text)) return action("projects", "done", { id: selected?.kind === "project" ? selected.id : undefined });

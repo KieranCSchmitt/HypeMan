@@ -4,6 +4,7 @@ import { PageObserver, privateField, sameTarget } from "./page";
 import type { RuntimeApi } from "./types";
 import type { Highlight } from "./overlay";
 import { actionTarget } from "./policy";
+import { pageState } from "./reliability";
 export interface ExecuteContext {
   api: RuntimeApi;
   observer: PageObserver;
@@ -29,7 +30,8 @@ function textField(node: Element): node is HTMLInputElement | HTMLTextAreaElemen
 }
 function editable(node: Element): boolean {
   return (
-    (textField(node) && !node.readOnly && !node.disabled) ||
+    (textField(node) && !node.readOnly && !node.disabled &&
+      !(node instanceof HTMLInputElement && ["checkbox", "radio", "file", "button", "submit", "reset", "image"].includes(node.type))) ||
     node.getAttribute("contenteditable") === "true"
   );
 }
@@ -115,7 +117,8 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       throw new Error("The page changed. Observe again before acting.");
     const actual = node?.isConnected ? observer.describe(node) : undefined;
     const compare =
-      ownValueChange && expected && actual ? { ...expected, value: actual.value } : expected;
+      ownValueChange && expected && actual ? { ...expected, value: actual.value,
+        ...(node?.getAttribute("contenteditable") === "true" ? { name: actual.name } : {}) } : expected;
     if (id && (!node?.isConnected || !compare || !sameTarget(compare, actual)))
       throw new Error("The target changed. Observe again before acting.");
   };
@@ -131,10 +134,29 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       context.highlight.show(node);
     }
   };
-  const settle = async () => {
-    await delay(120, signal);
-    check(signal);
-    return observer.snapshot();
+  const settle = async (minimum = 180) => {
+    // Wait for a meaningful DOM/field/navigation change, then a short quiet period.
+    // A static page is bounded too: lack of a visible effect is not success evidence.
+    const started = Date.now();
+    const initial = pageState(page);
+    let snapshot = observer.snapshot();
+    let previous = pageState(snapshot);
+    let quietSince = Date.now();
+    while (Date.now() - started < 1500) {
+      check(signal);
+      if (!context.allowed()) throw new DOMException("Paused on this site", "AbortError");
+      if (snapshot.url !== page.url) return snapshot;
+      const busy = Array.from(document.querySelectorAll('[aria-busy="true"]')).some((element) =>
+        !context.companionHost?.contains(element));
+      if (previous !== initial && !busy && Date.now() - started >= minimum && Date.now() - quietSince >= 120)
+        return snapshot;
+      await delay(60, signal);
+      snapshot = observer.snapshot();
+      const next = pageState(snapshot);
+      if (next !== previous) quietSince = Date.now();
+      previous = next;
+    }
+    return snapshot;
   };
   const withoutCompanion = async <T>(dispatch: () => T | Promise<T>): Promise<T> => {
     // Use the runtime's exact host reference. A webpage element with our ID
@@ -202,7 +224,7 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       });
       if (!activated) return result(false, "Another control covers the target. Close it first.");
       const pendingDestination = nativeLinkDestination(clickEvent, link, page.url);
-      const after = await settle();
+      const after = pendingDestination ? observer.snapshot() : await settle();
       const navigation = after.url !== page.url || !!pendingDestination;
       const changed =
         after.url !== page.url ||
@@ -229,7 +251,7 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       await ready();
       verify();
       dispatchText(node, action.text);
-      await settle();
+      await settle(300);
       verify(true);
       const value = textField(node) ? node.value : (node.textContent ?? "");
       return result(
@@ -252,7 +274,11 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       node.value = option.value;
       node.dispatchEvent(new Event("input", { bubbles: true }));
       node.dispatchEvent(new Event("change", { bubbles: true }));
-      return result(node.value === option.value, "Selected option verified", true);
+      await settle(300);
+      verify(true);
+      return result(node.value === option.value,
+        node.value === option.value ? "Selected option verified" : "The page rejected the selected option",
+        node.value === option.value);
     }
     case "scroll": {
       await ready();
@@ -422,8 +448,13 @@ export async function execute(action: Action, context: ExecuteContext): Promise<
       context.plan(action);
       return result(true, "Learning plan displayed", true);
     case "note":
-      await context.note(action.text, action.excerpt);
-      return result(true, "Source note saved", true);
+      try {
+        await context.note(action.text, action.excerpt);
+        return result(true, "Source note saved", true);
+      } catch (error) {
+        check(signal);
+        return result(false, error instanceof Error ? error.message : "The source note could not be saved.");
+      }
     case "wait":
       await delay(Math.max(0, Math.min(5000, action.ms)), signal);
       return result(true, "Wait complete");

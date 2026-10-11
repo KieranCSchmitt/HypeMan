@@ -14,7 +14,15 @@ const token = "hypeman-reminder-context-fixture", decisions = [];
 const owner = "+12125550123", thread = "fixture-reminder-owner";
 const transport = { configured: true, connected: true, async start(receive) { this.receive = receive; }, async send() { return { id: crypto.randomUUID(), spaceId: thread }; }, async close() {} };
 const messaging = new MessagingService({ directory, transport, demo: true });
-const fixture = http.createServer((_request, response) => { response.writeHead(200, { "content-type": "text/html" }); response.end('<!doctype html><html><title>Math practice</title><main><h1>Practice</h1><p>Solve 10 ÷ 5 = 1</p><input aria-label="Answer"><button>Try it</button><p role="alert">Try again</p></main></html>'); });
+const fixture = http.createServer((_request, response) => { response.writeHead(200, { "content-type": "text/html" }); response.end(`<!doctype html><html><title>Math practice</title><main><h1>Practice</h1><p>Solve 10 ÷ 5 = 1</p><input aria-label="Answer"><button>Try it</button><p role="alert">Try again</p></main><script>
+  window.shortcutKeys = [];
+  for (const type of ["keydown", "keypress", "keyup"]) document.addEventListener(type, (event) => {
+    // Like a video site, the page sees a retargeted shadow host rather than the chat textarea.
+    if ([" ", "k", "ArrowLeft"].includes(event.key) && !event.target.matches("input,textarea,[contenteditable]")) {
+      window.shortcutKeys.push({ type, key: event.key }); event.preventDefault();
+    }
+  });
+</script></html>`); });
 const gateway = createGateway(loadConfig({ PORT: "0", DEMO_MODE: "1" }), { token, messaging, agent: async (input) => {
   decisions.push(input);
   if (/wrong/i.test(input.message)) {
@@ -31,10 +39,11 @@ const gateway = createGateway(loadConfig({ PORT: "0", DEMO_MODE: "1" }), { token
 let context, home, page;
 const waitFor = async (predicate, description) => { const deadline = Date.now() + 20000; while (Date.now() < deadline) { const value = await predicate(); if (value) return value; await new Promise((done) => setTimeout(done, 75)); } throw new Error(`Timed out: ${description}`); };
 async function rpc(message) { return home.evaluate(async (message) => { const reply = await chrome.runtime.sendMessage({ ...message, requestId: crypto.randomUUID() }); if (!reply?.ok) throw new Error(reply?.error || "No response"); return reply.data; }, message); }
-async function send(text) {
+async function send(text, enter = false) {
   const before = await page.locator(".chat-message.assistant").count();
   await page.getByRole("textbox", { name: "What do you need?", exact: true }).fill(text);
-  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  if (enter) await page.getByRole("textbox", { name: "What do you need?", exact: true }).press("Enter");
+  else await page.getByRole("button", { name: "Send message", exact: true }).click();
   await waitFor(async () => await page.locator(".chat-message.assistant").count() > before, `reply to ${text}`);
   await page.getByRole("button", { name: "Send message", exact: true }).waitFor();
   assert.equal(await page.locator(".conversation-pane .notice.error:visible").count(), 0);
@@ -56,7 +65,18 @@ try {
   page = await context.newPage(); await page.goto(`http://127.0.0.1:${fixture.address().port}/practice`);
   await page.getByRole("button", { name: /^Open HypeMan/ }).click();
   await page.getByRole("textbox", { name: "What do you need?", exact: true }).waitFor();
-  assert.equal(await send("send me a text reminder at 12:30 to practice math"), "12:30 AM or PM?");
+  const composer = page.getByRole("textbox", { name: "What do you need?", exact: true });
+  await composer.focus(); await page.keyboard.type("practice"); await composer.press("Space");
+  await page.keyboard.type("math"); await composer.press("Shift+Enter"); await page.keyboard.type("k");
+  assert.equal(await composer.inputValue(), "practice math\nk", "Space, letters and Shift+Enter edit the chat normally");
+  await composer.press("ArrowLeft");
+  assert.deepEqual(await page.evaluate(() => window.shortcutKeys), [], "No chat key event reaches the page shortcut handlers");
+  await composer.press("Tab");
+  assert.equal(await page.getByRole("button", { name: "Send message", exact: true }).evaluate((button) => button.getRootNode().activeElement === button), true, "Native Tab navigation remains available");
+  await composer.fill(""); await composer.evaluate((element) => element.blur()); await page.keyboard.press("Space");
+  assert.ok((await page.evaluate(() => window.shortcutKeys)).some((event) => event.key === " "), "Page shortcuts still work outside HypeMan");
+  console.log("✓ Chat Space and video shortcut keys stay in HypeMan; newlines, Tab and page shortcuts still work");
+  assert.equal(await send("send me a text reminder at 12:30 to practice math", true), "12:30 AM or PM?");
   assert.equal(await page.getByRole("button", { name: "12:30 AM", exact: true }).count(), 1);
   assert.equal(await page.getByRole("button", { name: "12:30 PM", exact: true }).count(), 1);
   assert.equal(await page.getByRole("alertdialog").count(), 0);

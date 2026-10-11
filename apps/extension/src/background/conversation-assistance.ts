@@ -1,12 +1,12 @@
 import { conversationTurns, focusAgentContext, reminderConversation, validMessagingTimezone,
-  type AgentRequest, type AgentReply, type MessagingStatus, type ReminderDraft } from "@core";
+  parseReminderRecurrence, type ReminderRecurrence, type AgentRequest, type AgentReply, type MessagingStatus, type ReminderDraft } from "@core";
 
 interface Dependencies {
   conversation(id: string): Promise<{ messages: Array<{ role: string; text: string; at: number }> }>;
   draft(id: string): Promise<unknown>;
   saveDraft(id: string, draft: ReminderDraft | null): Promise<void>;
   phoneStatus(): Promise<MessagingStatus>;
-  schedule(text: string, dueAt: number, idempotencyKey: string): Promise<unknown>;
+  schedule(text: string, dueAt: number, idempotencyKey: string, recurrence?: ReminderRecurrence): Promise<unknown>;
   now?: () => number;
   timezone?: () => string;
 }
@@ -16,6 +16,8 @@ const parseDraft = (value: unknown): ReminderDraft | null => {
   if (!validMessagingTimezone(draft.timezone) || !Number.isFinite(draft.updatedAt) || typeof draft.requestId !== "string" || !/^[\w.-]{1,160}$/.test(draft.requestId) ||
       (draft.text !== undefined && (typeof draft.text !== "string" || draft.text.length > 2000)) ||
       (draft.sourceMessage !== undefined && (typeof draft.sourceMessage !== "string" || draft.sourceMessage.length > 4000)) ||
+      (draft.recurrence !== undefined && !parseReminderRecurrence(draft.recurrence)) ||
+      (draft.repeat !== undefined && (!draft.repeat || !["daily", "weekly"].includes(draft.repeat.frequency) || !Number.isInteger(draft.repeat.interval) || draft.repeat.interval < 1 || draft.repeat.interval > 52 || (draft.repeat.weekdays !== undefined && (!Array.isArray(draft.repeat.weekdays) || !draft.repeat.weekdays.every(day => Number.isInteger(day) && day >= 0 && day <= 6))))) ||
       [draft.hour, draft.minute, draft.dueAt, draft.weekday].some((number) => number !== undefined && !Number.isFinite(number)) ||
       (draft.timezoneUnresolved !== undefined && typeof draft.timezoneUnresolved !== "boolean") || (draft.needsDate !== undefined && typeof draft.needsDate !== "boolean") || (draft.nextWeek !== undefined && typeof draft.nextWeek !== "boolean") ||
       (draft.date !== undefined && (typeof draft.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date))) ||
@@ -82,11 +84,12 @@ export class ConversationAssistance {
       phone ??= await api.phoneStatus();
       check();
       if (!phone.paired) return reply("Pair your phone first, then say ‘try again’. I’ve kept your reminder details.");
-      await api.schedule(turn.draft.text!, turn.dueAt!, turn.draft.requestId);
+      if (turn.draft.recurrence) await api.schedule(turn.draft.text!, turn.dueAt!, turn.draft.requestId, turn.draft.recurrence);
+      else await api.schedule(turn.draft.text!, turn.dueAt!, turn.draft.requestId);
       check();
       await api.saveDraft(id, null);
       check();
-      return reply(`I’ll text you ${turn.label} to ${turn.draft.text}.`);
+      return reply(`Reminder saved: ${turn.draft.text} · ${turn.label}${turn.draft.recurrence ? ` · repeats ${turn.draft.recurrence.frequency}` : ""}.`);
     } catch (cause) {
       check();
       const reason = cause instanceof Error ? cause.message : "The phone service is unavailable.";

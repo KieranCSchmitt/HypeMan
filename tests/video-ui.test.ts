@@ -50,3 +50,24 @@ describe("native page video in the conversation workbench", () => {
     expect(captions.mock.calls).toEqual([[source], [""]]);
   });
 });
+
+describe("linked video summaries", () => {
+  it("opens a new URL, fetches its captions and shows the answer without using stale captions", async () => {
+    const result = { segments: [{ start: 100, end: 105, text: "New video caption." }], chapters: [], notes: [], summary: "New video summary.", available: true, source: "service", provider: "openai" };
+    vi.mocked(request).mockImplementation(async (message) => message.type === "api" ? result : null);
+    await act(async () => root.render(createElement(VideoComponent, {})));
+    await act(async () => { await state.handler!("captions", { text: "An unrelated old transcript." }); });
+    let observation: unknown;
+    await act(async () => { observation = await state.handler!("summarize", { url: "https://youtu.be/aB3dE5gH7_j", question: "Summarize this video" }); });
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "api", path: "/api/video", body: expect.objectContaining({ url: "https://youtu.be/aB3dE5gH7_j", segments: [], question: "Summarize this video" }) }), expect.any(AbortSignal));
+    expect(observation).toMatchObject({ message: "New video summary.", changed: true, data: { available: true, source: "service" } });
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Summary");
+    expect(container.querySelector("video")).toBeNull();
+    expect(container.querySelector<HTMLAnchorElement>(".video-original")?.href).toBe("https://youtu.be/aB3dE5gH7_j");
+  });
+  it("can request service captions after merely opening a video URL", async () => {
+    await act(async () => root.render(createElement(VideoComponent, {})));
+    await act(async () => { await state.handler!("open", { url: "https://youtu.be/aB3dE5gH7_j" }); });
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Summarize video"]')?.disabled).toBe(false);
+  });
+});

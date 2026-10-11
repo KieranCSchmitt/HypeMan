@@ -1,4 +1,5 @@
 import type { CompanionSnapshot } from "./workspace";
+import type { ReminderRecurrence } from "./reminder-recurrence";
 
 export interface MessagingSettings {
   coachingEnabled: boolean;
@@ -41,6 +42,13 @@ export interface PhoneReminder {
   dueAt: number;
   status: "pending" | "sent" | "cancelled" | "failed" | "unknown";
   createdAt: number;
+  recurrence?: ReminderRecurrence;
+  anchorAt?: number;
+  paused?: boolean;
+  lastDelivery?: { dueAt: number; status: "sent" | "failed" | "unknown" };
+  seriesId?: string;
+  ownerPhone?: string;
+  requestSignature?: string;
 }
 export interface DailyCommitment {
   id: string;
@@ -85,7 +93,7 @@ export interface MessagingSync {
 export type PhoneIntent =
   | { type: "browser"; goal: string; url?: string }
   | { type: "capture"; kind: MessagingCapture["kind"]; text: string; url?: string }
-  | { type: "reminder"; text: string; dueAt: number }
+  | { type: "reminder"; text: string; dueAt: number; recurrence?: ReminderRecurrence }
   | { type: "commitment"; text: string }
   | { type: "commitment_done"; id: string };
 

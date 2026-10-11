@@ -896,8 +896,12 @@ describe("phone companion extension boundary", () => {
     expect(chrome.tabs.update).not.toHaveBeenCalled();
   });
   it("allows a saved-note text from the overlay to the paired owner and strips recipients", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(reply({ ...phoneStatus(), token: "private" }));
-    expect(await ok({ type: "messaging.send", text: " A saved finding ", recipient: "+19999999999" })).toEqual({ ok: true });
+    const receipt = { id: "manual:receipt", text: "A saved finding", status: "sent", at: Date.now() };
+    vi.mocked(fetch).mockResolvedValueOnce(reply({ ...phoneStatus(), deliveries: [{ ...receipt, phone: "+12125551234", providerId: "private-provider-id" }], token: "private" }));
+    const result = await ok<{ ownerPhone: string; deliveries: unknown[] }>({ type: "messaging.send", text: " A saved finding ", recipient: "+19999999999" });
+    expect(result).toMatchObject({ ownerPhone: "+12125551234", deliveries: [receipt] });
+    expect(result.deliveries[0]).toEqual(receipt);
+    expect(JSON.stringify(result)).not.toContain("private");
     expect(fetch).toHaveBeenLastCalledWith(`${DEFAULT_SETTINGS.serverUrl}/api/messaging/send`, expect.objectContaining({
       body: JSON.stringify({ text: "A saved finding" }),
       headers: expect.objectContaining({ authorization: "Bearer local-test-token" }),

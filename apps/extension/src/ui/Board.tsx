@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import type { Action, InkReview } from "@core";
+import { parseAction, type Action, type InkReview } from "@core";
 import {
   boardObjectBounds, editBoard, emptyBoard, moveBoardObject, parseBoardDocument, parseBoardObject,
   undoBoard, type BoardDocument, type BoardObject, type BoardPoint,
@@ -219,22 +219,44 @@ export function Board({ embedded = false, active = true, conversationId: explici
     if (token !== session.current || documentRef.current.revision !== current.revision) throw new Error("The board changed while its image was being prepared. Try again.");
     return canvas.toDataURL("image/png");
   };
+  const receipt = (message: string, before: BoardDocument, after = documentRef.current) => {
+    const changedIds = after.objects.filter((object) => JSON.stringify(before.objects.find((item) => item.id === object.id)) !== JSON.stringify(object)).map((object) => object.id);
+    const removedIds = before.objects.filter((object) => !after.objects.some((item) => item.id === object.id)).map((object) => object.id);
+    return { message, changed: after.revision !== before.revision, data: { artifactId: `board:${conversationId}`, revision: after.revision, title: after.title, changedIds, removedIds, objects: after.objects.filter((object) => changedIds.includes(object.id)).map((object) => ({ id: object.id, kind: object.kind, text: textOf(object) })) }, continue: true };
+  };
+  const applySketch = async (sketch: Extract<Action, { type: "sketch" }>) => {
+    await ready.current;
+    const key = sketchKey(sketch), current = documentRef.current;
+    if (current.appliedSketches.includes(key)) {
+      await queues.current.get(conversationId)?.pending;
+      if (queues.current.get(conversationId)?.blocked || blocked.current) throw new Error("The diagram has unsaved changes. Export a copy before reopening.");
+      return receipt("Diagram saved.", current);
+    }
+    const startY = current.objects.length ? Math.max(...current.objects.map((object) => { const box = boardObjectBounds(object); return box.y + box.height; })) + 60 : 45;
+    const shapes: BoardObject[] = (sketch.shapes || []).map((shape, index) => objectFromArgs({ ...shape, id: `${key}-shape-${index}`, kind: shape.type === "label" ? equation(shape.text) ? "equation" : "text" : shape.type, y: shape.y + startY, ...(shape.type === "line" || shape.type === "arrow" ? { toY: shape.toY + startY } : {}) }, "assistant"));
+    const bottom = shapes.length ? Math.max(...shapes.map((object) => { const box = boardObjectBounds(object); return box.y + box.height; })) + 35 : startY + 60;
+    const objects = [objectFromArgs({ id: `${key}-title`, kind: "text", text: sketch.title, x: 55, y: startY, fontSize: 30 }, "assistant"), ...shapes, ...sketch.lines.map((text, index) => objectFromArgs({ id: `${key}-line-${index}`, kind: equation(text) ? "equation" : "text", text, x: 60, y: bottom + index * 64 }, "assistant"))];
+    const next = editBoard(current, { upsert: objects, title: sketch.title }); next.appliedSketches = [...next.appliedSketches, key].slice(-100);
+    await commit(next); return receipt("Diagram saved.", current, next);
+  };
   useToolHandler("board", async (operation, args) => {
     await ready.current;
     if (["add", "update", "erase", "color", "clear"].includes(operation) &&
       typeof args.revision === "number" && args.revision !== documentRef.current.revision)
       throw new Error("This board changed. Select the content again before editing it.");
-    if (operation === "open") return "Whiteboard open. Draw directly, or ask me to add a diagram or equation.";
+    if (operation === "open") { await queues.current.get(conversationId)?.pending; if (blocked.current) throw new Error("The visible board has unsaved changes."); return { message: "Whiteboard open.", changed: false, data: { artifactId: `board:${conversationId}`, revision: documentRef.current.revision, title: documentRef.current.title, objects: documentRef.current.objects.map((object) => ({ id: object.id, kind: object.kind, text: textOf(object) })) }, continue: true }; }
+    if (operation === "add" && args.sketch) { const sketch = parseAction(args.sketch); if (!sketch || sketch.type !== "sketch") throw new Error("Provide a valid diagram."); return applySketch(sketch); }
     if (operation === "color") {
       const names: Record<string, string> = { black: "#1b1f3b", white: "#ffffff", blue: "#2563eb", red: "#dc2626", green: "#15803d", purple: "#7b5cff", orange: "#ea580c", yellow: "#eab308", pink: "#db2777", gray: "#64748b", grey: "#64748b" };
       const requested = String(args.color || args.value || "").toLowerCase(), value = names[requested] || requested;
       if (!/^#[\da-f]{6}$/i.test(value)) throw new Error("Choose an ink color, such as blue or #7b5cff.");
+      const before = documentRef.current;
       if (typeof args.id === "string") {
         const object = documentRef.current.objects.find((entry) => entry.id === args.id);
         if (!object) throw new Error("Select the object you want to recolor.");
         await commit(editBoard(documentRef.current, { upsert: [{ ...object, color: value }] }));
       }
-      setColor(value); return `Ink color is ${value}.`;
+      setColor(value); return receipt(`Ink color is ${value}.`, before);
     }
     if (operation === "width") {
       const value = Number(args.width ?? args.value); if (!Number.isFinite(value) || value < 1 || value > 48) throw new Error("Use a stroke width from 1 to 48.");
@@ -289,26 +311,12 @@ export function Board({ embedded = false, active = true, conversationId: explici
       const updated = objectFromArgs({ ...patch, id: existing.id, source: existing.source }, existing.source, existing);
       next = editBoard(next, { upsert: [updated] });
     } else throw new Error(`Unknown whiteboard operation: ${operation}`);
-    const changed = next !== documentRef.current; await commit(next);
-    return changed ? `Board ${operation} saved.` : `Nothing to ${operation}.`;
+    const before = documentRef.current, changed = next !== before; await commit(next);
+    return receipt(changed ? `Board ${operation} saved.` : `Nothing to ${operation}.`, before, next);
   });
   useEffect(() => {
     if (!sketch || !loaded || blocked.current) return;
-    const key = sketchKey(sketch), current = documentRef.current;
-    if (current.appliedSketches.includes(key)) return;
-    const startY = current.objects.length ? Math.max(...current.objects.map((object) => { const box = boardObjectBounds(object); return box.y + box.height; })) + 60 : 45;
-    const shapes: BoardObject[] = (sketch.shapes || []).map((shape, i) => {
-      const kind = shape.type === "label" ? (equation(shape.text) ? "equation" : "text") : shape.type;
-      return objectFromArgs({ ...shape, id: `${key}-shape-${i}`, kind, y: shape.y + startY,
-        ...(shape.type === "line" || shape.type === "arrow" ? { toY: shape.toY + startY } : {}) }, "assistant");
-    });
-    const shapeBottom = shapes.length ? Math.max(...shapes.map((object) => { const box = boardObjectBounds(object); return box.y + box.height; })) + 35 : startY + 60;
-    const objects = [objectFromArgs({ id: `${key}-title`, kind: "text", text: sketch.title, x: 55, y: startY, fontSize: 30 }, "assistant"), ...shapes,
-      ...sketch.lines.map((text, i) => objectFromArgs({ id: `${key}-line-${i}`, kind: equation(text) ? "equation" : "text", text, x: 60, y: shapeBottom + i * 64 }, "assistant"))];
-    try {
-      const next = editBoard(current, { upsert: objects, title: sketch.title });
-      next.appliedSketches = [...next.appliedSketches, key].slice(-100); tryCommit(next);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    void applySketch(sketch).catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, [sketch, loaded]);
   const boardPoint = (event: { clientX: number; clientY: number }): BoardPoint => {
     const bounds = surface.current!.getBoundingClientRect();

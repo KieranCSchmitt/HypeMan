@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS, type ConversationUIPatch, type ConversationUIState } from "@core";
 import { ConversationWorkbench } from "../apps/extension/src/ui/ConversationWorkbench";
 import { request } from "../apps/extension/src/bridge";
+import { exportWorkspace } from "../apps/extension/src/ui/hooks";
 import type { CompanionRuntime, CompanionSnapshot, RuntimeMessage } from "../apps/extension/src/runtime/types";
 
 vi.mock("../apps/extension/src/bridge", () => ({ request: vi.fn(), subscribe: () => () => {} }));
-vi.mock("../apps/extension/src/ui/hooks", () => ({ useSettings: () => ({ settings: DEFAULT_SETTINGS }) }));
+vi.mock("../apps/extension/src/ui/hooks", () => ({ useSettings: () => ({ settings: DEFAULT_SETTINGS }), exportWorkspace: vi.fn() }));
 vi.mock("../apps/extension/src/ui/ToolOverlay", () => ({ ToolOverlay: ({ section, openSections, onClose }: { section: string | null; openSections?: string[]; onClose: (section: string) => void }) =>
   (openSections || (section ? [section] : [])).map((tool) => createElement("section", { key: tool, "data-tool": tool, "data-active": section === tool }, createElement("button", { "aria-label": "Close tool", onClick: () => onClose(tool) }))) }));
 let root: Root, container: HTMLDivElement, snapshot: CompanionSnapshot, runtime: CompanionRuntime;
@@ -128,5 +129,20 @@ describe("existing-tab conversation handoff", () => {
     expect(runtime.stop).toHaveBeenCalled();
     expect(request).toHaveBeenCalledWith(expect.objectContaining({ type: "conversation.select" }));
     expect(runtime.setConversationId).toHaveBeenCalledWith(expect.any(String));
+  });
+});
+
+
+describe("local recovery on a webpage", () => {
+  it("retries a failed backup without resuming an unrelated runtime task", async () => {
+    runtime.retry = vi.fn();
+    vi.mocked(exportWorkspace).mockRejectedValueOnce(new Error("Backup temporarily unavailable")).mockResolvedValueOnce(undefined);
+    await render();
+    await act(async () => { const field = container.querySelector("textarea")!; Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "export workspace"); field.dispatchEvent(new Event("input", { bubbles: true })); });
+    await act(async () => container.querySelector("form.conversation-composer")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(container.textContent).toContain("Backup temporarily unavailable");
+    await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Retry")!.click());
+    expect(exportWorkspace).toHaveBeenCalledTimes(2);
+    expect(runtime.retry).not.toHaveBeenCalled(); expect(runtime.send).not.toHaveBeenCalled();
   });
 });

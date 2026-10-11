@@ -776,7 +776,7 @@ describe("task runtime", () => {
     expect((decision.input as AgentRequest).conversationId).toBe("handoff-chat");
     controller.dispose();
   });
-  it("captures source excerpts from the page rather than fabricated model quotes or personal thoughts", async () => {
+  it("rejects fabricated source quotes while preserving personal notes with real page context", async () => {
     document.body.innerHTML =
       "<h1>Pottery Basics</h1><p>Beginner workshop. Materials included. $60 total.</p>";
     const b = bridge(async () => ({
@@ -791,15 +791,17 @@ describe("task runtime", () => {
     const controller = createCompanion(host(), b.api);
     await controller.start();
     await controller.send("Save the workshop source");
+    expect(b.request.mock.calls.filter(([message]) => message.type === "note.save")).toHaveLength(0);
+    expect(controller.getSnapshot().messages.at(-1)?.text).toContain("quote is not on this page");
     await controller.pinSelection("My personal thought: choose this one");
     const notes = b.request.mock.calls
       .filter(([message]) => message.type === "note.save")
       .map(([message]) => message.note as { text: string; excerpt: string });
-    expect(notes).toHaveLength(2);
+    expect(notes).toHaveLength(1);
     expect(notes.every((note) => note.excerpt.includes("$60 total."))).toBe(true);
     expect(notes[0].excerpt).not.toContain("guaranteed free");
-    expect(notes[1].excerpt).not.toContain("My personal thought");
-    expect(notes[1].text).toContain("My personal thought");
+    expect(notes[0].excerpt).not.toContain("My personal thought");
+    expect(notes[0].text).toContain("My personal thought");
     controller.dispose();
   });
   it("does not analyze or act while a host is paused, and applies motion settings live", async () => {

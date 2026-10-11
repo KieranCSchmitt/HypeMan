@@ -1,14 +1,14 @@
 export const TOOL_OPERATIONS = {
   board: ["open", "add", "update", "undo", "redo", "clear", "color", "width", "mode", "erase", "check", "export"],
   documents: ["open", "show", "analyze", "summarize", "page", "remove", "explain", "inspect", "read", "cancel", "export", "download"],
-  notes: ["open", "find", "save", "delete", "undo"],
+  notes: ["open", "find", "save", "delete", "undo", "export"],
   projects: ["open", "filter", "pause", "resume", "cancel", "done"],
   activity: ["open"],
   settings: ["open", "set", "pause-site", "resume-site", "permissions"],
   video: ["open", "summarize", "ask", "captions", "remove-captions", "seek", "play", "pause", "speed", "save"],
-  phone: ["open", "status", "pair", "unpair", "send", "test", "settings", "inbox", "continue", "dismiss", "reminders", "snooze", "cancel", "remind"],
+  phone: ["open", "status", "pair", "unpair", "send", "test", "settings", "inbox", "continue", "dismiss", "reminders", "snooze", "cancel", "remind", "pause", "resume", "skip"],
   connection: ["open", "status", "login", "cancel", "logout", "account", "model", "reconnect", "usage"],
-  learning: ["open", "plan", "hint", "teach", "check", "clear"],
+  learning: ["open", "plan", "hint", "teach", "check", "clear", "continue", "resume", "attempt"],
 } as const;
 export type CompanionTool = keyof typeof TOOL_OPERATIONS;
 export interface ToolAction { type: "tool"; tool: CompanionTool; operation: string; args?: Record<string, unknown> }

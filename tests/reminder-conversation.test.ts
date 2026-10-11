@@ -50,11 +50,17 @@ describe("reminder clarification", () => {
     expect(reminderWallTime("2026-03-08", 2, 30, spring.timezone)).toEqual([]);
     expect(reminderWallTime("2026-11-01", 1, 30, spring.timezone)).toEqual([Date.parse("2026-11-01T05:30:00Z"), Date.parse("2026-11-01T06:30:00Z")]);
   });
-  it("does not silently convert recurring requests into one-time reminders", () => {
-    expect(parse("remind me to stretch at 9 AM every day")).toMatchObject({ question: expect.stringContaining("one-time") });
-    const draft = pending("remind me to stretch at 9 AM every day");
-    expect(parse("AM", draft)).toMatchObject({ question: expect.stringContaining("one-time") });
-    expect(parse("tomorrow", draft)).toMatchObject({ dueAt: Date.parse("2026-10-12T13:00:00Z") });
+  it("retains daily recurrence through terse time clarification and chooses the first eligible weekday", () => {
+    const draft = pending("remind me to stretch at 9 every day");
+    expect(parse("AM", draft)).toMatchObject({ dueAt: Date.parse("2026-10-11T13:00:00Z"), draft: { text: "stretch", recurrence: { frequency: "daily", timezone: clock.timezone, hour: 9, minute: 0, interval: 1 } } });
+    expect(parse("remind me to stretch at 9 AM every weekday")).toMatchObject({ dueAt: Date.parse("2026-10-12T13:00:00Z"), draft: { recurrence: { frequency: "weekly", weekdays: [1, 2, 3, 4, 5] } } });
+    expect(parse("remind me to stretch at 9 AM every Tuesday and Thursday")).toMatchObject({ dueAt: Date.parse("2026-10-13T13:00:00Z"), draft: { recurrence: { weekdays: [2, 4] } } });
+  });
+  it("leaves compound tool requests to the planner", () => {
+    expect(parse("remind me to practice at 9 AM and save my notes")).toEqual({ kind: "unrelated" });
+    expect(parse("remind me to practice at 9 AM, then draw an example")).toEqual({ kind: "unrelated" });
+    expect(parse("remind me to practice at 9 AM every day except Monday")).toEqual({ kind: "unrelated" });
+    expect(parse("remind me to practice at 9 AM every weekday until October 30")).toEqual({ kind: "unrelated" });
   });
   it("keeps an unresolved timezone pending until the user supplies a valid one", () => {
     const draft = pending("remind me to study at 9 AM US/Estern");

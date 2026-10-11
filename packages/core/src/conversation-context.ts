@@ -58,10 +58,11 @@ export function contextScope(input: ContextInput): NonNullable<AgentRequest["con
 /** A visible page or an open tool is background context, never the user's implicit topic. */
 export function focusAgentContext(input: AgentRequest): AgentRequest {
   const scope = contextScope(input);
+  const continuation = input.surface === "conversation" && !input.task && input.history.length > 0 && input.history.every(entry => ["tool", "sketch", "plan", "note", "say", "ask"].includes(entry.action.type));
   if (scope !== "conversation" && !(scope === "selection" && input.toolContext?.selected?.kind !== "page")) return { ...input, contextScope: scope, mode: input.mode === "learn" && /\b(?:hint|practice|teach|learn(?:ing)?|wrong|incorrect|my answer|check my work)\b|\bexplain.*(?:equation|question|problem)\b/i.test(input.message) ? "learn" : "browse" };
   const { screenshot, sources, toolContext, ...rest } = input;
   return {
-    ...rest, goal: input.message.slice(0, 2000), contextScope: scope, task: null, history: [], mode: "browse",
+    ...rest, goal: continuation ? input.goal : input.message.slice(0, 2000), contextScope: scope, task: null, history: continuation ? input.history : [], mode: "browse",
     page: { ...input.page, title: "", text: "", headings: [], selection: "", elements: [], errors: [], successes: [], video: undefined,
       frames: { count: 0, inaccessible: 0 } },
     // Images explicitly attached by a user retain meaning even in a standalone question.

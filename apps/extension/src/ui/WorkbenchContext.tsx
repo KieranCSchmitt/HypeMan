@@ -2,15 +2,19 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { parseToolAction, type SelectedContent } from "@core";
 import { request } from "../bridge";
 import { isOverlaySection } from "./overlay-sections";
+import type { RuntimeToolResult } from "../runtime/types";
 
-export type ToolHandler = (operation: string, args: Record<string, unknown>) => Promise<string | void> | string | void;
+export type ToolResult = string | void | RuntimeToolResult;
+export const toolResultMessage = (result: ToolResult): string => typeof result === "string" ? result : result?.message || "";
+
+export type ToolHandler = (operation: string, args: Record<string, unknown>) => Promise<ToolResult> | ToolResult;
 export interface WorkbenchState {
   conversationId: string;
   selected: SelectedContent | null;
   selectContent: (content: SelectedContent | null) => void;
   openTool: (tool: string | null) => void;
   send: (message: string) => Promise<void>;
-  executeTool: (tool: string, operation: string, args?: Record<string, unknown>) => Promise<string | void>;
+  executeTool: (tool: string, operation: string, args?: Record<string, unknown>) => Promise<ToolResult>;
   register: (tool: string, handler: ToolHandler) => () => void;
 }
 const noop = () => {};
@@ -26,7 +30,7 @@ export function useToolHandler(tool: string | null, handler: ToolHandler) {
 
 /** Only the extension frame named by this channel can complete a privileged operation. */
 export async function invokeFrameTool(frame: HTMLIFrameElement, tool: string, operation: string,
-  args: Record<string, unknown> = {}, conversationId = "default", suppliedToken?: string): Promise<string | void> {
+  args: Record<string, unknown> = {}, conversationId = "default", suppliedToken?: string): Promise<ToolResult> {
   const url = new URL(frame.src), channel = url.searchParams.get("channel");
   if (!channel || url.origin !== chrome.runtime.getURL("").replace(/\/$/, "")) return Promise.reject(new Error("Invalid tool frame."));
   return new Promise((resolve, reject) => {
@@ -44,7 +48,7 @@ export async function invokeFrameTool(frame: HTMLIFrameElement, tool: string, op
       settled = true;
       cleanup(); event.data.error ? reject(new Error(event.data.error)) : resolve(event.data.result);
     };
-    const timer = setTimeout(() => { settled = true; cleanup(); reject(new Error("Tool took too long. Try again.")); }, 95000);
+    const timer = setTimeout(() => { settled = true; if (token) frame.contentWindow?.postMessage({ type: "hypeman.tool-cancel", requestId, channel, conversationId, tool, token }, url.origin); cleanup(); reject(new Error("Tool took too long. Try again.")); }, 95000);
     window.addEventListener("message", receive);
     window.addEventListener("hypeman.cancel-tools", cancel);
     void (async () => {
