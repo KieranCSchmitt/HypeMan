@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { learningEstimate, type AgentReply, type Health, type LearningGraph, type LearningPlan, type Settings, type SourceNote } from "@core";
 import { request } from "../bridge";
-import { Empty, NoteCard, Notice, TaskCard, Toggle } from "./common";
+import { Empty, NoteCard, Notice, TaskCard, Toggle, ToolButton } from "./common";
 import { exportWorkspace, host, message, relativeTime, setScreenshotAccess, useSettings, useWorkspace } from "./hooks";
 import { useToolHandler, useWorkbench } from "./WorkbenchContext";
 import { ChatGPTConnection } from "./ChatGPTConnection";
@@ -20,11 +20,12 @@ export function CompanionTools({ section, onError, embedded = false }: { section
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [notice, setNotice] = useState("");
+  const [creating, setCreating] = useState(false), [newText, setNewText] = useState("");
   const [permission, setPermission] = useState<"capture" | "input" | null>(null);
   const removed = useRef<SourceNote | null>(null);
   const extensionPage = location.protocol === "chrome-extension:";
   const fail = (cause: unknown) => { const value = message(cause); setNotice(value); onError?.(value); };
-  const edit = (changes: Partial<Settings>) => void patch(changes).then(() => setNotice("Preferences saved.")).catch(fail);
+  const edit = (changes: Partial<Settings>) => void patch(changes).then(() => setNotice("")).catch(fail);
   const resolveId = (args: Record<string, unknown>, kind: string) => typeof args.id === "string" ? args.id : workbench.selected?.kind === kind ? workbench.selected.id : "";
   useToolHandler(section === "tasks" ? "projects" : null, async (operation, args) => {
     if (operation === "open") return "Select a project and ask to continue, pause, cancel, or text it.";
@@ -87,22 +88,32 @@ export function CompanionTools({ section, onError, embedded = false }: { section
       setPermission(null); setNotice("Access enabled.");
     } catch (cause) { fail(cause); }
   };
+  const removeNote = async (note: SourceNote) => { await request({ type: "note.remove", id: note.id }); removed.current = note; await refresh(); setNotice("Deleted"); };
+  const create = async () => {
+    if (!newText.trim()) return;
+    try {
+      if (section === "tasks") await workbench.send(newText.trim());
+      else await request({ type: "note.save", note: { text: newText.trim(), title: "Note", excerpt: "", url: "", origin: { kind: "conversation", conversationId: workbench.conversationId } } });
+      setNewText(""); setCreating(false); await refresh();
+    } catch (cause) { fail(cause); }
+  };
   return <section className={`inline-toolbox inline-toolbox-${section} ${embedded ? "embedded" : ""}`} aria-label={companionSections.find((item) => item.section === section)?.label}><div className="inline-tool-body">
     <Notice tone="error">{error || settingsError}</Notice><Notice>{notice}</Notice>{loading && <p role="status">Loading…</p>}
-    {section === "tasks" && <><p>Ask to filter, continue, pause, or cancel a project. Select a project to make “this” refer to it.</p><div className="inline-tool-list">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} task={task} refresh={refresh} />) : <Empty title="No projects">Describe a goal in the conversation.</Empty>}</div></>}
-    {section === "notes" && <><p>{search ? `Notes matching “${search}”` : "Edit notes directly. Ask to find, save, delete, or text a note."}</p><div className="inline-tool-list">{notes.length ? notes.map((note) => <NoteCard key={note.id} note={note} refresh={refresh} />) : <Empty title="No notes yet">Select text or an explanation and ask to save it.</Empty>}</div></>}
+    {section === "tasks" && <><div className="tool-toolbar"><div className="tool-tabs" role="tablist" aria-label="Project status">{[["all", "All"], ["unfinished", "Active"], ["completed", "Done"]].map(([value, label]) => <button key={value} type="button" role="tab" aria-selected={filter === value} onClick={() => setFilter(value!)}>{label}</button>)}</div><ToolButton icon="plus" label="New project" onClick={() => setCreating(!creating)} /></div><div className="inline-tool-list tool-content">{tasks.length ? tasks.map((task) => <TaskCard key={task.id} task={task} refresh={refresh} />) : <Empty title="No projects" />}</div></>}
+    {section === "notes" && <><div className="tool-toolbar"><input type="search" className="tool-search" aria-label="Find a note" placeholder="Find a note…" value={search} onChange={(event) => setSearch(event.target.value)} /><ToolButton icon="plus" label="New note" onClick={() => setCreating(!creating)} />{removed.current && <ToolButton icon="undo" label="Restore deleted note" onClick={() => void workbench.executeTool("notes", "undo").then(() => setNotice("")).catch(fail)} />}</div><div className="inline-tool-list tool-content">{notes.length ? notes.map((note) => <NoteCard key={note.id} note={note} refresh={refresh} onDelete={removeNote} />) : <Empty title={search ? "No matches" : "No notes yet"} />}</div></>}
+    {creating && ["tasks", "notes"].includes(section) && <form className="tool-form" onSubmit={(event) => { event.preventDefault(); void create(); }}><textarea aria-label={section === "tasks" ? "Project goal" : "New note"} placeholder={section === "tasks" ? "Project goal…" : "New note…"} value={newText} onChange={(event) => setNewText(event.target.value)} autoFocus rows={2} /><div className="tool-actions"><button className="button primary" type="submit" disabled={!newText.trim()}>{section === "tasks" ? "Start" : "Save"}</button><button className="button" type="button" onClick={() => setCreating(false)}>Cancel</button></div></form>}
     {section === "activity" && <div className="inline-action-list">{outcomes.length ? outcomes.map((event) => <article key={event.id} className="inline-action" tabIndex={0} onFocus={() => workbench.selectContent({ kind: "action", id: event.id, text: event.summary, url: event.url })}><p>{event.ok ? "✓" : "!"} {event.summary}</p><details><summary>{relativeTime(event.at)} · details</summary><p>{event.action.replaceAll("_", " ")}</p>{event.url && <a href={event.url} target="_blank" rel="noreferrer">{host(event.url)} ↗</a>}</details></article>) : <Empty title="No actions yet">Completed actions and their evidence appear here.</Empty>}</div>}
     {section === "settings" && <>
-      <p>Preferences save as you edit. Ask to connect your phone, manage accounts, or export your workspace.</p>
-      <Toggle label="Page screenshots" description="Chrome asks before granting capture access." checked={settings.screenshotEnabled} onChange={(value) => value ? setPermission("capture") : edit({ screenshotEnabled: false })} />
-      <Toggle label="Other tab context" description="Share other tab titles and links." checked={settings.tabContextEnabled} onChange={(value) => edit({ tabContextEnabled: value })} />
-      <Toggle label="Trusted browser actions" description="Chrome asks before enabling browser input." checked={settings.trustedInput} onChange={(value) => value ? setPermission("input") : edit({ trustedInput: false })} />
-      <Toggle label="Automatic assistance" description="Explain selections and offer contextual help." checked={settings.proactiveEnabled} onChange={(value) => edit({ proactiveEnabled: value })} />
-      <Toggle label="Learning mode" description="Keep practice evidence on this device." checked={settings.learningEnabled} onChange={(value) => edit({ learningEnabled: value })} />
+      <Toggle label="Screenshots" description="Chrome asks before granting capture access." checked={settings.screenshotEnabled} onChange={(value) => value ? setPermission("capture") : edit({ screenshotEnabled: false })} />
+      <Toggle label="Other tabs" description="Share other tab titles and links." checked={settings.tabContextEnabled} onChange={(value) => edit({ tabContextEnabled: value })} />
+      <Toggle label="Browser actions" description="Chrome asks before enabling browser input." checked={settings.trustedInput} onChange={(value) => value ? setPermission("input") : edit({ trustedInput: false })} />
+      <Toggle label="Automatic help" description="Explain selections and offer contextual help." checked={settings.proactiveEnabled} onChange={(value) => edit({ proactiveEnabled: value })} />
+      <Toggle label="Learning" description="Keep practice evidence on this device." checked={settings.learningEnabled} onChange={(value) => edit({ learningEnabled: value })} />
       <label className="field">Motion<select aria-label="Motion" value={settings.reducedMotion} onChange={(event) => edit({ reducedMotion: event.target.value as Settings["reducedMotion"] })}><option value="auto">System preference</option><option value="on">Reduced motion</option><option value="off">Full animation</option></select></label>
-      <label className="field">Video companion<select aria-label="Video companion" value={settings.videoCompanion} onChange={(event) => edit({ videoCompanion: event.target.value as Settings["videoCompanion"] })}><option value="ask">When requested</option><option value="on">Available automatically</option><option value="off">Hidden</option></select></label>
-      {permission && <div className="confirmation" role="group" aria-label="Browser permission"><p>Allow {permission === "capture" ? "page screenshots" : "trusted browser input"}?</p><button data-essential="permission" className="button" onClick={() => void grant()}>Allow access</button><button data-essential="permission" className="button" onClick={() => setPermission(null)}>Decline</button></div>}
-      {!!settings.hiddenOnHosts.length && <details><summary>Paused sites</summary>{settings.hiddenOnHosts.map((hostname) => <p key={hostname}>{hostname} · ask to resume this site</p>)}</details>}
+      <label className="field">Video<select aria-label="Video companion" value={settings.videoCompanion} onChange={(event) => edit({ videoCompanion: event.target.value as Settings["videoCompanion"] })}><option value="ask">On request</option><option value="on">Automatic</option><option value="off">Off</option></select></label>
+      <div className="tool-toolbar"><button className="button" onClick={() => exportWorkspace(workspace)}>Export</button><button className="button" onClick={() => workbench.openTool("connection")}>Account</button><button className="button" onClick={() => workbench.openTool("phone")}>Phone</button></div>
+      {permission && <div className="confirmation" role="group" aria-label="Browser permission"><p>Allow {permission === "capture" ? "screenshots" : "browser actions"}?</p><button data-essential="permission" className="button" onClick={() => void grant()}>Allow</button><button data-essential="permission" className="button" onClick={() => setPermission(null)}>Cancel</button></div>}
+      {!!settings.hiddenOnHosts.length && <details><summary>Paused sites</summary>{settings.hiddenOnHosts.map((hostname) => <div className="tool-actions" key={hostname}><span>{hostname}</span><ToolButton icon="play" label={`Resume on ${hostname}`} onClick={() => edit({ hiddenOnHosts: settings.hiddenOnHosts.filter((value) => value !== hostname) })} /></div>)}</details>}
     </>}
     {section === "learning" && <LearningCollection />}
   </div></section>;
@@ -112,6 +123,9 @@ function LearningCollection() {
   const workbench = useWorkbench();
   const [graph, setGraph] = useState<LearningGraph | null>(null);
   const [error, setError] = useState("");
+  const [tab, setTab] = useState<"plan" | "review">("plan"), [goal, setGoal] = useState("");
+  const [checking, setChecking] = useState(false), [explanation, setExplanation] = useState("");
+  const [busy, setBusy] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const refresh = async (signal?: AbortSignal) => {
     const next = await request<LearningGraph>({ type: "graph.get" }, signal);
@@ -153,5 +167,16 @@ function LearningCollection() {
       throw new Error("That learning action is unavailable.");
     } finally { if (abort.current === controller) abort.current = null; }
   });
-  return <div className="inline-learning"><Notice tone="error">{error}</Notice><p>Ask for a plan, a hint, or feedback. Evidence comes from practice, not page visits.</p>{graph?.plans.map((plan) => <article key={plan.id}><h3>{plan.goal}</h3><ol>{plan.steps.map((step, index) => <li key={index}>{step.done ? "✓ " : ""}{step.title}</li>)}</ol></article>)}{graph?.nodes.length ? graph.nodes.map((node) => { const estimate = learningEstimate(node); return <article key={node.id} tabIndex={0} onFocus={() => workbench.selectContent({ kind: "concept", id: node.id, title: node.label, text: node.evidence.join("\n") })} onClick={() => workbench.selectContent({ kind: "concept", id: node.id, title: node.label, text: node.evidence.join("\n") })}><h3>{node.label}</h3><p>{estimate.evidenceCount} practice observations{estimate.due ? " · due for review" : ""}</p><details><summary>Practice evidence</summary>{node.evidence.map((evidence, index) => <p key={index}>{evidence}</p>)}</details></article>; }) : <Empty title="A fresh start">Your practiced concepts will appear here.</Empty>}</div>;
+  const run = async (operation: string, args: Record<string, unknown> = {}) => {
+    setBusy(true); setError("");
+    try { await workbench.executeTool("learning", operation, args); return true; }
+    catch (cause) { setError(message(cause)); return false; } finally { setBusy(false); }
+  };
+  const send = (text: string) => void workbench.send(text).catch((cause) => setError(message(cause)));
+  return <div className="inline-learning"><Notice tone="error">{error}</Notice>
+    <div className="tool-tabs" role="tablist" aria-label="Practice views"><button type="button" role="tab" aria-selected={tab === "plan"} onClick={() => setTab("plan")}>Plan</button><button type="button" role="tab" aria-selected={tab === "review"} onClick={() => setTab("review")}>Review</button></div>
+    {tab === "plan" ? <><form className="tool-form tool-toolbar" onSubmit={(event) => { event.preventDefault(); if (goal.trim()) void run("plan", { goal: goal.trim() }).then((saved) => { if (saved) setGoal(""); }); }}><input aria-label="Practice goal" placeholder="Learn about…" value={goal} onChange={(event) => setGoal(event.target.value)} /><button className="button primary" type="submit" disabled={busy || !goal.trim()}>Plan</button></form><div className="tool-content">{graph?.plans.length ? graph.plans.map((plan) => <article key={plan.id}><h3>{plan.goal}</h3><ol>{plan.steps.map((step, index) => <li key={index}>{step.done ? "✓ " : "○ "}{step.title}</li>)}</ol></article>) : <Empty title="No plans yet" />}</div></> : <div className="tool-content">{graph?.nodes.length ? graph.nodes.map((node) => { const estimate = learningEstimate(node); const select = () => workbench.selectContent({ kind: "concept", id: node.id, title: node.label, text: node.evidence.join("\n") }); return <article key={node.id} tabIndex={0} onFocus={select} onClick={select} data-selected={workbench.selected?.id === node.id}><div className="tool-actions"><h3>{node.label}</h3>{estimate.due && <span className="status-pill">Due</span>}</div><small>{estimate.evidenceCount} practices</small><details><summary>Evidence</summary>{node.evidence.map((evidence, index) => <p key={index}>{evidence}</p>)}</details></article>; }) : <Empty title="No practice yet" />}</div>}
+    <div className="tool-toolbar"><ToolButton icon="hint" label="Get a hint" onClick={() => send("Give me a hint")} /><button className="button" type="button" onClick={() => setChecking(!checking)}>Check</button>{!!graph?.nodes.length && <ToolButton icon="trash" label="Clear practice history" disabled={busy} onClick={() => void run("clear")} />}</div>
+    {checking && <form className="tool-form" onSubmit={(event) => { event.preventDefault(); if (explanation.trim()) { send(`Check my explanation: ${explanation.trim()}`); setChecking(false); setExplanation(""); } }}><textarea aria-label="Your explanation" placeholder="Explain it in your words…" rows={3} value={explanation} onChange={(event) => setExplanation(event.target.value)} autoFocus /><button className="button primary" type="submit" disabled={!explanation.trim()}>Check</button></form>}
+  </div>;
 }

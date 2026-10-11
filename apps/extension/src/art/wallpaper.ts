@@ -7,7 +7,7 @@ import { Surface, clearTextCache, dissolve } from "../../../../scripts/art/scene
 import { DayClock, PHASES, THEMES, type Phase } from "../../../../scripts/art/scene/timeOfDay";
 
 export type WallpaperAction = "sky" | "clock" | "graffiti" | "crt" | "pigeons" | "hypeman" | "boombox";
-export type WallpaperActivity = "idle" | "thinking" | "celebrate" | "confused";
+export type WallpaperActivity = keyof typeof atlas.animations;
 export const WALLPAPER_ACTIONS: { id: WallpaperAction; label: string; rect: Rect }[] = [
   { id: "sky", label: "Launch an airship", rect: { x: 128, y: 0, w: 352, h: 92 } },
   { id: "clock", label: "Change time of day", rect: { ...LAYOUT.jumbotron, h: 40 } },
@@ -34,7 +34,6 @@ export class Wallpaper {
   private readonly clock = new DayClock();
   private readonly bubbles = new AmbientBubbles(SCENE_W, SCENE_H, 7);
   private readonly effects = new Effects();
-  private readonly motion = matchMedia("(prefers-reduced-motion: reduce)");
   private readonly observer: ResizeObserver;
   private readonly world: World = {
     t: 0, now: new Date(), glow: 0, avatarState: "idle",
@@ -48,7 +47,6 @@ export class Wallpaper {
   private raf = 0;
   private timer: ReturnType<typeof setInterval>;
   private lastFrame = 0;
-  private lastInput = 0;
   private lastNote = 0;
   private lastZed = 0;
   private width = 1;
@@ -67,6 +65,8 @@ export class Wallpaper {
   private animationAt = 0;
   private oneShot: "greet" | "hype" | "celebrate" | null = null;
   private activity: WallpaperActivity = "idle";
+  private activityKey = 0;
+  private completedActivity: WallpaperActivity | null = null;
   private blimpAt: number | null = -13_000;
   private nextBlimp = 80_000;
   private phase: Phase = "day";
@@ -79,27 +79,25 @@ export class Wallpaper {
     this.observer = new ResizeObserver(this.resize);
     this.observer.observe(canvas);
     document.addEventListener("visibilitychange", this.visibility);
-    this.motion.addEventListener("change", this.motionChanged);
     document.fonts.addEventListener("loadingdone", this.fontsChanged);
     void document.fonts.ready.then(() => { if (!this.disposed) this.fontsChanged(); });
     this.resize();
     this.timer = setInterval(() => { if (!document.hidden && this.still) this.draw(); }, 30_000);
     this.resume();
   }
-  get still(): boolean { return this.reduced || this.motion.matches; }
+  get still(): boolean { return this.reduced; }
   get dancing(): boolean { return this.world.boombox.playing; }
   get timeOfDay(): Phase { return this.clock.blend().to; }
   setReducedMotion(reduced: boolean): void { this.reduced = reduced; this.motionChanged(); }
-  setActivity(activity: WallpaperActivity): void {
-    if (activity === this.activity) return;
+  setActivity(activity: WallpaperActivity, animationKey = 0): void {
+    if (activity === this.activity && animationKey === this.activityKey) return;
     this.activity = activity;
-    this.lastInput = this.world.t;
-    this.oneShot = activity === "celebrate" ? "celebrate" : null;
-    if (this.oneShot) {
-      this.animationAt = this.world.t;
-      this.state = this.oneShot;
-      if (!this.still) this.effects.burst(this.x, 221, this.world.t, 10);
-    }
+    this.activityKey = animationKey;
+    this.completedActivity = null;
+    this.oneShot = null;
+    this.animationAt = this.world.t;
+    this.state = activity;
+    if ((activity === "celebrate" || activity === "hype") && !this.still) this.effects.burst(this.x, 221, this.world.t, 10);
     this.draw();
   }
   destroy(): void {
@@ -108,7 +106,6 @@ export class Wallpaper {
     clearInterval(this.timer);
     this.observer.disconnect();
     document.removeEventListener("visibilitychange", this.visibility);
-    this.motion.removeEventListener("change", this.motionChanged);
     document.fonts.removeEventListener("loadingdone", this.fontsChanged);
     this.sprite.onload = null;
     this.effects.clear();
@@ -155,7 +152,7 @@ export class Wallpaper {
       this.parallax.y += (this.pointer.y - this.parallax.y) * ease;
       this.bubbles.update(dt, this.world.t);
       if (this.world.boombox.playing && this.world.t - this.lastNote > 800) { this.effects.note(438, 231, this.world.t); this.lastNote = this.world.t; }
-      if (this.activity === "idle" && this.world.t - this.lastInput > 120_000 && this.world.t - this.lastZed > 2000) { this.effects.zed(this.x + 12, 207, this.world.t); this.lastZed = this.world.t; }
+      if ((this.activity === "sleepy" || this.activity === "afk") && this.world.t - this.lastZed > 2000) { this.effects.zed(this.x + 12, 207, this.world.t); this.lastZed = this.world.t; }
       this.draw();
     }
     this.raf = requestAnimationFrame(this.frame);
@@ -182,13 +179,11 @@ export class Wallpaper {
     else if (p.y < LAYOUT.rightWall.y) this.activate("sky", p);
   }
   private walkTo(x: number): void {
-    this.lastInput = this.world.t;
     const next = Math.max(LAYOUT.walkMinX, Math.min(LAYOUT.walkMaxX, x));
     if (this.still) { this.x = next; this.target = null; this.draw(); }
     else { this.target = next; this.oneShot = null; }
   }
   activate(action: WallpaperAction, point?: { x: number; y: number }): void {
-    this.lastInput = this.world.t;
     switch (action) {
       case "sky": {
         this.blimpAt = this.world.t - 5000; this.nextBlimp = this.world.t + 90_000;
@@ -250,13 +245,16 @@ export class Wallpaper {
   private drawAvatar(): void {
     if (!this.sprite.complete || !this.sprite.naturalWidth) return;
     const moving = this.target !== null;
-    const resting = this.activity === "thinking" || this.activity === "confused" ? this.activity : "idle";
-    const wanted: Animation = resting !== "idle" ? resting : this.oneShot ?? (moving || this.world.boombox.playing ? "walk" : this.world.t - this.lastInput > 120_000 ? "afk" : "idle");
+    const resting = this.completedActivity === this.activity ? "idle" : this.activity;
+    const wanted: Animation = resting !== "idle" ? resting : this.oneShot ?? (moving || this.world.boombox.playing ? "walk" : "idle");
     if (wanted !== this.state) { this.state = wanted; this.animationAt = this.world.t; }
     const animation = atlas.animations[this.state];
     const duration = animation.frames.reduce((sum, f) => sum + f.duration, 0);
     let age = this.still ? 0 : this.world.t - this.animationAt;
-    if (!animation.loop && age >= duration) { this.oneShot = null; this.state = "idle"; this.animationAt = this.world.t; age = 0; }
+    if (!animation.loop && age >= duration) {
+      if (this.state === this.activity) this.completedActivity = this.activity;
+      this.oneShot = null; this.state = "idle"; this.animationAt = this.world.t; age = 0;
+    }
     const frames = atlas.animations[this.state].frames;
     age %= frames.reduce((sum, f) => sum + f.duration, 0);
     let frame = frames[0];

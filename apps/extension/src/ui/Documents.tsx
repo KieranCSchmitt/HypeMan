@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { DocumentMetadata } from "../../../../packages/core/src/documents";
 import { request } from "../bridge";
 import { useToolHandler, useWorkbench, invokeFrameTool } from "./WorkbenchContext";
+import { uploadDocument } from "./document-client";
+import { ToolButton } from "./common";
 
 /** The privileged PDF reader stays in an extension frame on both webpages and the rooftop. */
 export function Documents({ conversationId: supplied, active = true }: { conversationId?: string; active?: boolean } = {}) {
@@ -11,6 +13,8 @@ export function Documents({ conversationId: supplied, active = true }: { convers
   const [current, setCurrent] = useState<string>("");
   const [error, setError] = useState("");
   const frame = useRef<HTMLIFrameElement>(null);
+  const picker = useRef<HTMLInputElement>(null), uploadAbort = useRef<AbortController | null>(null);
+  const [uploading, setUploading] = useState(false);
   const channel = useRef(crypto.randomUUID()).current;
   const linkedDocument = useRef((() => {
     const query = new URLSearchParams(location.search);
@@ -97,11 +101,13 @@ export function Documents({ conversationId: supplied, active = true }: { convers
     return () => window.removeEventListener("message", receive);
   }, [channel, conversationId, current, documents, workbench.selectContent]);
   useEffect(() => () => {
+    uploadAbort.current?.abort();
     for (const list of waiting.current.values()) for (const pending of list) pending.reject(new Error("The document screen closed."));
     waiting.current.clear();
   }, []);
   useEffect(() => {
     const cancel = () => {
+      uploadAbort.current?.abort();
       cancellation.current++;
       for (const list of waiting.current.values()) for (const pending of list) pending.reject(new DOMException("Cancelled", "AbortError"));
       waiting.current.clear();
@@ -145,15 +151,23 @@ export function Documents({ conversationId: supplied, active = true }: { convers
     return invokeFrameTool(frame.current, "documents", operation, args, conversationId, token);
   });
   const parentOrigin = location.origin;
-  return <div className="documents-tool" hidden={!active} style={{ height: "100%", minHeight: 420, display: active ? "flex" : "none", flexDirection: "column" }}>
-    {documents.length > 1 && <div className="document-collection" aria-label="PDFs in this conversation">
-      {documents.map((document) => <a key={document.id} href={`#document-${document.id}`} aria-current={current === document.id ? "page" : undefined}
-        onClick={(event) => { event.preventDefault(); ready.current = ""; setCurrent(document.id); workbench.selectContent({ kind: "pdf", id: document.id, artifactId: document.id, title: document.name }); }}>{document.name}</a>)}
-    </div>}
+  const choose = (id: string) => { const document = documents.find((item) => item.id === id); if (!document) return; ready.current = ""; setCurrent(id); workbench.selectContent({ kind: "pdf", id, artifactId: id, title: document.name }); };
+  const upload = async (file?: File) => {
+    if (!file) return;
+    const controller = new AbortController(); uploadAbort.current?.abort(); uploadAbort.current = controller; setUploading(true); setError("");
+    try { await uploadDocument(file, conversationId, controller.signal); }
+    catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { if (uploadAbort.current === controller) setUploading(false); }
+  };
+  const action = (operation: string) => void workbench.executeTool("documents", operation, { documentId: current }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+  return <div className="documents-tool" hidden={!active} style={{ height: "100%", minHeight: 0, display: active ? "flex" : "none", flexDirection: "column" }}
+    onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); void upload(event.dataTransfer.files[0]); }}>
+    <div className="document-toolbar tool-toolbar"><select aria-label="PDFs in this conversation" value={current} disabled={!documents.length} onChange={(event) => choose(event.target.value)}>{!documents.length && <option value="">Documents</option>}{documents.map((document) => <option key={document.id} value={document.id}>{document.name}</option>)}</select><ToolButton icon="folder" label="Add PDF" disabled={uploading} onClick={() => picker.current?.click()} /><ToolButton icon="download" label="Download PDF" disabled={!current} onClick={() => action("export")} /><ToolButton icon="trash" label="Remove PDF" disabled={!current} onClick={() => action("remove")} /><input ref={picker} type="file" accept="application/pdf,.pdf" aria-label="Choose PDF" hidden onChange={(event) => { void upload(event.target.files?.[0]); event.target.value = ""; }} /></div>
+    {uploading && <small className="tool-status" role="status">Uploading…</small>}
     {error && <p role="alert">{error}</p>}
-    {current ? <iframe ref={frame} title="PDF document" key={`${conversationId}:${current}`} style={{ flex: 1, width: "100%", minHeight: 420, border: 0 }}
+    {current ? <iframe ref={frame} title="PDF document" key={`${conversationId}:${current}`} style={{ flex: 1, width: "100%", minHeight: 0, border: 0 }}
       onLoad={() => { void authorizeFrame().catch((error) => setError(error instanceof Error ? error.message : String(error))); }}
       src={`${chrome.runtime.getURL("documents.html")}?${new URLSearchParams({ conversationId, documentId: current, channel, parentOrigin })}`} />
-      : <div className="document-empty"><p>Drop a PDF into the conversation.</p><p>Read, highlight, and ask about any page. Your document stays with this chat.</p></div>}
+      : <div className="document-empty tool-empty"><span>Drop a PDF</span><button type="button" className="button primary" onClick={() => picker.current?.click()}>Open PDF</button></div>}
   </div>;
 }

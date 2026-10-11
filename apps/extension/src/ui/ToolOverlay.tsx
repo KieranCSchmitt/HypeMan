@@ -4,7 +4,7 @@ import { Board } from "./Board";
 import { Video, type NativeVideoState } from "./Video";
 import { Documents } from "./Documents";
 import { CompanionTools, type CompanionSection } from "./CompanionTools";
-import { overlaySections, type OverlaySection } from "./overlay-sections";
+import { isOverlaySection, overlaySections, type OverlaySection } from "./overlay-sections";
 import { invokeFrameTool, useToolHandler, useWorkbench } from "./WorkbenchContext";
 import { FloatingToolWindow } from "./FloatingToolWindow";
 export function ToolOverlay({ section, openSections, onFocus, onClose, onError, onStartTask, conversationId: supplied, sketch, pageVideo, onVideoSeek, onNativeVideoCommand, onVideoCaptionsChange }: {
@@ -36,6 +36,7 @@ export function ToolOverlay({ section, openSections, onFocus, onClose, onError, 
       const [tool, frame] = entry, query = new URL(frame.src).searchParams;
       if (event.data?.channel !== query.get("channel") || event.data?.conversationId !== conversationId) return;
       if (event.data.type === "hypeman.close-overlay") onClose(tool as OverlaySection);
+      if (event.data.type === "hypeman.open-overlay" && isOverlaySection(event.data.tool)) workbench.openTool(event.data.tool);
       if (event.data.type === "hypeman.escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
       if (event.data.type === "hypeman.tool-selection") {
         const selected = event.data.selected as SelectedContent | null;
@@ -43,7 +44,7 @@ export function ToolOverlay({ section, openSections, onFocus, onClose, onError, 
       }
     };
     window.addEventListener("message", receive); return () => window.removeEventListener("message", receive);
-  }, [conversationId, onClose, workbench.selectContent]);
+  }, [conversationId, onClose, workbench.selectContent, workbench.openTool]);
   const relay = async (tool: string, operation: string, args: Record<string, unknown>) => {
     const version = cancellation.current;
     const check = () => { if (version !== cancellation.current) throw new DOMException("Cancelled", "AbortError"); };

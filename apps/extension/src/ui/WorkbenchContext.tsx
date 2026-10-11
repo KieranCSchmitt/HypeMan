@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { parseToolAction, type SelectedContent } from "@core";
 import { request } from "../bridge";
+import { isOverlaySection } from "./overlay-sections";
 
 export type ToolHandler = (operation: string, args: Record<string, unknown>) => Promise<string | void> | string | void;
 export interface WorkbenchState {
@@ -67,6 +68,11 @@ export function FrameToolProvider({ children, conversationId }: { children: Reac
     const channel = query.get("channel");
     if (channel && parent !== window) parent.postMessage({ type: "hypeman.tool-selection", channel, conversationId: id, selected: content }, "*");
   };
+  const openTool = (tool: string | null) => {
+    const channel = query.get("channel"), parentOrigin = query.get("parentOrigin");
+    if (!isOverlaySection(tool) || !channel || !parentOrigin || parent === window) return;
+    parent.postMessage({ type: "hypeman.open-overlay", tool, channel, conversationId: id }, parentOrigin);
+  };
   const register = useRef((tool: string, handler: ToolHandler) => {
     handlers.current.set(tool, handler);
     return () => { if (handlers.current.get(tool) === handler) handlers.current.delete(tool); };
@@ -93,5 +99,5 @@ export function FrameToolProvider({ children, conversationId }: { children: Reac
     };
     window.addEventListener("message", receive); return () => window.removeEventListener("message", receive);
   }, [id]);
-  return <WorkbenchContext.Provider value={{ ...fallback, conversationId: id, selected, selectContent, register, executeTool }}>{children}</WorkbenchContext.Provider>;
+  return <WorkbenchContext.Provider value={{ ...fallback, conversationId: id, selected, selectContent, openTool, register, executeTool }}>{children}</WorkbenchContext.Provider>;
 }

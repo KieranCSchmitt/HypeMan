@@ -7,6 +7,7 @@ import { readDocument } from "./document-client";
 import { useToolHandler } from "./WorkbenchContext";
 import { startLocalPdf, pdfFailureMessage } from "./pdf-loading";
 import { documentPageLink } from "./MessageContent";
+import { ToolButton } from "./common";
 
 GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("assets/pdfjs/worker.mjs");
 const parameters = new URLSearchParams(location.search);
@@ -50,6 +51,7 @@ export function DocumentReader() {
   const [status, setStatus] = useState("Opening your PDF…");
   const [analysis, setAnalysis] = useState<DocumentAnalysisReply | null>(null);
   const [width, setWidth] = useState(680);
+  const [zoom, setZoom] = useState(1);
   const [authorized, setAuthorized] = useState(false);
   const frameToken = useRef("");
   const pageHost = useRef<HTMLDivElement>(null);
@@ -155,7 +157,7 @@ export function DocumentReader() {
       const source = await pdf.getPage(page);
       if (disposed) return;
       const base = source.getViewport({ scale: 1 });
-      const viewport = source.getViewport({ scale: Math.min(width / base.width, 1600 / Math.max(base.width, base.height)) });
+      const viewport = source.getViewport({ scale: Math.min(width * zoom / base.width, 2400 / Math.max(base.width, base.height)) });
       const ratio = Math.min(devicePixelRatio || 1, 2);
       selectedCanvas.width = Math.ceil(viewport.width * ratio); selectedCanvas.height = Math.ceil(viewport.height * ratio);
       selectedCanvas.style.width = `${viewport.width}px`; selectedCanvas.style.height = `${viewport.height}px`;
@@ -172,7 +174,7 @@ export function DocumentReader() {
       if (!disposed) void extract(page).catch(() => {});
     })().catch((error) => { if (!disposed && error?.name !== "RenderingCancelledException") setError("This page could not be rendered. You can try another page."); });
     return () => { disposed = true; render?.cancel(); textLayer?.cancel(); };
-  }, [pdf, page, width]);
+  }, [pdf, page, width, zoom]);
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const selected = () => {
@@ -250,22 +252,23 @@ export function DocumentReader() {
     if (["PageDown", "ArrowRight"].includes(event.key) && page < pdf.numPages) { event.preventDefault(); show(page + 1); }
     if (["PageUp", "ArrowLeft"].includes(event.key) && page > 1) { event.preventDefault(); show(page - 1); }
   }}>
-    <header className="pdf-reader-heading"><strong>{metadata?.name || "PDF"}</strong><p role="status">{status}</p></header>
+    {(!pdf || /^(Reading|Unlocking)/.test(status)) && <p className="tool-status" role="status">{locked ? "Password required" : status}</p>}
     {error && <p className="pdf-error" role="alert">{error}</p>}
-    {locked && <form className="pdf-password" onSubmit={submitPassword}><label>This PDF is {locked === "incorrect" ? "still locked. Try its password again." : "password protected."}
+    {locked && <form className="pdf-password tool-form" onSubmit={submitPassword}><label>{locked === "incorrect" ? "Incorrect password" : "Password"}
       <input type="password" autoComplete="off" value={password} onChange={(event) => setPassword(event.target.value)} aria-label="PDF password" autoFocus required /></label>
-      <button type="submit">Unlock PDF locally</button><small>Your password is never saved or sent to the assistant.</small></form>}
+      <button type="submit" title="Unlock locally. Your password is never saved or sent.">Unlock</button></form>}
     {pdf && <><nav className="pdf-page-navigation" aria-label="PDF pages">
-      {page > 1 && <a href={`#page=${page - 1}`} onClick={(event) => { event.preventDefault(); show(page - 1); }}>← Page {page - 1}</a>}
+      <ToolButton icon="back" label="Previous page" disabled={page <= 1} onClick={() => show(page - 1)} />
       <form onSubmit={(event) => { event.preventDefault(); try { show(Number(pageInput)); setError(""); } catch (error) { setError((error as Error).message); } }}>
-        <label>Page <input type="number" min="1" max={pdf.numPages} aria-label="PDF page number" value={pageInput} onChange={(event) => setPageInput(event.target.value)} /> of {pdf.numPages}</label>
+        <label><input type="number" min="1" max={pdf.numPages} aria-label="PDF page number" value={pageInput} onChange={(event) => setPageInput(event.target.value)} /> / {pdf.numPages}</label>
       </form>
-      {page < pdf.numPages && <a href={`#page=${page + 1}`} onClick={(event) => { event.preventDefault(); show(page + 1); }}>Page {page + 1} →</a>}
+      <button type="button" className="tool-icon-button" aria-label="Next page" title="Next page" disabled={page >= pdf.numPages} onClick={() => show(page + 1)}>→</button>
+      <button type="button" className="tool-icon-button" aria-label="Zoom out" title="Zoom out" disabled={zoom <= .5} onClick={() => setZoom(Math.max(.5, zoom - .25))}>−</button><button type="button" aria-label="Reset zoom" title="Reset zoom" onClick={() => setZoom(1)}>{Math.round(zoom * 100)}%</button><ToolButton icon="plus" label="Zoom in" disabled={zoom >= 2} onClick={() => setZoom(Math.min(2, zoom + .25))} />
     </nav><div ref={pageHost} className="pdf-page-host"><div className="pdf-page" data-pdf-page={page}><canvas ref={canvas} aria-label={`PDF page ${page}`} /><div ref={layer} className="textLayer" /></div></div></>}
     {analysis && <section className="pdf-analysis" aria-label="PDF answer"><p>{analysis.text}</p>
-      <p className="pdf-coverage">{analysis.partial ? "Partial document coverage" : "Document coverage"}: pages {analysis.coveredPages.join(", ")} of {metadata?.pageCount}.</p>
+      <p className="pdf-coverage">{analysis.partial ? "Partial · " : ""}p. {analysis.coveredPages.join(", ")} / {metadata?.pageCount}</p>
       <div className="pdf-citations" aria-label="Page citations">{analysis.citations.map((citation, index) => <a key={index} href={`#page=${citation.page}`}
-        onClick={(event) => { event.preventDefault(); show(citation.page); }} title={citation.quote}>{metadata?.name}, p. {citation.page}{citation.quote && <q>{citation.quote}</q>}</a>)}</div>
+        onClick={(event) => { event.preventDefault(); show(citation.page); }} title={citation.quote}>p. {citation.page}</a>)}</div>
     </section>}
   </main>;
 }

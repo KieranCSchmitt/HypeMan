@@ -13,46 +13,70 @@ import { useSettings } from "./hooks";
 import { ScreenRegion } from "./ScreenRegion";
 import { parseCaptions } from "./Video";
 import { MessageContent } from "./MessageContent";
-import { nextWindowLayer } from "./window-layout";
+import { clampWindow } from "./window-layout";
+import { useWindowGeometry, WindowControls, WindowResizeHandles } from "./useWindowGeometry";
+import { useConversationUI } from "./useConversationUI";
+import { WindowGeometryProvider, type WindowGeometryPersistence } from "./WindowGeometryPersistence";
+import type { AvatarActivity } from "./useAvatarAnimation";
+import { useChatScroll } from "./useChatScroll";
 
 interface Message { id: string; role: "user" | "assistant" | "status"; text: string; at: number }
 const sections: Record<string, string> = { projects: "tasks", pdf: "documents" };
 const resolveSection = (tool: string | null): OverlaySection | null => {
   const value = tool && (sections[tool] || tool); return isOverlaySection(value) ? value : null;
 };
-export function ConversationWorkbench({ runtime, initialTool, onClose, onActivity }: {
+export function ConversationWorkbench({ runtime, initialTool, onClose, onActivity, onAvatarActivity, chatOpen = true, onRestoreChatOpen }: {
   runtime?: CompanionRuntime; initialTool?: string; onClose?: () => void; onActivity?: (busy: boolean) => void;
+  chatOpen?: boolean; onRestoreChatOpen?: (open: boolean, conversationId: string) => boolean;
+  onAvatarActivity?: (activity: AvatarActivity) => void;
 }) {
   const { settings } = useSettings();
   const [conversationId, setConversationId] = useState("");
   const [hydrating, setHydrating] = useState(true);
-  const [chatLayer, setChatLayer] = useState(40);
   const [messages, setMessages] = useState<Message[]>([]);
   const [windows, setWindows] = useState<{ active: OverlaySection | null; open: OverlaySection[] }>(() => {
     const active = resolveSection(initialTool || location.hash.slice(1));
     return { active, open: active ? [active] : [] };
   });
+  const windowsRef = useRef(windows); windowsRef.current = windows;
+  const ui = useConversationUI(conversationId, { open: chatOpen, tools: windows.open, active: windows.active, geometry: {} }, (saved) => {
+    const restored = { open: saved.tools, active: saved.active };
+    windowsRef.current = restored; setWindows(restored);
+    return { ...saved, open: onRestoreChatOpen?.(saved.open, conversationId) ?? saved.open };
+  });
+  const lastChatOpen = useRef(chatOpen);
+  useEffect(() => {
+    if (lastChatOpen.current !== chatOpen) { lastChatOpen.current = chatOpen; ui.patch({ open: chatOpen }); }
+  }, [chatOpen, ui.patch]);
+  const updateWindows = useCallback((change: (current: typeof windows) => typeof windows) => {
+    const next = change(windowsRef.current);
+    windowsRef.current = next; setWindows(next);
+    ui.patch({ tools: next.open, active: next.active });
+  }, [ui.patch]);
   const tool = windows.active;
   const closeTool = useCallback((section: OverlaySection) => {
-    setWindows((current) => {
+    updateWindows((current) => {
       const open = current.open.filter((value) => value !== section);
       return { open, active: current.active === section ? open.at(-1) || null : current.active };
     });
-  }, []);
+  }, [updateWindows]);
   const setTool = useCallback((section: OverlaySection | null) => {
-    setWindows((current) => {
+    updateWindows((current) => {
       const open = current.open.filter((value) => value !== (section || current.active));
       if (section) open.push(section);
       return { open, active: section || open.at(-1) || null };
     });
-  }, []);
+  }, [updateWindows]);
   const focusTool = useCallback((section: OverlaySection) => {
-    setWindows((current) => current.active === section ? current : { ...current, active: section });
-  }, []);
+    if (windowsRef.current.active !== section) updateWindows((current) => ({ ...current, active: section }));
+  }, [updateWindows]);
+  const onGeometryChange: WindowGeometryPersistence["onGeometryChange"] = useCallback((id, snapshot) => ui.patch({ geometry: { [id]: snapshot } }), [ui.patch]);
+  const persistence: WindowGeometryPersistence = { conversationId, ready: ui.ready, geometry: ui.geometry, onGeometryChange };
   const [selected, setSelected] = useState<SelectedContent | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [celebration, setCelebration] = useState("");
   const [image, setImage] = useState<string | null>(null);
   const [saved, setSaved] = useState<Array<{ id: string; title: string; messages: Message[] }>>([]);
   const [confirmation, setConfirmation] = useState<string | null>(null);
@@ -61,7 +85,13 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const regionAnswer = useRef<((image: string | null) => void) | null>(null);
   const [snapshot, setSnapshot] = useState(() => runtime?.getSnapshot());
   const [sketch, setSketch] = useState<Extract<Action, { type: "sketch" }> | null>(null);
-  const field = useRef<HTMLTextAreaElement>(null), end = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLTextAreaElement>(null), files = useRef<HTMLInputElement>(null);
+  const preferredHeight = Math.min(400, messages.length ? 360 : confirmation || snapshot?.confirmation ? 240 : image ? 220 : error ? 180 : 120);
+  const chatWindow = useWindowGeometry({
+    id: "chat", minSize: { width: 300, height: 120 }, preferredHeight, persistence,
+    initialRect: (viewport) => clampWindow({ x: viewport.x + viewport.width - 368, y: viewport.y + viewport.height - 105 - preferredHeight, width: 340, height: preferredHeight }, viewport, { width: 300, height: 120 }),
+  });
+  const chatScroll = useChatScroll({ conversationId, ready: !hydrating && chatWindow.hydrated, open: chatOpen && !chatWindow.minimized, lastMessage: messages.at(-1) });
   const handlers = useRef(new Map<string, ToolHandler>());
   const pending = useRef<AbortController | null>(null);
   const state = useRef({ conversationId, messages, tool, selected }); state.current = { conversationId, messages, tool, selected };
@@ -72,7 +102,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     handlers.current.set(name, handler);
     return () => { if (handlers.current.get(name) === handler) handlers.current.delete(name); };
   }, []);
-  const openTool = useCallback((name: string | null) => { setTool(resolveSection(name)); }, []);
+  const openTool = useCallback((name: string | null) => { setTool(resolveSection(name)); }, [setTool]);
   const append = useCallback(async (role: Message["role"], text: string, id: string = crypto.randomUUID()) => {
     if (!text || !state.current.conversationId) return;
     const message = { id, role, text, at: Date.now() };
@@ -127,7 +157,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   const executeTool = useCallback(async (name: string, operation: string, args: Record<string, unknown> = {}) => {
     const signal = pending.current?.signal; signal?.throwIfAborted();
     setTool(resolveSection(name));
-    if ((operation === "open" || operation === "show") && !Object.keys(args).length) return `Opened ${name}.`;
+    if ((operation === "open" || operation === "show") && !Object.keys(args).length) return;
     // React mounts the tool before its registered operation can execute.
     for (let attempt = 0; attempt < 100 && !handlers.current.has(name); attempt++) { signal?.throwIfAborted(); await new Promise((resolve) => setTimeout(resolve, 30)); }
     signal?.throwIfAborted();
@@ -135,7 +165,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     if (!handler) throw new Error("The tool is still opening. Try your request again.");
     const result = await handler(operation, { ...args, conversationId: state.current.conversationId, ...(!args.selected && state.current.selected ? { selected: state.current.selected } : {}) });
     signal?.throwIfAborted(); return result;
-  }, []);
+  }, [setTool]);
   useEffect(() => {
     runtime?.setToolHandler?.((action) => executeTool(action.tool, action.operation, action.args));
     return () => runtime?.setToolHandler?.(null);
@@ -146,6 +176,11 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     regionAnswer.current?.(null); regionAnswer.current = null; setCaptureRegion(false);
     window.dispatchEvent(new Event("hypeman.cancel-tools")); setBusy(false);
   }, [runtime]);
+  const cancelPending = useCallback(async () => {
+    const id = state.current.conversationId;
+    stop();
+    if (id) await request({ type: "conversation.cancel-pending", conversationId: id });
+  }, [stop]);
   useEffect(() => {
     window.addEventListener("hypeman.close-conversation", stop);
     return () => window.removeEventListener("hypeman.close-conversation", stop);
@@ -154,7 +189,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting") stop();
+      if (busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting") void cancelPending().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
       else if (confirmation) { confirmationAnswer.current?.(false); setConfirmation(null); }
       else if (snapshot?.confirmation) runtime?.confirm(false);
       else if (state.current.tool) { window.dispatchEvent(new Event("hypeman.cancel-tools")); setTool(null); field.current?.focus(); }
@@ -169,11 +204,20 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     window.addEventListener("keydown", escape); document.addEventListener("selectionchange", selection);
     const oldLink = () => { if (location.protocol === "chrome-extension:") { const section = resolveSection(location.hash.slice(1)); if (section) setTool(section); } };
     window.addEventListener("hashchange", oldLink);
-    const unsubscribe = subscribe((event) => { if (event.type === "command" && event.name === "open-tools" && typeof event.section === "string") setTool(resolveSection(event.section)); });
+    const unsubscribe = subscribe((event) => {
+      if (event.type === "tab.activated") chatScroll.latest(true);
+      if (event.type === "command" && event.name === "open-tools" && typeof event.section === "string") setTool(resolveSection(event.section));
+    });
     return () => { window.removeEventListener("keydown", escape); document.removeEventListener("selectionchange", selection); window.removeEventListener("hashchange", oldLink); unsubscribe(); };
-  }, [busy, snapshot?.phase, snapshot?.confirmation, confirmation, stop, onClose, runtime]);
+  }, [busy, snapshot?.phase, snapshot?.confirmation, confirmation, cancelPending, onClose, runtime, chatScroll.latest]);
   useEffect(() => { onActivity?.(busy); }, [busy, onActivity]);
-  useEffect(() => { end.current?.scrollIntoView?.({ block: "nearest" }); }, [messages.length]);
+  const avatarPhase: AvatarActivity["phase"] = error || snapshot?.phase === "error" ? "confused"
+    : confirmation || snapshot?.confirmation || snapshot?.phase === "confirming" ? "point"
+    : busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting" ? "thinking" : "idle";
+  const avatarCompletion = snapshot?.completionId || celebration ? `${snapshot?.completionId || ""}:${celebration}` : undefined;
+  useEffect(() => {
+    onAvatarActivity?.({ phase: avatarPhase, conversationId, task: snapshot?.task, hintId: snapshot?.learning.autoHint?.id, celebration: avatarCompletion });
+  }, [onAvatarActivity, avatarPhase, conversationId, snapshot?.task, snapshot?.learning.autoHint?.id, avatarCompletion]);
   const applyReply = async (action: Action, say?: string, requestSelection = state.current.selected, submittedText = draft) => {
     if (action.type === "tool") {
       const sensitive = (action.tool === "phone" && ["send", "test", "pair", "unpair", "remind", "settings", "continue"].includes(action.operation)) || (action.tool === "connection" && ["login", "logout", "account", "model"].includes(action.operation)) || (action.tool === "settings" && action.operation === "permissions");
@@ -190,7 +234,11 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     else if (action.type === "sketch") { setSketch(action); setTool("board"); await append("assistant", say || `I've shown ${action.title} on the whiteboard.`); }
     else if (action.type === "say") await append("assistant", action.text);
     else if (action.type === "ask") await append("assistant", action.question);
-    else if (action.type === "finish") await append("assistant", action.summary);
+    else if (action.type === "finish") {
+      const signal = pending.current?.signal;
+      await append("assistant", action.summary); signal?.throwIfAborted();
+      if (alive.current) setCelebration(crypto.randomUUID());
+    }
     else if (action.type === "note") await saveNote(action.text, action.excerpt);
     else {
       await request({ type: "assistant.run", goal: submittedText, ...(action.type === "navigate" ? { url: action.url } : {}), conversationId: state.current.conversationId });
@@ -207,12 +255,14 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
   };
   const send = async (raw: string) => {
     const text = raw.trim(); if (!text || !state.current.conversationId) return;
-    if (/^(?:stop|cancel|never mind)[.!]?$/i.test(text)) { stop(); return; }
+    if (/^(?:stop|cancel|never mind)[.!]?$/i.test(text)) { await cancelPending(); return; }
     if (confirmation) { if (/^(?:yes|continue|go ahead|no|cancel)[.!]?$/i.test(text)) { confirmationAnswer.current?.(/^(?:yes|continue|go ahead)/i.test(text)); setConfirmation(null); } else throw new Error("Confirm or cancel the pending action first."); return; }
     if (snapshot?.confirmation) { if (/^(?:yes|continue|go ahead|no|cancel)[.!]?$/i.test(text)) runtime?.confirm(/^(?:yes|continue|go ahead)/i.test(text)); else throw new Error("Confirm or cancel the pending browser action first."); return; }
     if (pending.current) stop();
     const controller = new AbortController(); pending.current = controller; setBusy(true); setError("");
     try {
+      window.dispatchEvent(new Event("hypeman.flush-window-geometry"));
+      await ui.flush(); controller.signal.throwIfAborted();
       await append("user", text);
       const dismiss = text.match(/^(?:close|dismiss|hide)(?: this| the)?(?: (tool|board|whiteboard|documents?|pdf|notes|video|projects|settings|preferences|practice|phone|connection))?$/i);
       if (dismiss) {
@@ -237,6 +287,9 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         const url = URL.createObjectURL(new Blob([JSON.stringify({ workspace, workbench: saved }, null, 2)], { type: "application/json" }));
         const anchor = document.createElement("a"); anchor.href = url; anchor.download = "hypeman-workspace.json"; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); await append("assistant", "Exported your conversations, notes, projects, and saved tool content. Ask to export a PDF to download its original file."); return;
       }
+      const assisted = await request<{ reply?: { action: Action; say?: string } | null; contextTool?: "documents" | "video" | null }>({ type: "conversation.assist", conversationId: state.current.conversationId, message: text, toolContext: { activeTool: state.current.tool, selected: state.current.selected } }, controller.signal);
+      controller.signal.throwIfAborted();
+      if (assisted?.reply) { await applyReply(assisted.reply.action, assisted.reply.say, null, text); return; }
       const local = toolIntent(text, state.current.tool, state.current.selected);
       if (local) {
         if (local.tool === "video" && runtime && snapshot?.video && ["play", "pause", "seek", "speed", "summarize", "ask"].includes(local.operation)) {
@@ -251,7 +304,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         }
         const result = await executeTool(local.tool, local.operation, local.args); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return;
       }
-      if (state.current.tool === "documents") {
+      if (state.current.tool === "documents" && assisted?.contextTool === "documents") {
         const documentSelection = state.current.selected;
         const result = await executeTool("documents", "analyze", { question: text, ...(documentSelection?.page ? { page: documentSelection.page, quote: documentSelection.quote } : {}) });
         controller.signal.throwIfAborted(); if (result) await append("assistant", result);
@@ -262,7 +315,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         }
         return;
       }
-      if (state.current.tool === "video" && !runtime) { const result = await executeTool("video", "ask", { question: text }); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return; }
+      if (state.current.tool === "video" && assisted?.contextTool === "video" && !runtime) { const result = await executeTool("video", "ask", { question: text }); controller.signal.throwIfAborted(); if (result) await append("assistant", result); return; }
       if (runtime) { await runtime.send(text); if (runtime.getSnapshot().phase === "error") throw new Error(runtime.getSnapshot().messages.at(-1)?.text || "Request failed. Try again."); setImage(null); }
       else {
         const requestSelection = state.current.selected;
@@ -284,7 +337,13 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
     for (const message of runtime?.getSnapshot().messages || []) seen.current.add(message.id);
     } finally { if (alive.current && version === loadingSequence.current) setHydrating(false); }
   };
-  const submit = async (event?: FormEvent) => { event?.preventDefault(); const text = draft; try { await send(text); if (!pending.current) setDraft(""); } catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); } };
+  const submit = async (event?: FormEvent) => {
+    event?.preventDefault(); const text = draft;
+    if (!text.trim() || !state.current.conversationId || hydrating) return;
+    setDraft("");
+    try { await send(text); }
+    catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); }
+  };
   const acceptFiles = async (files: FileList | File[]) => {
     const controller = new AbortController(); pending.current?.abort(); pending.current = controller; setBusy(true); setError("");
     try {
@@ -293,40 +352,52 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
           const document = await uploadDocument(file, state.current.conversationId, controller.signal);
           controller.signal.throwIfAborted(); setSelected({ kind: "document", id: document.id, artifactId: document.id, title: document.name }); setTool("documents");
           window.dispatchEvent(new CustomEvent("hypeman.document.attached", { detail: document }));
-          await append("status", `${document.name} attached. Select a passage or ask about the document.`);
         } else if (/^image\//.test(file.type)) {
           if (file.size > 25 * 1024 * 1024) throw new Error("Choose an image up to 25 MiB.");
           const bitmap = await createImageBitmap(file); const scale = Math.min(1, 1200 / Math.max(bitmap.width, bitmap.height)); const canvas = document.createElement("canvas"); canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale); canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
           controller.signal.throwIfAborted();
           const data = canvas.toDataURL("image/jpeg", 0.8); setImage(data); runtime?.attachImage?.(data);
-          await append("status", `${file.name} attached to your next message.`);
         } else { setTool("video"); await executeTool("video", "captions", { file }); }
       }
     } catch (e) { if ((e as Error).name !== "AbortError") setError((e as Error).message); }
     finally { if (pending.current === controller) { pending.current = null; setBusy(false); } }
   };
   const working = busy || snapshot?.phase === "thinking" || snapshot?.phase === "acting";
-  return <WorkbenchContext.Provider value={{ conversationId: conversationId || "default", selected, selectContent: setSelected, openTool, register, executeTool, send }}>
+  return <WorkbenchContext.Provider value={{ conversationId: conversationId || "default", selected, selectContent: setSelected, openTool, register, executeTool, send }}><WindowGeometryProvider {...persistence}>
     <div className={`conversation-workbench ${tool ? "has-tool" : ""}`} onDragOver={(event) => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }}
       onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); event.stopPropagation(); void acceptFiles(event.dataTransfer.files); } }}>
-      <section className="conversation-pane" aria-label="HypeMan conversation" style={{ zIndex: chatLayer }}
-        onPointerDownCapture={() => setChatLayer(nextWindowLayer())} onFocusCapture={() => setChatLayer(nextWindowLayer())}>
-        <header className="conversation-title"><strong>HypeMan</strong><span role="status">{working ? snapshot?.status || "Working…" : "Ask, highlight, or drop a PDF"}</span>{onClose && <button type="button" aria-label="Close companion panel" onClick={() => { stop(); onClose(); }}><Icon name="close" /></button>}</header>
-        <div className="conversation-messages" role="log" aria-live="polite">
-          {!messages.length && <p className="conversation-welcome">What would you like to do? I’ll bring up the tools as we need them.</p>}
-          {messages.map((message) => <article key={message.id} className={`chat-message ${message.role}`} aria-label={message.role === "user" ? "You" : "HypeMan"} tabIndex={0} onClick={() => setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" })}><MessageContent text={message.text} onDocumentPage={(documentId, page) => { void executeTool("documents", "page", { documentId, page }).catch((cause) => setError(cause.message)); }} /></article>)}
-          {saved.length > 0 && <div className="saved-conversations" aria-label="Saved conversations">{saved.map((c) => <article key={c.id} tabIndex={0} onClick={() => void switchConversation(c.id)} onKeyDown={(e) => { if (e.key === "Enter") void switchConversation(c.id); }}>{c.title}</article>)}</div>}<div ref={end} />
+      <section ref={chatWindow.hostRef} className="conversation-pane pixel-workspace workspace-chat" aria-label="HypeMan conversation"
+        data-window-tool="chat"
+        hidden={!chatWindow.hydrated}
+        style={chatWindow.style} {...chatWindow.shellProps}>
+        <header className="conversation-title pixel-workspace-bar" tabIndex={0} aria-label="Move HypeMan window" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown" {...chatWindow.titleProps}>
+          <span><Icon name="chat" /><strong>HypeMan</strong></span><span className="pixel-window-grip" aria-hidden="true" />
+          <WindowControls geometry={chatWindow} title="HypeMan" onClose={() => { stop(); onClose?.(); }} />
+        </header>
+        <div className="conversation-body" hidden={chatWindow.minimized}>
+        <div ref={chatScroll.ref} onScroll={chatScroll.onScroll} className="conversation-messages" role="log" aria-live="polite">
+          {messages.map((message) => <article key={message.id} className={`chat-message ${message.role}${selected?.kind === "message" && selected.id === message.id ? " is-selected" : ""}`} aria-label={message.role === "user" ? "You" : "HypeMan"} tabIndex={0}
+            onClick={(event) => { if (!(event.target as Element).closest("a,button")) setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" }); }}
+            onKeyDown={(event) => { if (event.target === event.currentTarget && ["Enter", " "].includes(event.key)) { event.preventDefault(); setSelected({ kind: "message", id: message.id, text: message.text, title: "Conversation message" }); } }}>
+            <MessageContent text={message.text} onDocumentPage={(documentId, page) => { void executeTool("documents", "page", { documentId, page }).catch((cause) => setError(cause.message)); }} />
+            {message === messages.at(-1) && message.role === "assistant" && /^\d{1,2}:\d{2} AM or PM\?$/.test(message.text) && <div className="tool-actions" style={{ marginTop: 8 }} aria-label="Choose reminder time">{["AM", "PM"].map((period) => <button key={period} type="button" className="button" disabled={working} onClick={(event) => { event.stopPropagation(); void send(`${message.text.split(" ")[0]} ${period}`).catch((cause) => setError(cause.message)); }}>{message.text.split(" ")[0]} {period}</button>)}</div>}
+          </article>)}
+          {saved.length > 0 && <div className="saved-conversations" aria-label="Saved conversations">{saved.map((c) => <article key={c.id} tabIndex={0} onClick={() => void switchConversation(c.id)} onKeyDown={(e) => { if (e.key === "Enter") void switchConversation(c.id); }}>{c.title}</article>)}</div>}
+          {working && <div className="conversation-working" role="status" aria-label={snapshot?.status || "Working"}><span /><span /><span /></div>}
         </div>
-        {snapshot?.confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm browser action"><strong>Confirm action</strong><p>{snapshot.confirmation.message}</p><button onClick={() => runtime?.confirm(true)}>Yes, continue</button><button onClick={() => runtime?.confirm(false)}>Cancel action</button></div>}
-        {confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm action"><p>{confirmation}</p><button onClick={() => { confirmationAnswer.current?.(true); setConfirmation(null); }}>Yes, continue</button><button onClick={() => { confirmationAnswer.current?.(false); setConfirmation(null); }}>Cancel action</button></div>}
+        {snapshot?.confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm browser action"><p>{snapshot.confirmation.message}</p><button type="button" className="button primary" onClick={() => runtime?.confirm(true)}>Allow</button><button type="button" className="button" onClick={() => runtime?.confirm(false)}>Cancel</button></div>}
+        {confirmation && <div className="confirmation" role="alertdialog" aria-label="Confirm action"><p>{confirmation}</p><button type="button" className="button primary" onClick={() => { confirmationAnswer.current?.(true); setConfirmation(null); }}>Allow</button><button type="button" className="button" onClick={() => { confirmationAnswer.current?.(false); setConfirmation(null); }}>Cancel</button></div>}
         <Notice tone="error">{error}</Notice>
-        {selected && <div className="conversation-context" aria-label="Selected content">{selected.title || selected.kind}{selected.page ? ` · page ${selected.page}` : ""}{selected.text ? `: ${selected.text.slice(0, 100)}` : ""}</div>}
-        {image && <img className="conversation-attachment" src={image} alt="Attached image. Select and press Delete to remove." tabIndex={0} onKeyDown={(event) => { if (event.key === "Delete" || event.key === "Backspace") { setImage(null); runtime?.attachImage?.(null); } }} />}
+        {selected && ["pdf", "document", "documents"].includes(selected.kind) && <div className="conversation-attachment-chip" aria-label="Attached document"><Icon name="documents" /><span>{selected.title || "PDF"}{selected.page ? ` · p. ${selected.page}` : ""}</span><button type="button" className="icon-button" aria-label="Remove document context" title="Remove document context" onClick={() => setSelected(null)}><Icon name="close" /></button></div>}
+        {image && <div className="conversation-attachment-wrapper"><img className="conversation-attachment" src={image} alt="Attached image" /><button type="button" className="icon-button" aria-label="Remove image attachment" title="Remove image attachment" onClick={() => { setImage(null); runtime?.attachImage?.(null); }}><Icon name="close" /></button></div>}
         <form className="conversation-composer" onSubmit={submit} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void acceptFiles(event.clipboardData.files); } }}>
-          <textarea id="task-goal" ref={field} aria-label="What do you need?" placeholder="What’s next?" rows={1} value={draft} maxLength={4000} disabled={!conversationId || hydrating} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
-          {working ? <button type="button" aria-label="Stop" onClick={stop}><Icon name="stop" /></button> : <button type="submit" aria-label="Send message" disabled={!draft.trim() || !conversationId || hydrating}><Icon name="arrow" /></button>}
+          <button type="button" className="conversation-attach" aria-label="Attach a file" title="Attach a file" onClick={() => files.current?.click()}><Icon name="paperclip" /></button>
+          <textarea id="task-goal" ref={field} aria-label="What do you need?" placeholder="Ask anything…" rows={1} value={draft} maxLength={4000} disabled={!conversationId || hydrating} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); } }} />
+          {working ? <button type="button" aria-label="Stop" onClick={() => void cancelPending().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}><Icon name="stop" /></button> : <button type="submit" aria-label="Send message" disabled={!draft.trim() || !conversationId || hydrating}><Icon name="arrow" /></button>}
         </form>
-        <label className="conversation-drop-target">Drop PDFs or images here<span className="sr-only">Choose a file</span><input type="file" aria-label="Choose a file" accept="application/pdf,image/*,video/*,.vtt,.srt" multiple onChange={(event) => { if (event.target.files?.length) void acceptFiles(event.target.files); event.target.value = ""; }} /></label>
+        <input ref={files} className="sr-only" type="file" aria-label="Choose a file" accept="application/pdf,image/*,video/*,.vtt,.srt" multiple onChange={(event) => { if (event.target.files?.length) void acceptFiles(event.target.files); event.target.value = ""; }} />
+        </div>
+        <WindowResizeHandles geometry={chatWindow} title="HypeMan" />
       </section>
       <ToolOverlay key={conversationId} section={tool} openSections={windows.open} onFocus={focusTool} conversationId={conversationId || "default"} sketch={sketch} pageVideo={snapshot?.video || undefined}
         onNativeVideoCommand={async (operation, args) => {
@@ -338,8 +409,8 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
         }}
         onVideoSeek={(seconds) => { void runtime?.send(`seek to ${seconds} seconds`); }}
         onVideoCaptionsChange={(text) => { const timed = parseCaptions(text); runtime?.attachVideoCaptions?.(text.trim() ? timed.length ? timed : text.split(/\n+/).filter(Boolean).flatMap((line) => line.match(/[\s\S]{1,1800}/g) || []).map((text) => ({ start: 0, end: 0, text })) : null); }}
-        onClose={(section) => { stop(); closeTool(section); field.current?.focus(); }} onError={setError} />
+        onClose={(section) => { window.dispatchEvent(new Event("hypeman.cancel-tools")); closeTool(section); field.current?.focus(); }} onError={setError} />
       {captureRegion && <ScreenRegion onImage={(data) => regionAnswer.current?.(data)} onError={(cause) => { if (cause.name !== "AbortError") setError(cause.message); regionAnswer.current?.(null); }} />}
     </div>
-  </WorkbenchContext.Provider>;
+  </WindowGeometryProvider></WorkbenchContext.Provider>;
 }

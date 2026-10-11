@@ -40,6 +40,7 @@ const paths = {
   play: "m7 4 14 8-14 8V4Z",
   hint: "M9 18h6m-5 3h4M8 14c-5-5-1-11 4-11s9 6 4 11l-1 2H9l-1-2Z",
   image: "M4 4h16v16H4V4Zm0 12 5-5 4 4 3-3 4 4M15 8h.01",
+  paperclip: "m8 12 7-7h4l2 2v4L10 22H5l-3-3v-5L14 2h4M6 15l9-9 2 2-9 9-2-2Z",
 } as const;
 
 export type IconName = keyof typeof paths;

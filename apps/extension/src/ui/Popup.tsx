@@ -6,6 +6,7 @@ export function Popup() {
   const { settings } = useSettings();
   const [error, setError] = useState("");
   const open = async () => {
+    setError("");
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id && /^https?:/.test(tab.url || "") && !settings.hiddenOnHosts.includes(new URL(tab.url!).hostname)) {
@@ -18,5 +19,5 @@ export function Popup() {
     }
   };
   useEffect(() => { void open(); }, []);
-  return <main className="popup studio popup-minimal"><button className="popup-mascot" aria-label="Open HypeMan conversation" onClick={() => void open()}><Pet settings={settings} scale={1.6} /></button><p>Opening your conversation…</p><Notice tone="error">{error}</Notice></main>;
+  return <main className="popup studio popup-minimal"><button className="popup-mascot" aria-label="Open HypeMan conversation" title="Open HypeMan" onClick={() => void open()}><Pet settings={settings} state={error ? "confused" : "thinking"} scale={1.6} /></button><span className="tool-status" role="status">{error ? "" : "Opening…"}</span><Notice tone="error">{error}</Notice></main>;
 }

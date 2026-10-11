@@ -7,7 +7,7 @@ import {
   undoBoard, type BoardDocument, type BoardObject, type BoardPoint,
 } from "../../../../packages/core/src/board";
 import { request } from "../bridge";
-import { Notice } from "./common";
+import { Notice, ToolButton } from "./common";
 import { useToolHandler, useWorkbench } from "./WorkbenchContext";
 
 const inkColor = "#1b1f3b";
@@ -387,14 +387,33 @@ export function Board({ embedded = false, active = true, conversationId: explici
     try { tryCommit(editBoard(documentRef.current, draftText.trim() ? { upsert: [{ ...object, text: draftText }] } : { remove: [object.id] })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
   };
+  const exportBoard = async () => {
+    try { const link = document.createElement("a"); link.href = await renderImage(); link.download = `${documentRef.current.title.replace(/[^\w -]/g, "").trim() || "whiteboard"}.png`; link.click(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  const addText = () => {
+    const object = objectFromArgs({ kind: "text", text: "Text", x: Math.max(20, (30 - view.x) / view.scale), y: Math.max(20, (30 - view.y) / view.scale), color }, "user");
+    tryCommit(editBoard(documentRef.current, { upsert: [object] })); select(object); setEditing(object.id); setDraftText("Text");
+  };
   const shown = board.objects.map((object) => draftObject?.id === object.id ? draftObject : object);
   if (draftObject && !shown.some((object) => object.id === draftObject.id)) shown.push(draftObject);
   const size = dimensions(shown), selectedObject = shown.find((object) => object.id === selection), bounds = selectedObject ? boardObjectBounds(selectedObject) : null;
   const transform = `translate(${view.x}px,${view.y}px) scale(${view.scale})`;
-  return <div ref={root} className={`shared-board ${embedded ? "embedded-studio" : ""}`}>
-    <style>{`.shared-board{display:flex;flex-direction:column;min-height:350px;height:100%;gap:10px;color:#1b1f3b}.shared-board h2{margin:0;font-size:18px}.shared-board .board-viewport{position:relative;min-height:360px;height:min(66vh,720px);overflow:hidden;background:#fff;border:1px solid #ddd;touch-action:none;outline-offset:-3px}.shared-board .board-scene{position:absolute;left:0;top:0;transform-origin:0 0;background-image:radial-gradient(#dfe1e9 1px,transparent 1px);background-size:24px 24px}.shared-board .board-text{position:absolute;white-space:pre-wrap;font-family:system-ui;line-height:1.6;max-width:1100px;user-select:none;touch-action:none;cursor:text}.shared-board .board-text:focus-visible{outline:2px solid #7b5cff}.shared-board .board-editor{position:absolute;z-index:3;min-width:250px;min-height:90px;background:white;border:2px solid #7b5cff;font:24px system-ui;color:#1b1f3b}.shared-board .board-hint{font-size:12px;color:#666;margin:0}.shared-board .board-objects{display:flex;gap:8px;flex-wrap:wrap;font-size:12px}.shared-board .board-objects [role=option]{cursor:pointer;padding:3px 6px;border-radius:5px;background:#f0efff;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.shared-board .board-objects [aria-selected=true]{outline:2px solid #7b5cff}.shared-board .ink-feedback{max-height:240px;overflow:auto}`}</style>
-    <h2>{board.title}</h2>
-    <p className="board-hint">Draw on empty space · select and drag objects · double-tap text to edit · pinch to zoom · ask in chat to undo, erase, change ink, or export{mode !== "auto" ? ` · ${mode} mode` : ""}</p>
+  return <div ref={root} className={`shared-board ${embedded ? "embedded-studio" : ""}`} aria-label={board.title}>
+    <style>{`.shared-board{display:flex;flex-direction:column;min-height:0;height:100%;gap:0;color:#1b1f3b}.shared-board h2{margin:0;font-size:18px}.shared-board .board-viewport{position:relative;min-height:0;flex:1;height:auto;overflow:hidden;background:#fff;border:1px solid #ddd;touch-action:none;outline-offset:-3px}.shared-board .board-scene{position:absolute;left:0;top:0;transform-origin:0 0;background-image:radial-gradient(#dfe1e9 1px,transparent 1px);background-size:24px 24px}.shared-board .board-text{position:absolute;white-space:pre-wrap;font-family:system-ui;line-height:1.6;max-width:1100px;user-select:none;touch-action:none;cursor:text}.shared-board .board-text:focus-visible{outline:2px solid #7b5cff}.shared-board .board-editor{position:absolute;z-index:3;min-width:250px;min-height:90px;background:white;border:2px solid #7b5cff;font:24px system-ui;color:#1b1f3b}.shared-board .board-hint{font-size:12px;color:#666;margin:0}.shared-board .board-objects{display:flex;gap:8px;flex-wrap:wrap;font-size:12px}.shared-board .board-objects [role=option]{cursor:pointer;padding:3px 6px;border-radius:5px;background:#f0efff;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.shared-board .board-objects [aria-selected=true]{outline:2px solid #7b5cff}.shared-board .ink-feedback{max-height:240px;overflow:auto}`}</style>
+    <div className="drawing-toolbar tool-toolbar" role="toolbar" aria-label="Drawing tools">
+      <ToolButton icon="arrow" label="Select and move" pressed={mode === "select"} disabled={!loaded} onClick={() => setMode("select")} />
+      <ToolButton icon="sketch" label="Draw" pressed={mode !== "select"} disabled={!loaded} onClick={() => setMode("ink")} />
+      <ToolButton icon="eraser" label="Erase selected object" disabled={!loaded || !selection} onClick={() => { if (selection) { tryCommit(editBoard(documentRef.current, { remove: [selection] })); select(null); } }} />
+      <ToolButton icon="notes" label="Add text" disabled={!loaded} onClick={addText} />
+      <input type="color" aria-label="Ink color" title="Ink color" value={color} onChange={(event) => setColor(event.target.value)} />
+      <select aria-label="Stroke width" title="Stroke width" value={width} onChange={(event) => setWidth(Number(event.target.value))}>{[1, 3, 6, 12, 24, 48].map((value) => <option key={value} value={value}>{value}px</option>)}</select>
+      <ToolButton icon="undo" label="Undo" disabled={!loaded} onClick={() => tryCommit(undoBoard(documentRef.current, "undo"))} />
+      <ToolButton icon="redo" label="Redo" disabled={!loaded} onClick={() => tryCommit(undoBoard(documentRef.current, "redo"))} />
+      <button type="button" className="button" aria-label="Reset board zoom" title="Reset zoom" onClick={() => setView({ x: 0, y: 0, scale: 1 })}>{Math.round(view.scale * 100)}%</button>
+      <ToolButton icon="check" label="Check drawing" disabled={!loaded || !board.objects.length} onClick={() => void workbench.executeTool("board", "check").catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))} />
+      <ToolButton icon="download" label="Export board" disabled={!loaded} onClick={() => void exportBoard()} />
+    </div>
     <Notice tone="error">{error}</Notice>
     <div ref={surface} className="board-viewport drawing-canvas" role="application" aria-label="Drawing board. Draw on empty space, select objects to move, and use chat for commands." tabIndex={0}
       aria-busy={!loaded} onPointerDown={pointerDown} onPointerMove={pointerMove}
@@ -440,7 +459,7 @@ export function Board({ embedded = false, active = true, conversationId: explici
           if (shifts[event.key]) { event.preventDefault(); tryCommit(editBoard(documentRef.current, { upsert: [moveBoardObject(object, ...shifts[event.key])] })); }
         }}>{object.kind} {i + 1}</span>)}
     </div>
-    <small role="status" aria-live="polite">{!loaded ? "Opening saved board…" : status || "Saved locally"}</small>
+    <small className="tool-status" role="status" aria-live="polite">{!loaded ? "Opening…" : status || "Saved"}</small>
     {review && <div className="ink-feedback" aria-live="polite">
       <p>{review.legibility === "readable" ? "Writing readable" : "Recognition needs review"}</p>
       {review.observations.map((observation, i) => <p key={i}>{observation}</p>)}

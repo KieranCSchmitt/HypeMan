@@ -27,6 +27,6 @@ export function ScreenRegion({ onImage, onError }: { onImage: (image: string) =>
     finally { if (host) host.style.visibility = previous || ""; overlay.style.visibility = ""; window.removeEventListener("hypeman.cancel-tools", cancel); pending.current = false; }
   };
   return <div className="screen-region-selection" aria-label="Select screen region" onPointerDown={down} onPointerMove={move} onPointerUp={(event) => void capture(event)} onPointerCancel={() => { start.current = null; setBox(null); }}>
-    <p>Drag over the screen to attach an image. Escape cancels.</p>{box && <div className="screen-region-box" style={{ left: box.x, top: box.y, width: box.width, height: box.height }} />}
+    <p>Drag to capture · Esc</p>{box && <div className="screen-region-box" style={{ left: box.x, top: box.y, width: box.width, height: box.height }} />}
   </div>;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatGPTStatus, Health } from "@core";
 import { request } from "../bridge";
-import { Notice } from "./common";
+import { Notice, ToolButton } from "./common";
 import { message, useSettings } from "./hooks";
 import { useToolHandler } from "./WorkbenchContext";
 import { Icon } from "./Icon";
@@ -142,19 +142,18 @@ export function ChatGPTConnection({
     throw new Error("That connection action is unavailable.");
   });
   return <div className="studio-window-body chatgpt-connection" aria-busy={busy}>
-    <h2>{connected ? "ChatGPT connected" : "Connect ChatGPT"}</h2>
-    {connected && <Notice tone="success">Using your ChatGPT plan{active ? ` · ${active.email || active.label}` : ""}</Notice>}
-    {status?.connected && !connected && <p>Account access needs attention. Ask to reconnect or switch accounts.</p>}
-    {pending ? <p role="status">Finish sign-in in the opened tab. Ask to cancel if needed.</p> : (!connected || loginChoice) && <button data-essential="sign-in" className="button primary chatgpt-signin" disabled={busy} onClick={() => void act("chatgpt.login", loginChoice || (status?.activeProfileId ? { profileId: status.activeProfileId } : {})).then(() => setLoginChoice(null)).catch(() => {})}><Icon name="external" />{busy ? "Opening ChatGPT…" : "Continue with ChatGPT"}</button>}
+    <div className="tool-toolbar connection-state"><span className={`connection-dot ${connected ? "connected" : ""}`} aria-hidden="true" /><span role="status">{pending ? "Signing in…" : connected ? "Connected" : "Disconnected"}</span><ToolButton icon="rewind" label="Refresh connection" disabled={busy} onClick={() => void act("chatgpt.status").catch(() => {})} /></div>
+    {status?.connected && !connected && <p className="tool-status">Reconnect your account.</p>}
+    {pending ? <div className="tool-actions"><span className="tool-status">Finish sign-in in the opened tab.</span><button className="button" disabled={busy} onClick={() => void act("chatgpt.cancel").catch(() => {})}>Cancel</button></div> : (!connected || loginChoice) && <button data-essential="sign-in" className="button primary chatgpt-signin" disabled={busy} onClick={() => void act("chatgpt.login", loginChoice || (status?.activeProfileId ? { profileId: status.activeProfileId } : {})).then(() => setLoginChoice(null)).catch(() => {})}><Icon name="external" />{busy ? "Opening…" : "Continue with ChatGPT"}</button>}
     <Notice tone="error">{error || status?.error}</Notice><Notice>{status?.warning}</Notice>
     {!!status?.profiles.length && <div className="chatgpt-account-options">
       <label className="field">Account<select aria-label="ChatGPT account" value={status.activeProfileId || ""} disabled={busy || pending} onChange={(event) => void act("chatgpt.select", { profileId: event.target.value }).catch(() => {})}>{!status.activeProfileId && <option value="" disabled>Choose a saved account</option>}{status.profiles.map((profile, index) => <option key={profile.id} value={profile.id}>{labels[index]}{labels.filter((label) => label === labels[index]).length > 1 ? ` (${index + 1})` : ""}{profile.connected ? "" : " · reconnect"}</option>)}</select></label>
       {status.sharing && !!status.models?.length && <label className="field">Model<select aria-label="ChatGPT model" value={status.model || status.models[0]!.slug} disabled={busy || pending} onChange={(event) => void act("chatgpt.model", { model: event.target.value }).catch(() => {})}>{status.models.map((model) => <option key={model.slug} value={model.slug}>{model.displayName}</option>)}</select></label>}
-      <p>Ask to add an account, sign out, reconnect, or view usage.</p>
+      <div className="tool-toolbar"><ToolButton icon="plus" label="Add account" disabled={busy || pending} onClick={() => setLoginChoice({ newProfile: true })} /><ToolButton icon="activity" label="View usage" onClick={() => void chrome.tabs.create({ url: "https://chatgpt.com/settings/usage" }).catch((cause) => setError(message(cause)))} />{connected && <button className="button" disabled={busy || pending} onClick={() => void act("chatgpt.logout").catch(() => {})}>Disconnect</button>}</div>
     </div>}
-    <label className="field">Local server<input aria-label="Local server address" type="url" defaultValue={settings.serverUrl} key={settings.serverUrl} onBlur={(event) => {
+    <details className="connection-advanced"><summary>Advanced</summary><label className="field">Local server<input aria-label="Local server address" type="url" defaultValue={settings.serverUrl} key={settings.serverUrl} onBlur={(event) => {
       try { const target = new URL(event.target.value); if (!/^https?:$/.test(target.protocol) || !["localhost", "127.0.0.1", "[::1]"].includes(target.hostname)) throw new Error("Use a localhost address."); void patch({ serverUrl: target.origin }).catch((cause) => setError(message(cause))); }
       catch (cause) { setError(message(cause)); }
-    }} /></label>
+    }} /></label><span className="tool-status" title="Using your ChatGPT plan">{active?.email || active?.label || "Local connection"}</span></details>
   </div>;
 }

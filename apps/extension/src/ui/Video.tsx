@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { TranscriptSegment, VideoState } from "@core";
 import { request } from "../bridge";
-import { Notice } from "./common";
+import { Notice, ToolButton } from "./common";
+import { Icon } from "./Icon";
 import { message, useSettings } from "./hooks";
 import { useToolHandler, useWorkbench } from "./WorkbenchContext";
 interface VideoReply { segments: TranscriptSegment[]; chapters: { start: number; title: string }[]; notes: { start: number; end: number; text: string }[]; summary?: string; available?: boolean; source: string; provider: string }
@@ -39,6 +40,7 @@ export function Video({ embedded = false, active = true, page, onSeek, nativeSta
   const [captions, setCaptions] = useState<TranscriptSegment[]>([]), [captionText, setCaptionText] = useState("");
   const [time, setTime] = useState(0), [reply, setReply] = useState<VideoReply | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState(""), [hydrated, setHydrated] = useState(false), [localFile, setLocalFile] = useState("");
+  const [tab, setTab] = useState("Chapters"), [editingCaptions, setEditingCaptions] = useState(false);
   const key = workbench.conversationId;
   const loadedKey = useRef("");
   const revisions = useRef(new Map<string, number>());
@@ -122,15 +124,24 @@ export function Video({ embedded = false, active = true, page, onSeek, nativeSta
   const shownTitle = nativeState?.title || title, shownTime = nativeState?.time ?? time;
   const timed = segments.some((segment) => segment.end > segment.start);
   const select = (text: string, id: string) => workbench.selectContent({ kind: "video", id, title, text, url: /^https?:/.test(src) ? src : undefined });
+  const command = async (operation: string, args: Record<string, unknown> = {}) => {
+    try {
+      if (nativeState && onNativeCommand) await onNativeCommand(operation, args);
+      else if (operation === "summarize") await analyze();
+      else if (video.current) { if (operation === "play") await video.current.play(); else if (operation === "pause") video.current.pause(); else if (operation === "speed") video.current.playbackRate = Number(args.rate); }
+    } catch (cause) { setError(message(cause)); }
+  };
   return <section className={`video-studio ${embedded ? "embedded-studio" : ""}`} aria-label="Video" aria-busy={busy} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void upload(event.dataTransfer.files[0]).catch((cause) => setError(message(cause))); }}>
-    <h2>{shownTitle}</h2><p>{nativeState ? "Playing on this page. Select a chapter or transcript line to seek there; ask to pause, change speed, or explain." : "Drop a video, captions, or transcript. Ask questions in the conversation."}</p><label className="file-button">Choose video or captions<input data-essential="file-picker" type="file" accept="video/*,.vtt,.srt,.txt" onChange={(event) => void upload(event.target.files?.[0]).catch((cause) => setError(message(cause)))} /></label>
-    {localFile && !src.startsWith("blob:") && <p>Reattach {localFile} to play it. Its captions and saved analysis are still here.</p>}
-    {src && !page && !nativeState && <video ref={video} src={src} controls onTimeUpdate={() => setTime(video.current?.currentTime || 0)} onError={() => setError("This player needs a direct MP4/WebM link or local video. Hosted videos use their original webpage.")} />}
-    <label className="field">Captions or transcript<textarea aria-label="Video transcript" rows={5} maxLength={50000} value={captionText || (nativeState?.segments || captions).map((segment) => segment.text).join("\n")} onChange={(event) => { void changeCaptions(event.target.value).catch((cause) => setError(message(cause))); }} /></label>
-    {busy && <p role="status">Reading supplied captions…</p>}<Notice tone="error">{error}</Notice><small>Video files stay local. Only supplied captions are sent when you ask for analysis.</small>
-    {shownReply && <article className="video-summary" tabIndex={0} onFocus={() => select(shownReply.summary || "", "summary")} onClick={() => select(shownReply.summary || "", "summary")}><h3>{shownReply.provider === "demo" ? "Demonstration response" : "From your captions"}</h3><p>{shownReply.summary || (shownReply.available === false ? "Add captions or a transcript to continue." : "Your chapters and notes are ready.")}</p></article>}
-    {!!chapters.length && <div className="chapter-list">{chapters.map((chapter, index) => <button key={index} data-content-action="seek" disabled={!timed} onClick={() => { select(chapter.title, `chapter-${index}`); seek(chapter.start); }}>{timed ? timestamp(chapter.start) : index + 1} · {chapter.title}</button>)}</div>}
-    {!!segments.length && <details><summary>Transcript · {segments.length} lines</summary><div className="transcript">{segments.map((segment, index) => <button key={index} data-content-action="seek" disabled={!timed} className={shownTime >= segment.start && shownTime < segment.end ? "current" : ""} onClick={() => { select(segment.text, `segment-${index}`); seek(segment.start); }}><time>{timed ? timestamp(segment.start) : "—"}</time> {segment.text}</button>)}</div></details>}
-    {shownReply?.notes.map((note, index) => <article key={index} tabIndex={0} onClick={() => { select(note.text, `note-${index}`); if (timed) seek(note.start); }} onFocus={() => select(note.text, `note-${index}`)}><time>{timed ? timestamp(note.start) : "Untimed note"}</time><p>{note.text}</p></article>)}
+    <div className="tool-toolbar"><span className="video-title" title={shownTitle}>{shownTitle}</span><label className="file-button tool-icon-button" title="Add video or captions"><Icon name="folder" /><span className="sr-only">Add video or captions</span><input data-essential="file-picker" type="file" aria-label="Add video or captions" accept="video/*,.vtt,.srt,.txt" onChange={(event) => void upload(event.target.files?.[0]).catch((cause) => setError(message(cause)))} /></label><ToolButton icon="hint" label="Summarize video" disabled={busy || !segments.length} onClick={() => void command("summarize")} /></div>
+    {localFile && !src.startsWith("blob:") && <p className="tool-status">Reattach {localFile} to play.</p>}
+    {src && !page && !nativeState && <video ref={video} src={src} controls onTimeUpdate={() => setTime(video.current?.currentTime || 0)} onError={() => setError("Use an MP4/WebM file or the original video page.")} />}
+    {nativeState && <div className="tool-toolbar video-controls"><ToolButton icon={nativeState.paused ? "play" : "pause"} label={nativeState.paused ? "Play video" : "Pause video"} onClick={() => void command(nativeState.paused ? "play" : "pause")} /><span>{timestamp(shownTime)}</span><input type="range" aria-label="Video position" min={0} max={nativeState.duration || 1} value={shownTime} onChange={(event) => seek(Number(event.target.value))} /><select aria-label="Video speed" value={nativeState.rate || 1} onChange={(event) => void command("speed", { rate: Number(event.target.value) })}>{[.5, 1, 1.25, 1.5, 2].map((rate) => <option key={rate} value={rate}>{rate}×</option>)}</select></div>}
+    <Notice tone="error">{error}</Notice>{busy && <small className="tool-status" role="status">Reading…</small>}
+    <div className="tool-tabs" role="tablist" aria-label="Video views">{["Chapters", "Transcript", "Summary"].map((name) => <button key={name} type="button" role="tab" aria-selected={tab === name} onClick={() => setTab(name)}>{name}</button>)}</div>
+    <div className="tool-content video-detail-content">
+      <div className="chapter-list" hidden={tab !== "Chapters"}>{chapters.length ? chapters.map((chapter, index) => <button key={index} data-content-action="seek" disabled={!timed} onClick={() => { select(chapter.title, `chapter-${index}`); seek(chapter.start); }}><time>{timed ? timestamp(chapter.start) : index + 1}</time> {chapter.title}</button>) : <div className="tool-empty">No chapters yet</div>}</div>
+      <div hidden={tab !== "Transcript"}><div className="tool-toolbar"><ToolButton icon="notes" label="Edit transcript" pressed={editingCaptions} onClick={() => setEditingCaptions(!editingCaptions)} />{segments.length > 0 && <ToolButton icon="trash" label="Remove captions" onClick={() => void changeCaptions("").catch((cause) => setError(message(cause)))} />}</div>{editingCaptions && <textarea aria-label="Video transcript" rows={4} maxLength={50000} placeholder="Paste captions or transcript…" value={captionText || (nativeState?.segments || captions).map((segment) => segment.text).join("\n")} onChange={(event) => { void changeCaptions(event.target.value).catch((cause) => setError(message(cause))); }} />}<div className="transcript">{segments.map((segment, index) => <button key={index} data-content-action="seek" disabled={!timed} className={shownTime >= segment.start && shownTime < segment.end ? "current" : ""} onClick={() => { select(segment.text, `segment-${index}`); seek(segment.start); }}><time>{timed ? timestamp(segment.start) : "—"}</time> {segment.text}</button>)}</div>{!segments.length && !editingCaptions && <div className="tool-empty">Add captions</div>}</div>
+      <div hidden={tab !== "Summary"}>{shownReply ? <article className="video-summary" tabIndex={0} onFocus={() => select(shownReply.summary || "", "summary")} onClick={() => select(shownReply.summary || "", "summary")}><p>{shownReply.summary || "Add captions to continue."}</p>{shownReply.provider === "demo" && <small>Demo</small>}</article> : <div className="tool-empty">No summary yet</div>}{shownReply?.notes.map((note, index) => <article key={index} tabIndex={0} onClick={() => { select(note.text, `note-${index}`); if (timed) seek(note.start); }} onFocus={() => select(note.text, `note-${index}`)}><time>{timed ? timestamp(note.start) : "Note"}</time><p>{note.text}</p></article>)}</div>
+    </div>
   </section>;
 }

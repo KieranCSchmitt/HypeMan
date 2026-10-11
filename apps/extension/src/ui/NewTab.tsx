@@ -4,14 +4,16 @@ import { Rooftop } from "./Rooftop";
 import { Pet } from "./Pet";
 import { Icon } from "./Icon";
 import { useSettings, useReducedMotion } from "./hooks";
+import { useAvatarAnimation, type AvatarActivity } from "./useAvatarAnimation";
 
 /** A quiet rooftop. Work starts only when the avatar or an explicit continuation opens chat. */
-export function NewTab({ initialTool }: { initialTool?: string } = {}) {
+export function NewTab({ initialTool }: { initialTool?: string }) {
   const { settings } = useSettings();
   const reduced = useReducedMotion(settings.reducedMotion);
   const explicit = !!initialTool || !!location.hash || new URLSearchParams(location.search).has("conversationId");
   const [open, setOpen] = useState(explicit), [mounted, setMounted] = useState(explicit);
-  const [busy, setBusy] = useState(false);
+  const [activity, setActivity] = useState<AvatarActivity>({ phase: "idle" });
+  const avatar = useAvatarAnimation({ activity, open });
   const close = () => { window.dispatchEvent(new Event("hypeman.close-conversation")); setOpen(false); };
   const reveal = () => { setMounted(true); setOpen(true); };
   useEffect(() => {
@@ -25,13 +27,13 @@ export function NewTab({ initialTool }: { initialTool?: string } = {}) {
       <input type="search" name="q" aria-label="Search the web" placeholder="Search the web" autoComplete="off" required />
     </form>}
     {mounted && <div className="conversational-companion"><main id="newtab-companion-chat" aria-label="HypeMan avatar conversation" hidden={!open} className="companion-workbench-host">
-      <ConversationWorkbench initialTool={initialTool} onActivity={setBusy} onClose={close} />
+      <ConversationWorkbench initialTool={initialTool} chatOpen={open} onRestoreChatOpen={() => open} onAvatarActivity={setActivity} onClose={close} />
     </main></div>}
-    <Rooftop reduced={reduced} activity={busy && open ? "thinking" : "idle"}
+    <Rooftop reduced={reduced} activity={avatar.state} animationKey={avatar.animationKey}
       onCompanion={() => { if (open) close(); else reveal(); }} />
     <button type="button" className="pet-handle newtab-avatar-icon" aria-label={`${open ? "Close" : "Open"} HypeMan chat`}
       aria-expanded={open} aria-controls={mounted ? "newtab-companion-chat" : undefined} onClick={() => { if (open) close(); else reveal(); }}>
-      <Pet settings={settings} state={busy && open ? "thinking" : "idle"} scale={1.5} /><span className="pet-shadow" />
+      <Pet settings={settings} {...avatar} scale={1.5} /><span className="pet-shadow" />
     </button>
   </div>;
 }
