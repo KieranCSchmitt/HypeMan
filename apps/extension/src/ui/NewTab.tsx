@@ -20,7 +20,7 @@ export function NewTab({ initialTool }: { initialTool?: string } = {}) {
     return () => window.removeEventListener("hashchange", continuation);
   }, []);
   return <div className="newtab-page conversational-desktop" data-reduced-motion={reduced}>
-    {!open && !initialTool && <form className="newtab-web-search" role="search" aria-label="Web search" action="https://www.google.com/search" method="get">
+    {!initialTool && <form className="newtab-web-search" role="search" aria-label="Web search" action="https://www.google.com/search" method="get">
       <Icon name="search" />
       <input type="search" name="q" aria-label="Search the web" placeholder="Search the web" autoComplete="off" required />
     </form>}
