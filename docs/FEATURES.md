@@ -26,7 +26,7 @@ Progress is conservative: a click alone does not complete an entire milestone. A
 
 ## Interactive rooftop and inline tools
 
-- [x] Live layered rooftop with four time-of-day phases, pointer parallax, clouds, blimp, lights, water, pigeons, walking HypeMan, and silent dance interactions. Keyboard-accessible scene hotspots and live reduced motion.
+- [x] Live layered rooftop with four time-of-day phases, pointer parallax, clouds, blimp, lights, water, pigeons, walking HypeMan, and a boombox that plays a packaged music loop while HypeMan dances (off by default, paused in background tabs). Keyboard-accessible scene hotspots and live reduced motion.
 - [x] One prompt with distinct task, **Web search**, and **Ask HypeMan** modes; Enter submits directly.
 - [x] Consistent Y2K styling across the companion, popup, onboarding, inline tool trays, drawing, video, customization, notebook, and demo pages. Extra settings and history unfold on demand.
 - [x] Tasks, notes, recent action history, workspace export, permissions, customization, and optional Learning view unfold from icons inside the companion. Old dashboard links redirect into these inline tools.

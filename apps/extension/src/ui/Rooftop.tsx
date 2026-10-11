@@ -19,6 +19,7 @@ export function Rooftop({ reduced = false, activity = "idle", settings, onCompan
   const buttons = useRef(new Map<WallpaperAction, HTMLButtonElement>());
   const callbacks = useRef({ onCompanion, onCustomize, onNotes });
   callbacks.current = { onCompanion, onCustomize, onNotes };
+  const music = useRef<HTMLAudioElement>(null);
   const [dancing, setDancing] = useState(false);
   const [phase, setPhase] = useState("");
   useEffect(() => {
@@ -52,6 +53,17 @@ export function Rooftop({ reduced = false, activity = "idle", settings, onCompan
   }, []);
   useEffect(() => engine.current?.setReducedMotion(reduced), [reduced]);
   useEffect(() => engine.current?.setActivity(activity), [activity]);
+  useEffect(() => {
+    // The boombox loop follows the dance and, like the scene, stops in background tabs.
+    const audio = music.current!;
+    const tune = () => {
+      if (dancing && !document.hidden) void audio.play().catch(() => undefined);
+      else audio.pause();
+    };
+    tune();
+    document.addEventListener("visibilitychange", tune);
+    return () => document.removeEventListener("visibilitychange", tune);
+  }, [dancing]);
   useEffect(() => {
     let disposed = false;
     let version = 0;
@@ -99,6 +111,7 @@ export function Rooftop({ reduced = false, activity = "idle", settings, onCompan
         aria-hidden="true"
         style={{ position: "absolute", inset: 0, width: "100%", height: "100%", zIndex: 0, pointerEvents: "auto", imageRendering: "pixelated" }}
       />
+      <audio ref={music} src={chrome.runtime.getURL("assets/audio/boombox.flac")} loop preload="none" />
       {WALLPAPER_ACTIONS.map((action) => (
         <button
           key={action.id}

@@ -199,10 +199,18 @@ try {
 
   for (const label of [
     "Launch an airship", "Change time of day", "Customize HypeMan", "Open saved notes",
-    "Scatter the pigeons", "Open HypeMan", "Toggle HypeMan’s dance",
+    "Scatter the pigeons", "Open HypeMan", "Toggle the boombox music",
   ]) await home.getByRole("button", { name: label, exact: true }).waitFor();
-  const dance = home.getByRole("button", { name: "Toggle HypeMan’s dance", exact: true });
+  const dance = home.getByRole("button", { name: "Toggle the boombox music", exact: true });
+  const music = home.locator(".rooftop-wallpaper audio");
+  assert.equal(await music.evaluate((audio) => audio.paused), true);
   await dance.focus();
+  await dance.press("Enter");
+  assert.equal(await dance.getAttribute("aria-pressed"), "true");
+  await waitFor(() => music.evaluate((audio) => !audio.paused && audio.loop && audio.currentTime > 0), "boombox music plays");
+  await dance.press("Enter");
+  assert.equal(await dance.getAttribute("aria-pressed"), "false");
+  assert.equal(await music.evaluate((audio) => audio.paused), true);
   await dance.press("Enter");
   assert.equal(await dance.getAttribute("aria-pressed"), "true");
   const phase = await home.locator(".rooftop-wallpaper").getAttribute("data-time-of-day");

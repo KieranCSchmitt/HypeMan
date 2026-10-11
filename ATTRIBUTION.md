@@ -29,3 +29,7 @@ Full font licenses remain beside the font files. The active Press Start 2P and V
 The active Y2K identity uses the updated artwork supplied by the user in `HypeMan-2`: the pixel avatar, rooftop skyline, CRT, boombox, graffiti, blimp, pigeons, and other scene parts. The art sources have been adapted into a reproducible build-time exporter in `scripts/art/`, preserving the supplied HYPEMAN graffiti and LCD clock, with additional animation poses derived from the supplied avatar. A new silent wallpaper controller uses those drawing routines for live animation and interaction. Transparent prop PNGs, four time-of-day scenes, and the animation atlas are packaged in `apps/extension/public/assets/y2k/`. The original Burrow artwork remains available in source as attributed legacy material and is excluded from the extension build.
 
 Only the supplied art definitions are reused; HypeMan application, orchestration, and audio code are not bundled. See [art provenance and export instructions](scripts/art/README.md).
+
+## Music
+
+The boombox loop at `apps/extension/public/assets/audio/boombox.flac` was supplied by the user and is packaged unmodified. Preserve the user's ownership and any applicable notices.

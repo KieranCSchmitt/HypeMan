@@ -15,7 +15,7 @@ export const WALLPAPER_ACTIONS: { id: WallpaperAction; label: string; rect: Rect
   { id: "crt", label: "Open saved notes", rect: LAYOUT.crt },
   { id: "pigeons", label: "Scatter the pigeons", rect: { ...LAYOUT.pigeons, y: 171, h: 22 } },
   { id: "hypeman", label: "Open HypeMan", rect: { x: LAYOUT.homeX - 24, y: LAYOUT.walkY - 64, w: 48, h: 64 } },
-  { id: "boombox", label: "Toggle HypeMan’s dance", rect: LAYOUT.boombox },
+  { id: "boombox", label: "Toggle the boombox music", rect: LAYOUT.boombox },
 ];
 
 type Animation = keyof typeof atlas.animations;
