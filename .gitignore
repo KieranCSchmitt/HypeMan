@@ -1,0 +1,17 @@
+node_modules/
+apps/extension/dist/
+.env
+.env.local
+.hypeman-token
+.hypeman-token.*
+# OAuth credentials normally live outside the repo in ~/.config/hypeman/.
+chatgpt-auth.json
+chatgpt-auth.json.*
+chatgpt-host.json
+chatgpt-host.json.*
+*.log
+.DS_Store
+coverage/
+tests/.profile*/
+tests/screenshots/
+test-results/
