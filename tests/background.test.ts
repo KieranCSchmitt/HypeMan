@@ -173,6 +173,7 @@ beforeEach(async () => {
       sendMessage: vi.fn(async () => ({ ok: true })),
       goBack: vi.fn(async () => {}),
       captureVisibleTab: vi.fn(async () => "data:image/jpeg;base64,YQ=="),
+      onActivated: event(),
       onRemoved: event(),
       onUpdated: event(),
       remove: vi.fn(async (id: number) => {
@@ -198,6 +199,14 @@ afterEach(() => {
 });
 
 describe("background ownership and handoff integration", () => {
+  it("tells only the activated browser tab to restore its latest chat", async () => {
+    vi.mocked(chrome.tabs.sendMessage).mockClear();
+    vi.mocked(chrome.runtime.sendMessage).mockClear();
+    const activate = vi.mocked(chrome.tabs.onActivated.addListener).mock.calls[0]![0];
+    activate({ tabId: 2, windowId: 1 });
+    await vi.waitFor(() => expect(chrome.tabs.sendMessage).toHaveBeenCalledExactlyOnceWith(2, { type: "hypeman.tab.activated" }));
+    expect(chrome.runtime.sendMessage).not.toHaveBeenCalled();
+  });
   it("persists continuation and transfers task ownership before a new tab navigates", async () => {
     const task = await ok<BrowserTask>({
       type: "task.start",

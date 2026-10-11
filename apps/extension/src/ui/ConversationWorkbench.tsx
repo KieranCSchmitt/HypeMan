@@ -209,7 +209,7 @@ export function ConversationWorkbench({ runtime, initialTool, onClose, onActivit
       if (event.type === "command" && event.name === "open-tools" && typeof event.section === "string") setTool(resolveSection(event.section));
     });
     return () => { window.removeEventListener("keydown", escape); document.removeEventListener("selectionchange", selection); window.removeEventListener("hashchange", oldLink); unsubscribe(); };
-  }, [busy, snapshot?.phase, snapshot?.confirmation, confirmation, cancelPending, onClose, runtime]);
+  }, [busy, snapshot?.phase, snapshot?.confirmation, confirmation, cancelPending, onClose, runtime, chatScroll.latest]);
   useEffect(() => { onActivity?.(busy); }, [busy, onActivity]);
   const avatarPhase: AvatarActivity["phase"] = error || snapshot?.phase === "error" ? "confused"
     : confirmation || snapshot?.confirmation || snapshot?.phase === "confirming" ? "point"
