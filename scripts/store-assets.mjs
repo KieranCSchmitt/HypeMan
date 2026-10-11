@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
 
 const output = resolve("release/store-assets");
-const stage = resolve("release/extension");
+const stage = resolve(process.env.HYPEMAN_STORE_PACKAGE_DIR || "release/extension");
 const profile = await mkdtemp(join(tmpdir(), "hypeman-store-assets-"));
 let context;
 try {

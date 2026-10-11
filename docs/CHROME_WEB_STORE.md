@@ -8,7 +8,7 @@ Run `npm ci`, `npm run typecheck`, and `npm run package:store` from the reposito
 
 The package contains only the extension build, including bundled fonts, PDF runtime assets, sprites, fountain artwork, and boombox music. It excludes the Node gateway, repository files, OAuth credentials, environment files, source maps, private keys, logs, and private launch-film assets. Package inspection fails if a prohibited file is found.
 
-Run `npm run store:assets` after packaging to capture listing assets from an isolated install of the staged extension. Set `HYPEMAN_TEST_CHROMIUM` to an installed Chrome-for-Testing executable if the default Playwright Chromium is unavailable. The captured profile contains no real account or workspace data, and no mocked AI responses are used in these listing images. Committed copies are available here:
+Run `npm run store:assets` after packaging to capture listing assets from an isolated install of the staged extension. Set `HYPEMAN_TEST_CHROMIUM` to an installed Chrome-for-Testing executable if the default Playwright Chromium is unavailable. To verify the actual ZIP after extraction, set `HYPEMAN_STORE_PACKAGE_DIR` to that extracted directory. The Windows ZIP writer uses forward-slash entry names for portability. The captured profile contains no real account or workspace data, and no mocked AI responses are used in these listing images. Committed copies are available here:
 
 | Asset | Size |
 | --- | --- |
